@@ -399,11 +399,36 @@ repo/org, and `GITHUB_TOKEN` may push packages (org settings).
   Open per phase: P0 = first tag push flowing forgejo→GitHub mirror→Actions→
   ghcr, then `make sync` into the Forgejo registry and a pod pull + `/healthz`
   (verify mirror syncs tags, Actions enabled, GITHUB_TOKEN can create the
-  package); P1 = S3
-  (rustfs) public route via tunnel + presigned lanes + `submit` wiring +
-  `local` provider; P2 remainder = `gpuai` port + reconcile loop + fallback;
-  P3/P4 as spec'd. **Rotate the legacy keys in `.env`** (HF/GPUAI/GROQ were
-  present in the worktree; the repo also used to rsync `.env` to pods).
+  package); P1 = S3 (rustfs) public route via tunnel + presigned lanes +
+  `submit` wiring + `local` provider; P2 remainder = `gpuai` port + reconcile
+  loop + fallback; P3/P4 as spec'd.
+- 2026-11-23 (c) — leak-remediation execution state (in progress):
+  LOCAL DONE: `legacy-main` branch preserves old history; clean root commit
+  (`7247db1`: 90 files, 0 data paths; user's staged edits + scaffold +
+  corpora `.gitignore` protection) is now `main`; `v0.1.0` re-cut on it
+  locally. `../corpora` snapshot committed (290 files).
+  GitHub facts: `iqns-org/training` was deleted + recreated by owner ~14:40Z
+  but the Forgejo mirror re-pushed the DIRTY history (datasets+generate are
+  public again); Actions fired 0 runs (billing blocked the earlier tag event;
+  billing now "resolved"); `smart-trust` PAT has repo admin but CANNOT
+  git-push or delete/create repos → owner actions required. pi00 went DOWN
+  mid-session (port 30022 refused) — background poller watching.
+  RUNBOOK to finish (in this order):
+  1. pi00 back → from this workstation: `git push origin --force main
+     v0.1.0` (updates Forgejo refs; mirror's push to the still-dirty GitHub
+     repo will be rejected non-fast-forward — harmless).
+  2. GitHub owner: DELETE `iqns-org/training` (this is what actually removes
+     the public blobs), re-create as empty PUBLIC repo, same name.
+  3. Trigger the Forgejo push-mirror sync (repo Settings → mirror → Sync —
+     or any ref change). Clean main + v0.1.0 land; tag event starts
+     `trainer-image`; watch `gh run list -R iqns-org/training`.
+  4. Verify: `gh api repos/iqns-org/training/contents --jq '.[].name'` shows
+     no `datasets`/`generate`; image digest printed in run summary; then
+     `scripts/sync-image.sh v0.1.0` on cluster side → Forgejo registry copy
+     at the same digest; `qtrain launch` pod smoke + `/healthz`.
+   Post-remediation: **rotate the legacy keys in `.env`** — HF/GPUAI/GROQ sat
+   in the worktree, the old scripts rsynced `.env` onto rented pods, and the
+   corpus history was public; assume exposure.
 - 2026-11-22 (2) — registry strategy settled (no ghcr): **Forgejo canonical +
   one-way public mirror**, digest-preserving via `scripts/sync-image.sh`
   (skopeo copy + digest verify). Dockerfile base corrected & pinned:
