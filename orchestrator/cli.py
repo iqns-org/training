@@ -18,6 +18,7 @@ import sys
 import time
 
 from .config import load_dotenv
+from . import dispatch
 from .ledger import Ledger
 from .models import ProviderError
 from .providers import available_providers, get_provider
@@ -52,7 +53,8 @@ def cmd_launch(args):
     env = dict(kv.split("=", 1) for kv in (args.env or []))
     inst = _prov(args).launch(
         name=args.name, image=args.image, gpu_id=args.gpu,
-        cloud=args.cloud, env=env, args=args.cmd, disk_gb=args.disk)
+        cloud=args.cloud, env=env, args=args.cmd, disk_gb=args.disk,
+        ssh=args.ssh)
     if args.record:
         led = Ledger()
         led.create("smoke", {"image": args.image, "gpu": args.gpu},
@@ -96,6 +98,23 @@ def cmd_terminate(args):
     ok = _prov(args).terminate(args.id)
     print(f"{args.id}: {'terminated' if ok else 'FAILED to terminate'}")
     raise SystemExit(0 if ok else 1)
+
+
+def cmd_submit(args):
+    import json as _json
+    overrides = {}
+    for kv in args.override or []:
+        k, _, v = kv.partition("=")
+        try:
+            overrides[k] = _json.loads(v)
+        except _json.JSONDecodeError:
+            overrides[k] = v
+    res = dispatch.submit(
+        args.domain, Path(args.recipe), mini=args.mini, overrides=overrides,
+        provider=args.provider, gpus=args.gpu or None, tier=args.tier,
+        dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost)
+    _print(res)
+    raise SystemExit(0 if res.get("status") in ("succeeded", None) and not res.get("error") else 1)
 
 
 def cmd_doctor(args):
@@ -143,6 +162,8 @@ def build_parser():
     s.add_argument("--disk", type=int, default=30)
     s.add_argument("--record", default=None, metavar="RUN_ID",
                    help="also store in ledger under this run id")
+    s.add_argument("--ssh", action="store_true",
+                   help="startSsh + publish 22/tcp (exec/debug lane)")
     s.set_defaults(func=cmd_launch)
 
     s = sub.add_parser("wait", help="block until pod runs and exposes an URL")
@@ -171,6 +192,23 @@ def build_parser():
     prov_arg(s)
     s.add_argument("id")
     s.set_defaults(func=cmd_terminate)
+
+    s = sub.add_parser("submit", help="full-cycle training job (SPEC §6)")
+    prov_arg(s)
+    s.add_argument("domain")
+    s.add_argument("--recipe", required=True, help="axolotl YAML path")
+    s.add_argument("--mini", action="store_true",
+                   help=f"tiny dataset ({dispatch.MINI_LINES} rows, seq 256, 1 epoch) "
+                        "— lane validation, not a real training run")
+    s.add_argument("--override", action="append", metavar="K=JSON",
+                   help="axolotl config override, repeatable")
+    s.add_argument("--gpu", action="append", help="GPU id filter, repeatable")
+    s.add_argument("--tier", choices=["community", "secure"], default=None)
+    s.add_argument("--dry", action="store_true",
+                   help="stage dataset+payload to S3, do not launch a pod")
+    s.add_argument("--max-runtime", type=int, default=3600)
+    s.add_argument("--max-cost", type=float, default=0.75)
+    s.set_defaults(func=cmd_submit)
 
     s = sub.add_parser("doctor", help="orphan sweep: live pods vs ledger")
     prov_arg(s)

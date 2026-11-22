@@ -23,12 +23,12 @@ def test_presign_shape(fake_env):
 
 
 def test_mint_job_urls_keys(fake_env):
-    urls = storage.mint_job_urls("run-1", dataset_sha="datasets/queer/hash/data.jsonl")
+    urls = storage.mint_job_urls("run-1", dataset_key="datasets/queer/hash/data.jsonl")
     assert set(urls) == {"payload_get", "dataset_get", "artifacts_put",
                          "manifest_put", "log_put"}
-    assert "runs/run-1/job.json" in urls["payload_get"]
-    assert "runs/run-1/artifacts.tar.zst" in urls["artifacts_put"]
-    assert urls["dataset_get"]  # non-empty when sha given
+    assert "runs/run-1/payload.json" in urls["payload_get"]
+    assert "runs/run-1/artifacts.tar.gz" in urls["artifacts_put"]
+    assert urls["dataset_get"]  # non-empty when key given
 
 
 def test_missing_creds_raises(monkeypatch):
