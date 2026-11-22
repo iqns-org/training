@@ -1,16 +1,23 @@
 name: trainer-image
 
 # Build lane for the generic CUDA trainer image (docs/SPEC.md §3, §10).
-# Trigger: tag push (v*) that arrives via the Forgejo → GitHub repo mirror.
-# Runs on GitHub's amd64 runners — the only free place a ~20 GB CUDA base
-# builds natively. Output is pushed to ghcr.io (cloud-pull mirror); the
-# cluster then mirrors ghcr → Forgejo registry (scripts/sync-image.sh) so
-# the canonical LAN copy carries the SAME digest.
+#
+# COST POLICY (2026-11-23): every minute here is billable and the build pulls
+# an ~8 GB base — ONLY tagged releases (v*) build. No workflow_dispatch, no
+# PR builders. Diagnostics (the base-image probe) run ONLY on a failed build,
+# so green builds never pay for the extra pull.
+#
+# Flow: tag in Forgejo → repo mirror → here → build linux/amd64 → push
+# ghcr.io (cloud mirror). The cluster mirrors the same digest back into the
+# Forgejo registry via scripts/sync-image.sh; launch specs pin the digest.
 
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: {}   # manual rebuild of main, tags the artifact 'dev-<sha>'
+
+concurrency:  # never run two image builds at once
+  group: trainer-image
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/trainer
@@ -18,7 +25,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -32,24 +39,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Diagnostics ride in check-run annotations even when GitHub's log
-      # blobs 404 (observed twice): emit the base image's toolchain facts.
-      - name: Probe base image
-        env:
-          BASE: axolotlai/axolotl:main-py3.12-cu130-2.13.0
-        run: |
-          docker pull -q "$BASE"
-          out="$(docker run --rm --entrypoint sh "$BASE" -c '
-            echo "PATH=$PATH";
-            echo "python=$(command -v python) $(python -V 2>&1)";
-            echo "VIRTUAL_ENV=${VIRTUAL_ENV:-unset}";
-            echo "uv=$(command -v uv || ls /usr/local/bin/uv 2>/dev/null || echo none)";
-            (command -v uv || /usr/local/bin/uv) --version 2>/dev/null || true;
-            echo "pip=$(python -m pip -V 2>&1 | head -1)";
-            ls /workspace/axolotl-venv/bin 2>/dev/null | head -15' 2>&1)"
-          echo "$out" >> "$GITHUB_STEP_SUMMARY"
-          echo "$out" | while IFS= read -r l; do echo "::notice::$l"; done
 
       - name: Build & push
         id: build
@@ -69,5 +58,24 @@ jobs:
         run: |
           echo "Launch pods with:" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "    ${IMAGE}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Canonical mirror (same digest) after scripts/sync-image.sh:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Canonical copy after scripts/sync-image.sh:" >> "$GITHUB_STEP_SUMMARY"
           echo "    pi00.lan:30080/quadra/trainer@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Failure-only diagnostics: raw job logs have 404'd twice, so probe
+      # facts are emitted as check-run annotations (API-readable) on red
+      # runs only.
+      - name: Probe base image (failures only)
+        if: failure()
+        env:
+          BASE: axolotlai/axolotl:main-py3.12-cu130-2.13.0
+        run: |
+          docker pull -q "$BASE"
+          out="$(docker run --rm --entrypoint sh "$BASE" -c '
+            echo "PATH=$PATH";
+            echo "python=$(command -v python) $(python -V 2>&1)";
+            echo "VIRTUAL_ENV=${VIRTUAL_ENV:-unset}";
+            echo "uv=$(command -v uv || ls /usr/local/bin/uv 2>/dev/null || echo none)";
+            (command -v uv || /usr/local/bin/uv) --version 2>/dev/null || true;
+            echo "pip=$(python -m pip -V 2>&1 | head -1)"' 2>&1)"
+          echo "$out" >> "$GITHUB_STEP_SUMMARY"
+          echo "$out" | while IFS= read -r l; do echo "::notice::$l"; done

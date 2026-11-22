@@ -1,0 +1,111 @@
+"""Job finalization: artifact gate + manifest + presigned uploads (SPEC §5).
+
+Runs after the training command exits. The gate refuses known-bad output
+states (leftover checkpoints as a final set, missing adapter files) so the
+orchestrator never has to trust a bare exit code.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tarfile
+import time
+from pathlib import Path
+
+from . import __version__
+from .transfer import download, sha256_file, upload
+
+REQUIRED_FILES = (
+    "adapter_config.json",
+    "adapter_model.safetensors",
+    "tokenizer.json",
+    "tokenizer_config.json",
+)
+EXCLUDE_DIRS = {"checkpoint-", "runs", "logs", "prepared", "hf-cache"}
+
+
+def _excluded(name: str) -> bool:
+    return any(part.startswith(p) for part in Path(name).parts
+               for p in EXCLUDE_DIRS)
+
+
+def gate(outputs_dir: Path) -> tuple[bool, list[str]]:
+    """(ok, problems). Required final files present; checkpoint-* leftovers are
+    NORMAL (axolotl saves_per_epoch) — excluded from pack, never fatal."""
+    problems = []
+    if not outputs_dir.is_dir():
+        return False, [f"outputs dir missing: {outputs_dir}"]
+    for f in REQUIRED_FILES:
+        if not (outputs_dir / f).is_file():
+            problems.append(f"required artifact missing: {f}")
+    if not any(p.is_file() for p in outputs_dir.rglob("*")):
+        problems.append("outputs dir has no files")
+    return (not problems), problems
+
+
+def pack(outputs_dir: Path, dest: Path) -> Path:
+    """tar.gz of the artifact set minus excluded dirs."""
+    with tarfile.open(dest, "w:gz") as tf:
+        for p in sorted(outputs_dir.rglob("*")):
+            if p.is_file() and not _excluded(str(p.relative_to(outputs_dir))):
+                tf.add(p, arcname=str(p.relative_to(outputs_dir)))
+    return dest
+
+
+def gpu_info() -> dict:
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,driver_version",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10).stdout.strip()
+        return {"gpus": out.splitlines()}
+    except Exception:                                   # noqa: BLE001
+        return {"gpus": []}
+
+
+def build_manifest(run_id: str, outputs_dir: Path, state: dict,
+                   status: str, problems: list[str] | None = None) -> dict:
+    files = {}
+    if outputs_dir.is_dir():
+        for p in outputs_dir.rglob("*"):
+            rel = str(p.relative_to(outputs_dir))
+            if p.is_file() and not _excluded(rel):
+                files[rel] = {"size": p.stat().st_size, "sha256": sha256_file(p)}
+    return {
+        "schema": 1, "run_id": run_id, "status": status,
+        "agent_version": __version__,
+        "image_tag": os.environ.get("IMAGE_TAG", ""),
+        "finished_at": time.time(),
+        "started_at": state.get("started_at"),
+        "training": {k: state.get(k) for k in
+                     ("state", "step", "total", "epoch", "loss", "exit_code")},
+        "hardware": gpu_info(),
+        "artifacts": files,
+        "problems": problems or [],
+    }
+
+
+def finalize(run_id: str, outputs_dir: Path, state: dict, log_path: Path,
+             urls: dict[str, str]) -> dict:
+    """Gate → pack → PUT artifacts/manifest/log. Returns the manifest."""
+    ok, problems = gate(outputs_dir)
+    manifest = build_manifest(run_id, outputs_dir, state,
+                              "succeeded" if ok else "failed", problems)
+    mpath = Path(outputs_dir).parent / "manifest.json"
+    mpath.write_text(json.dumps(manifest, indent=1))
+
+    if ok:
+        tar = pack(outputs_dir, mpath.parent / "artifacts.tar.gz")
+        manifest["artifacts_tar_sha256"] = sha256_file(tar)
+        mpath.write_text(json.dumps(manifest, indent=1))
+        if urls.get("artifacts_put"):
+            upload(tar, urls["artifacts_put"])
+    if urls.get("manifest_put"):
+        upload(mpath, urls["manifest_put"])
+    if urls.get("log_put") and log_path.is_file():
+        upload(log_path, urls["log_put"])
+    (Path(outputs_dir).parent / "done.json").write_text(
+        json.dumps({"run_id": run_id, "status": manifest["status"]}))
+    return manifest

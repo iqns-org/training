@@ -15,6 +15,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import __version__
+from . import joblane
+from .finalize import finalize
 from .runner import Runner
 
 _app = FastAPI(title="trainer-agent", version=__version__)
@@ -107,8 +109,25 @@ def job_cancel(run_id: str):
     return {"run_id": run_id, "cancelling": runner.cancel()}
 
 
+def start_boot_job() -> None:
+    """Normal pod path: JOB_PAYLOAD_URL materialized at boot (SPEC §5)."""
+    global _active
+    run = joblane.boot_from_env()
+    if run is None:
+        return
+    runner = Runner(run["run_id"], run["command"],
+                    outputs_dir=run["outputs_dir"],
+                    post_hook=lambda state: finalize(
+                        run["run_id"], run["outputs_dir"], state,
+                        runner.log_path, run["urls"]))
+    runner.start()
+    _active = runner
+
+
 def main() -> int:
     import uvicorn
+
+    start_boot_job()
     port = int(os.environ.get("AGENT_PORT", "8000"))
     uvicorn.run(_app, host="0.0.0.0", port=port, log_level="warning")
     return 0

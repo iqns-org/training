@@ -21,12 +21,17 @@ EPOCH_RE = re.compile(r"epoch['\":= ]+(?P<epoch>[\d.]+)", re.I)
 
 
 class Runner:
-    """Owns exactly one active job (one pod = one job in v1)."""
+    """Owns exactly one active job (one pod = one job in v1).
+    `post_hook(state: dict)` runs after the terminal state is written —
+    this is where finalization (gate/pack/PUT) lives."""
 
-    def __init__(self, run_id: str, command: str, env: dict | None = None):
+    def __init__(self, run_id: str, command: str, env: dict | None = None,
+                 post_hook=None, outputs_dir: Path | None = None):
         self.run_id = run_id
         self.command = command
         self.env = env or {}
+        self.post_hook = post_hook
+        self.outputs_dir = outputs_dir or (WORKDIR / "outputs" / run_id)
         self.dir = WORKDIR / "runs" / run_id
         self.log_path = self.dir / "run.log"
         self.state_path = self.dir / "state.json"
@@ -83,6 +88,11 @@ class Runner:
         else:
             self._write_state(state="failed", exit_code=rc,
                               finished_at=time.time())
+        if self.post_hook is not None:
+            try:
+                self.post_hook(self.read_state())
+            except Exception as e:                      # noqa: BLE001
+                self._write_state(finalize_error=str(e)[:500])
 
     def _scrape(self, line: str):
         """Best-effort progress extraction from axolotl/tqdm output."""
