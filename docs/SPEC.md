@@ -402,7 +402,16 @@ repo/org, and `GITHUB_TOKEN` may push packages (org settings).
   package); P1 = S3 (rustfs) public route via tunnel + presigned lanes +
   `submit` wiring + `local` provider; P2 remainder = `gpuai` port + reconcile
   loop + fallback; P3/P4 as spec'd.
-- 2026-11-23 (c) — leak-remediation execution state (in progress):
+- 2026-11-23 (c) — leak-remediation execution state: **steps 1–3 DONE**.
+  Forgejo refs force-updated clean (main → `c76a775`, `v0.1.0` recut);
+  GitHub repo deleted/recreated by owner; the push-mirror fast-forwarded
+  the clean history on the Forgejo ref update — GitHub main verified:
+  18 top-level entries, **no `datasets`/`generate`**, shas match. Tag event
+  started `trainer-image` run #45036580727 (was: 0 runs while billing was
+  broken — discarded events never re-queue). Remaining: build completes →
+  record digest → `scripts/sync-image.sh v0.1.0` (ghcr → Forgejo registry) →
+  pod pull + `/healthz` smoke (P0 done when green).
+  (Original in-progress notes preserved below.)
   LOCAL DONE: `legacy-main` branch preserves old history; clean root commit
   (`7247db1`: 90 files, 0 data paths; user's staged edits + scaffold +
   corpora `.gitignore` protection) is now `main`; `v0.1.0` re-cut on it
