@@ -75,11 +75,19 @@ Four layers, one repo:
    exactly like the other MCPs (manifests live there, port 3022).
 
 Key decisions:
-- **Push artifacts, don't pull.** Pod PUTs `artifacts.tar.zst` + `manifest.json`
-  to pre-signed S3 URLs minted at submit time. Cluster S3 is currently
-  ClusterIP-only → expose `s3.quadra.<public_domain>` through the existing
-  cloudflared tunnel (public host table entry, `infra/deploy/app/ingress.yaml`).
-  Fallback lane: orchestrator GETs `/v1/jobs/<id>/artifacts/<file>` from the pod.
+- **Pod reachability is provider-dependent** (learned live on RunPod): the
+  REST v2 API exposes NO port mappings for pods — `ports` is spec-echo only;
+  direct access to the in-pod agent HTTP is via `ssh.direct` (startSsh +
+  published 22/tcp), which we treat as the **debug/exec lane**, not the
+  control plane. The durable control plane is therefore push-based:
+- **Push artifacts + mirror state, don't pull.** Agent PUTs `status.json`,
+  `run.log`, `artifacts.tar.gz` and `manifest.json` to pre-signed S3 URLs
+  (status periodically during the run, everything on completion). The
+  orchestrator polls those objects and signals cancellation through a small
+  `control.json` the agent GETs — zero inbound connectivity to any pod,
+  works on every provider, survives spot-eviction observation. When a
+  provider does give a reachable `base_url` (GPU.ai's host:port), the agent
+  REST API serves live status/logs interactively as an accelerator.
 - **Datasets go the same way in**: expand → hash → `PUT s3://quadra-ml/datasets/…`
   → pre-signed GET URL handed to the pod. Pods carry zero long-lived credentials.
 - **Image distribution**: canonical registry is the **cluster Forgejo**
@@ -501,11 +509,18 @@ Retagging (`git push --force v0.1.0`) is the deliberate rebuild lever.
   Hub's anonymous-pull rate limit on shared runner IPs before the build)
   respectively; the tag-only trigger + failure-only probe + concurrency
   group (commit a27a4f8) fixed all three.
-  OPEN before pod smoke (P0 done-condition): the `trainer` package was
-  created PRIVATE (org default) — anonymous manifest fetch 403. Pick one:
-  (a) flip package → public (zero provider plumbing; image carries no
-  secrets), or (b) fine-grained PAT read:packages → register per provider
-  (RunPod `POST /v2/registries`, GPU.ai `gpu registry-credentials`).
-  Then: pod launch on the pinned digest + `/healthz`; then
-  `scripts/sync-image.sh` into the Forgejo registry (needs skopeo install +
-  Forgejo registry push creds — workstation has none cached).
+- 2026-11-23 (e) — ✅ **P0 CLOSED — pod smoke green.** Package flipped
+  public; live pod (`pstwe4uu55my12`, SECURE NVIDIA A40 $0.59/hr, ~2 min ≈
+  $0.02) on digest `sha256:d1f766d2…` pulled from ghcr and the agent
+  answered: `/healthz → {"ok":true,"version":"0.1.0"}`, `/v1/info →
+  python 3.12.15, gpu "NVIDIA A40"` (nvidia-smi works in-image), bearer-auth
+  enforced, terminated + `doctor` clean. Because RunPod v2 pods have NO
+  inbound lane (no port mappings in REST, logs 403 on the scoped key, our
+  image has no sshd), the evidence rode a **push lane**: agent self-reported
+  via PUT to a cloudflared quick-tunnel → workstation capture server —
+  precisely the P1 S3-return architecture at toy scale. Reproducible:
+  `scripts/smoke-p0-report.py` (TRAINER_IMAGE overridable; ladders cheapest
+  10 offers across tiers — community availability flags proved unreliable
+  under churn, create-400s are the ground truth). Remaining P0 sub-item:
+  `scripts/sync-image.sh` into the Forgejo registry (skopeo + registry creds
+  — needed for the nano0/local lane, P1).
