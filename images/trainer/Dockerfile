@@ -9,9 +9,18 @@
 ARG AXOLOTL_IMAGE=axolotlai/axolotl:main-py3.12-cu130-2.13.0@sha256:dd4a17340e15ef380f5969be22737c0603c2aa116282dbf0c4978df2bf9d88dc
 FROM ${AXOLOTL_IMAGE}
 
-# Agent deps kept tiny; the conda env in the base is first on PATH.
-RUN python -m pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.30" \
-        "httpx>=0.27" "pydantic>=2.7"
+# Agent deps live in their OWN venv: the axolotl base is a uv-managed venv
+# without pip, and fastapi/pydantic must never perturb the training env.
+RUN set -eux; \
+    if command -v uv >/dev/null 2>&1; then \
+        uv venv /opt/agent-venv && \
+        uv pip install --python /opt/agent-venv/bin/python \
+            "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" "pydantic>=2.7"; \
+    else \
+        python -m venv /opt/agent-venv && \
+        /opt/agent-venv/bin/pip install --no-cache-dir \
+            "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" "pydantic>=2.7"; \
+    fi
 
 COPY agent/trainer_agent /opt/trainer_agent/trainer_agent
 ENV PYTHONPATH=/opt/trainer_agent \
@@ -32,4 +41,5 @@ WORKDIR /work
 EXPOSE 8000
 
 # Single-GPU training fits one agent process supervising one job (SPEC §5).
-ENTRYPOINT ["python", "-m", "trainer_agent.app"]
+# Interpreter is the agent venv; PYTHONPATH resolves trainer_agent.
+ENTRYPOINT ["/opt/agent-venv/bin/python", "-m", "trainer_agent.app"]
