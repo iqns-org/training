@@ -50,11 +50,8 @@ def test_render_config_rewrites_paths(recipe):
 def test_submit_dry_stages_objects(tmp_path, monkeypatch, fake_s3, recipe):
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
     (tmp_path / "tmp").mkdir()
-    (tmp_path / "tmp/queer.jsonl").write_text("\n".join('{"m":1}' * 60))
-    monkeypatch.setattr(dispatch, "prepare_dataset",
-                        lambda domain, mini=False:
-                        (f"datasets/{domain}/abc/queer.jsonl",
-                         tmp_path / "tmp/queer.jsonl", "0" * 64))
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join(['{"m":1}'] * 60))
+    monkeypatch.setattr(dispatch.subprocess, "run", lambda *a, **k: None)
     res = dispatch.submit("queer", recipe, mini=True, dry=True)
     assert not res.get("error"), res
     assert res.get("dry")
