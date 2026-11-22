@@ -33,6 +33,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Diagnostics ride in check-run annotations even when GitHub's log
+      # blobs 404 (observed twice): emit the base image's toolchain facts.
+      - name: Probe base image
+        env:
+          BASE: axolotlai/axolotl:main-py3.12-cu130-2.13.0
+        run: |
+          docker pull -q "$BASE"
+          out="$(docker run --rm --entrypoint sh "$BASE" -c '
+            echo "PATH=$PATH";
+            echo "python=$(command -v python) $(python -V 2>&1)";
+            echo "VIRTUAL_ENV=${VIRTUAL_ENV:-unset}";
+            echo "uv=$(command -v uv || ls /usr/local/bin/uv 2>/dev/null || echo none)";
+            (command -v uv || /usr/local/bin/uv) --version 2>/dev/null || true;
+            echo "pip=$(python -m pip -V 2>&1 | head -1)";
+            ls /workspace/axolotl-venv/bin 2>/dev/null | head -15' 2>&1)"
+          echo "$out" >> "$GITHUB_STEP_SUMMARY"
+          echo "$out" | while IFS= read -r l; do echo "::notice::$l"; done
+
       - name: Build & push
         id: build
         uses: docker/build-push-action@v6

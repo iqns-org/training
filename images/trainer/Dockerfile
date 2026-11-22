@@ -9,21 +9,27 @@
 ARG AXOLOTL_IMAGE=axolotlai/axolotl:main-py3.12-cu130-2.13.0@sha256:dd4a17340e15ef380f5969be22737c0603c2aa116282dbf0c4978df2bf9d88dc
 FROM ${AXOLOTL_IMAGE}
 
-# Agent deps live in their OWN venv: the axolotl base is a uv-managed venv
-# without pip, and fastapi/pydantic must never perturb the training env.
-RUN set -eux; \
-    if command -v uv >/dev/null 2>&1; then \
-        uv venv /opt/agent-venv && \
-        uv pip install --python /opt/agent-venv/bin/python \
-            "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" "pydantic>=2.7"; \
+# Agent deps live in an ISOLATED lib dir on PYTHONPATH. The axolotl base is
+# uv-managed (venv ships WITHOUT pip; first build proved `python -m pip`
+# dead), and fastapi/uvicorn must never touch the training venv — so install
+# into /opt/agent-libs with uv when present (VIRTUAL_ENV unset for the call),
+# else plain pip, else fail loudly.
+RUN set -u; \
+    UVBIN="$(command -v uv || true)"; \
+    [ -n "$UVBIN" ] || { [ -x /usr/local/bin/uv ] && UVBIN=/usr/local/bin/uv; }; \
+    if [ -n "$UVBIN" ]; then \
+        echo "agent-deps: uv at $UVBIN"; \
+        env -u VIRTUAL_ENV "$UVBIN" pip install --target /opt/agent-libs \
+            --python "$(command -v python)" \
+            "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27"; \
     else \
-        python -m venv /opt/agent-venv && \
-        /opt/agent-venv/bin/pip install --no-cache-dir \
-            "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27" "pydantic>=2.7"; \
+        echo "agent-deps: no uv, trying pip"; \
+        python -m pip install --target /opt/agent-libs --ignore-installed \
+            "fastapi>=0.115" "uvicorn[standard]>=0.30" "httpx>=0.27"; \
     fi
 
 COPY agent/trainer_agent /opt/trainer_agent/trainer_agent
-ENV PYTHONPATH=/opt/trainer_agent \
+ENV PYTHONPATH=/opt/agent-libs:/opt/trainer_agent \
     PYTHONUNBUFFERED=1 \
     AGENT_PORT=8000 \
     AGENT_WORKDIR=/work \
@@ -41,5 +47,5 @@ WORKDIR /work
 EXPOSE 8000
 
 # Single-GPU training fits one agent process supervising one job (SPEC §5).
-# Interpreter is the agent venv; PYTHONPATH resolves trainer_agent.
-ENTRYPOINT ["/opt/agent-venv/bin/python", "-m", "trainer_agent.app"]
+# Base interpreter; PYTHONPATH carries agent code + isolated deps.
+ENTRYPOINT ["python", "-m", "trainer_agent.app"]
