@@ -489,3 +489,23 @@ Retagging (`git push --force v0.1.0`) is the deliberate rebuild lever.
   4. Set `CORPORA_DIR=../corpora` in `.env`; `src/expand.py` resolves data
      from it (unset = legacy in-repo layout, still intact until P2 removes
      it). See SPEC §4b for the durable design.
+- 2026-11-23 (d) — 🎉 **trainer image built & pushed by CI** (run
+  45038432281, commit `a27a4f8`, all steps green, 17 min on the free amd64
+  runner; probe step correctly skipped):
+  `ghcr.io/iqns-org/trainer@sha256:d1f766d24d62274e770fd8913c3ffe612b87c115d0cd59c318ca60d5c5d8bd36`
+  (also `:sha-a27a4f89066cfd431750a6b8e3481b39486075ec`). Lesson applied the
+  hard way: a second run for the same tag succeeded later too, so `v0.1.0`
+  on ghcr is ambiguous — **launch specs pin the digest (or `sha-<commit>`),
+  never the moving tag.** CI iteration cost lessons: runs #1–#3 failed on
+  (pip-less uv base), (venv strategy), and (always-on probe hitting Docker
+  Hub's anonymous-pull rate limit on shared runner IPs before the build)
+  respectively; the tag-only trigger + failure-only probe + concurrency
+  group (commit a27a4f8) fixed all three.
+  OPEN before pod smoke (P0 done-condition): the `trainer` package was
+  created PRIVATE (org default) — anonymous manifest fetch 403. Pick one:
+  (a) flip package → public (zero provider plumbing; image carries no
+  secrets), or (b) fine-grained PAT read:packages → register per provider
+  (RunPod `POST /v2/registries`, GPU.ai `gpu registry-credentials`).
+  Then: pod launch on the pinned digest + `/healthz`; then
+  `scripts/sync-image.sh` into the Forgejo registry (needs skopeo install +
+  Forgejo registry push creds — workstation has none cached).
