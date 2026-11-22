@@ -1,0 +1,17 @@
+secrets
+.env
+tmp
+.venv
+outputs
+.prepared
+__pycache__/
+*.pyc
+.pytest_cache/
+state/
+*.egg-info/
+build/
+dist/
+
+# corpus data lives in quadra/corpora (SPEC §4b) — do not track here
+datasets/
+generate/

@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
+
+usage() {
+  echo "Usage: $0 <domain>" >&2
+  exit 1
+}
+
+if [ "$#" -ne 1 ]; then
+  usage
+fi
+
+domain="$1"
+if [ -z "$domain" ]; then
+  usage
+fi
+
+app="axolotl-finetuning"
+
+env_file="${ROOT_DIR}/.env"
+if [ -f "$env_file" ]; then
+  set -a
+  . "$env_file"
+  set +a
+fi
+
+if ! command -v gpu >/dev/null 2>&1; then
+  echo "Error: 'gpu' CLI is not installed or not on PATH." >&2
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "Error: 'jq' is required to parse GPU deployment metadata." >&2
+  exit 1
+fi
+
+job_file="${ROOT_DIR}/tmp/gpuai_${app}_${domain}.job"
+if [ -f "$job_file" ]; then
+  gpu_id="$(jq -r '.instance.id // empty' "$job_file" 2>/dev/null || true)"
+else
+  gpu_id=""
+fi
+
+if [ -z "$gpu_id" ]; then
+  gpu_instances="$(gpu instances list -o json 2>/dev/null || true)"
+  if [ -z "$gpu_instances" ]; then
+    echo "Error: no GPU instance metadata was found for domain '$domain'." >&2
+    exit 1
+  fi
+
+  gpu_id="$(echo "$gpu_instances" | jq -r --arg app "$app" --arg domain "$domain" '.[] | select(.name == ($app + "-" + $domain)) | .id' | head -n 1)"
+fi
+
+if [ -z "$gpu_id" ]; then
+  echo "Error: no remote instance found for domain '$domain'." >&2
+  exit 1
+fi
+
+if ! gpu instances list -o json 2>/dev/null | jq -e --arg id "$gpu_id" '.[] | select(.id == $id and (.status // "") == "running")' >/dev/null 2>&1; then
+  echo "Error: saved instance $gpu_id is not active anymore; the remote job has been torn down or never finished." >&2
+  exit 1
+fi
+
+wait_seconds=30
+max_wait=600
+elapsed=0
+while true; do
+  gpu_instances="$(gpu instances list -o json 2>/dev/null || true)"
+  if [ -n "$gpu_instances" ] && echo "$gpu_instances" | jq -e --arg id "$gpu_id" '.[] | select(.id == $id)' >/dev/null 2>&1; then
+    break
+  fi
+
+  if [ "$elapsed" -ge "$max_wait" ]; then
+    echo "Error: instance $gpu_id did not become visible within ${max_wait}s; cannot inspect remote outputs." >&2
+    exit 1
+  fi
+
+  echo "Waiting for instance $gpu_id to be visible (${elapsed}s/${max_wait}s)..."
+  sleep 10
+  elapsed=$((elapsed + 10))
+done
+
+ssh_connection="$(echo "$gpu_instances" | jq -r --arg id "$gpu_id" '.[] | select(.id == $id) | .connection.ssh_command // empty')"
+remote_user="$(echo "$gpu_instances" | jq -r --arg id "$gpu_id" '.[] | select(.id == $id) | (.connection.user // .connection.username // .connection.app_user // empty)')"
+remote_host="$(echo "$gpu_instances" | jq -r --arg id "$gpu_id" '.[] | select(.id == $id) | (.connection.hostname // .connection.host // .hostname // .host // empty)')"
+remote_port="$(echo "$gpu_instances" | jq -r --arg id "$gpu_id" '.[] | select(.id == $id) | ((.connection.port // .port) | tostring) // empty')"
+
+if [ -n "$ssh_connection" ]; then
+  if [[ "$ssh_connection" =~ -p[[:space:]]+([0-9]+)[[:space:]]+([^@[:space:]]+)@([A-Za-z0-9.-]+) ]]; then
+    remote_port="${BASH_REMATCH[1]}"
+    remote_user="${BASH_REMATCH[2]}"
+    remote_host="${BASH_REMATCH[3]}"
+  elif [[ "$ssh_connection" =~ ssh[[:space:]]+.*([^@[:space:]]+)@([A-Za-z0-9.-]+) ]]; then
+    remote_user="${BASH_REMATCH[1]}"
+    remote_host="${BASH_REMATCH[2]}"
+    if [[ "$ssh_connection" =~ -p[[:space:]]+([0-9]+) ]]; then
+      remote_port="${BASH_REMATCH[1]}"
+    fi
+  fi
+fi
+
+if [ -z "$remote_host" ] || [ -z "$remote_port" ] || [ -z "$remote_user" ]; then
+  echo "Error: instance $gpu_id does not contain usable SSH metadata yet." >&2
+  exit 1
+fi
+
+ssh_key_path="${ROOT_DIR}/secrets/gpuai"
+if [ ! -f "$ssh_key_path" ]; then
+  echo "Error: SSH private key not found at $ssh_key_path" >&2
+  exit 1
+fi
+
+ssh_opts=(-o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i "$ssh_key_path" -p "$remote_port")
+rsync_rsh="ssh -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i ${ssh_key_path} -p ${remote_port}"
+ssh_target="${remote_user}@${remote_host}"
+
+if ! ssh "${ssh_opts[@]}" "$ssh_target" "test -f ~/axolotl-job-success && test -d ~/outputs && find ~/outputs -mindepth 1 -maxdepth 3 -type f | head -n 1 | grep -q ." >/dev/null 2>&1; then
+  echo "Error: job for '$domain' is not finished yet or no output artifacts exist on the remote instance." >&2
+  exit 1
+fi
+
+local_out="${ROOT_DIR}/outputs/${domain}"
+mkdir -p "$local_out"
+# Keep only the final saved adapter/model artifacts; checkpoint snapshots are transient and not needed.
+find "$local_out" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+rsync -aqz --progress \
+  --filter='- /checkpoint-*' \
+  --filter='- /checkpoint-*/**' \
+  --filter='- /runs/**' \
+  --filter='- /logs/**' \
+  -e "$rsync_rsh" "${ssh_target}:~/outputs/" "${local_out}/"
+
+find "$local_out" -maxdepth 2 -type f | sort | sed "s#^#/#" | head -n 20 || true
+
+echo "Downloaded final remote artifacts for '$domain' to $local_out (checkpoint snapshots excluded)"

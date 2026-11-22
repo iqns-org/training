@@ -1,0 +1,24 @@
+{
+  "api_key": "{{env.GROQ_AI_API_KEY}}",
+  "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+  "model": "openai/gpt-oss-120b",
+  "temperature": 0.2,
+  "max_tokens": 8192,
+  "top_p": 1,
+  "reasoning_effort": "medium",
+  "format": "jsonl",
+  "output": "tmp/llm-ir-generated",
+  "validator": "./generate/iterations/tasks.jsonl",
+  "inject":{
+    "domain": "./generate/iterations/domains.jsonl",
+    "case": "./generate/iterations/cases.jsonl",
+    "turn": "./generate/iterations/tasks.jsonl"
+  },
+  "prompts": [
+    "./generate/prompts/generator/system.md",
+    "./generate/prompts/generator/cases.md",
+    "./generate/prompts/generator/ebnf.md",
+    "./generate/prompts/generator/tasks.md",
+    "./generate/prompts/generator/instruct.md"
+  ]
+}

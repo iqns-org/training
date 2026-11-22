@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Queer Model Chat</title>
+    <style>
+      :root {
+        --bg: #111827;
+        --panel: #1f2937;
+        --panel-2: #0f172a;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --accent: #8b5cf6;
+        --accent-2: #ec4899;
+        --border: rgba(255,255,255,0.08);
+        --danger: #ef4444;
+      }
+
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: linear-gradient(180deg, var(--bg), var(--panel-2));
+        color: var(--text);
+        font-family: Arial, Helvetica, sans-serif;
+      }
+
+      body {
+        display: flex;
+        align-items: stretch;
+        justify-content: center;
+        padding: 24px;
+      }
+
+      .app {
+        width: min(1100px, 100%);
+        background: rgba(17, 24, 39, 0.9);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 22px 60px rgba(0,0,0,0.35);
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        min-height: 700px;
+      }
+
+      .sidebar {
+        background: rgba(15, 23, 42, 0.95);
+        border-right: 1px solid var(--border);
+        padding: 18px 14px;
+      }
+
+      .sidebar-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 14px;
+        gap: 10px;
+      }
+
+      .sidebar-header h2 {
+        margin: 0;
+        font-size: 0.95rem;
+        color: var(--muted);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .new-chat-btn, .delete-btn, .send-btn {
+        border: none;
+        border-radius: 10px;
+        color: white;
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      .new-chat-btn {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        padding: 8px 12px;
+        font-size: 0.82rem;
+      }
+
+      .chat-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .chat-item {
+        width: 100%;
+        text-align: left;
+        border: 1px solid var(--border);
+        background: rgba(255,255,255,0.02);
+        color: var(--text);
+        border-radius: 12px;
+        padding: 10px 12px;
+        cursor: pointer;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .chat-item.active {
+        background: rgba(139, 92, 246, 0.18);
+        border-color: rgba(139, 92, 246, 0.5);
+      }
+
+      .main {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+      }
+
+      .header {
+        padding: 20px 22px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(139, 92, 246, 0.12);
+      }
+
+      .header h1 {
+        margin: 0;
+        font-size: 1.2rem;
+        letter-spacing: 0.02em;
+      }
+
+      .messages {
+        padding: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: rgba(15, 23, 42, 0.9);
+        min-height: 420px;
+        overflow-y: auto;
+      }
+
+      .message-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+      }
+
+      .message-row.user {
+        justify-content: flex-end;
+      }
+
+      .message {
+        max-width: min(78%, 600px);
+        padding: 12px 14px;
+        border-radius: 14px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        position: relative;
+      }
+
+      .message.user {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: white;
+      }
+
+      .message.model {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid var(--border);
+      }
+
+      .delete-btn {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        padding: 5px 8px;
+        font-size: 0.72rem;
+        margin-top: 6px;
+      }
+
+      .delete-btn:hover {
+        color: var(--danger);
+        border-color: rgba(239, 68, 68, 0.6);
+      }
+
+      .composer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 12px;
+        padding: 18px;
+        border-top: 1px solid var(--border);
+        background: rgba(31, 41, 55, 0.85);
+      }
+
+      textarea {
+        resize: vertical;
+        min-height: 80px;
+        max-height: 220px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(17, 24, 39, 0.9);
+        color: var(--text);
+        padding: 12px 14px;
+        font-size: 1rem;
+      }
+
+      .send-btn {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        padding: 12px 18px;
+        font-size: 1rem;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h2>Chats</h2>
+          <button id="new-chat" class="new-chat-btn" type="button">New chat</button>
+        </div>
+        <div class="chat-list" id="chat-list"></div>
+      </aside>
+
+      <main class="main">
+        <div class="header">
+          <h1 id="chat-title">Queer Model Chat</h1>
+        </div>
+        <div class="messages" id="messages"></div>
+        <div class="composer">
+          <textarea id="prompt" placeholder="Type your prompt..."></textarea>
+          <button id="send" class="send-btn" type="button">Generate</button>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      const STORAGE_KEY = 'queer-chat-history-v1';
+      const messagesEl = document.getElementById('messages');
+      const promptEl = document.getElementById('prompt');
+      const sendBtn = document.getElementById('send');
+      const chatListEl = document.getElementById('chat-list');
+      const newChatBtn = document.getElementById('new-chat');
+      const chatTitleEl = document.getElementById('chat-title');
+
+      const API_PORTS = [8000, 8001, 8002, 8003, 8080];
+      let apiBaseUrl = null;
+      let conversations = loadConversations();
+      let activeChatId = null;
+
+      function makeId() {
+        if (window.crypto && crypto.randomUUID) {
+          return crypto.randomUUID();
+        }
+        return `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      function defaultConversation() {
+        return {
+          id: makeId(),
+          title: 'New chat',
+          messages: []
+        };
+      }
+
+      function loadConversations() {
+        try {
+          const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+          if (Array.isArray(stored) && stored.length > 0) {
+            return stored;
+          }
+        } catch (error) {
+          console.warn('Failed to load saved chats:', error);
+        }
+
+        const starter = defaultConversation();
+        return [starter];
+      }
+
+      function persistConversations() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
+      }
+
+      function getActiveConversation() {
+        if (!activeChatId) {
+          activeChatId = conversations[0]?.id || null;
+        }
+        return conversations.find((chat) => chat.id === activeChatId) || conversations[0] || null;
+      }
+
+      function updateChatTitle(chat) {
+        const firstUserMessage = (chat.messages || []).find((message) => message.role === 'user' && message.text?.trim());
+        if (firstUserMessage) {
+          const title = firstUserMessage.text.trim();
+          chat.title = title.length > 30 ? `${title.slice(0, 30)}…` : title;
+        } else {
+          chat.title = 'New chat';
+        }
+      }
+
+      function renderChatList() {
+        chatListEl.innerHTML = '';
+        conversations.forEach((chat) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = `chat-item ${chat.id === activeChatId ? 'active' : ''}`;
+          button.textContent = chat.title || 'New chat';
+          button.addEventListener('click', () => {
+            activeChatId = chat.id;
+            render();
+          });
+          chatListEl.appendChild(button);
+        });
+      }
+
+      function renderMessages() {
+        const chat = getActiveConversation();
+        messagesEl.innerHTML = '';
+
+        if (!chat) {
+          return;
+        }
+
+        chat.messages.forEach((message) => {
+          const row = document.createElement('div');
+          row.className = `message-row ${message.role}`;
+
+          const bubble = document.createElement('div');
+          bubble.className = `message ${message.role}`;
+          bubble.textContent = message.text;
+
+          row.appendChild(bubble);
+
+          if (message.role === 'user' || message.role === 'model') {
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.className = 'delete-btn';
+            deleteBtn.textContent = 'Delete';
+            deleteBtn.addEventListener('click', () => deleteMessage(message.id));
+            row.appendChild(deleteBtn);
+          }
+
+          messagesEl.appendChild(row);
+        });
+
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        chatTitleEl.textContent = chat.title || 'Queer Model Chat';
+      }
+
+      function render() {
+        conversations = conversations.map((chat) => {
+          updateChatTitle(chat);
+          return chat;
+        });
+        persistConversations();
+        renderChatList();
+        renderMessages();
+      }
+
+      function ensureActiveChat() {
+        if (!conversations.length) {
+          const starter = defaultConversation();
+          conversations.push(starter);
+          activeChatId = starter.id;
+        }
+        if (!activeChatId) {
+          activeChatId = conversations[0].id;
+        }
+      }
+
+      function addMessageToActive(role, text) {
+        ensureActiveChat();
+        const chat = getActiveConversation();
+        if (!chat) {
+          return;
+        }
+
+        chat.messages.push({
+          id: makeId(),
+          role,
+          text,
+        });
+        updateChatTitle(chat);
+        persistConversations();
+        render();
+      }
+
+      function deleteMessage(messageId) {
+        const chat = getActiveConversation();
+        if (!chat) return;
+
+        chat.messages = (chat.messages || []).filter((message) => message.id !== messageId);
+        // if (!chat.messages.length) {
+        //   chat.messages = [{
+        //     id: makeId(),
+        //     role: 'model',
+        //     text: ''
+        //   }];
+        // }
+
+        updateChatTitle(chat);
+        persistConversations();
+        render();
+      }
+
+      function createNewChat() {
+        const chat = defaultConversation();
+        conversations.unshift(chat);
+        activeChatId = chat.id;
+        render();
+        promptEl.focus();
+      }
+
+      async function detectApiBaseUrl() {
+        for (const port of API_PORTS) {
+          const healthUrl = `http://localhost:${port}/health`;
+          try {
+            const response = await fetch(healthUrl, { method: 'GET', signal: AbortSignal.timeout(1000) });
+            if (response.ok) {
+              apiBaseUrl = `http://localhost:${port}`;
+              return apiBaseUrl;
+            }
+          } catch (error) {
+            // Try the next port.
+          }
+        }
+
+        apiBaseUrl = 'http://localhost:8000';
+        return apiBaseUrl;
+      }
+
+      async function sendPrompt() {
+        const text = promptEl.value.trim();
+        if (!text) return;
+
+        ensureActiveChat();
+        const chat = getActiveConversation();
+        chat.messages.push({ id: makeId(), role: 'user', text });
+        updateChatTitle(chat);
+        persistConversations();
+        render();
+
+        promptEl.value = '';
+        sendBtn.disabled = true;
+
+        try {
+          const baseUrl = apiBaseUrl || await detectApiBaseUrl();
+          const response = await fetch(`${baseUrl}/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messages: chat.messages,
+              max_new_tokens: 180,
+              temperature: 0.7,
+              top_p: 0.95,
+              do_sample: true
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+          const result = data.text || 'No response';
+          chat.messages.push({ id: makeId(), role: 'model', text: result });
+          updateChatTitle(chat);
+          persistConversations();
+          render();
+        } catch (error) {
+          const fallback = apiBaseUrl || 'http://localhost:8000';
+          chat.messages.push({
+            id: makeId(),
+            role: 'model',
+            text: `Error contacting the model server. Make sure the local API is running. Tried: ${fallback}`
+          });
+          updateChatTitle(chat);
+          persistConversations();
+          render();
+          console.error(error);
+        } finally {
+          sendBtn.disabled = false;
+          promptEl.focus();
+        }
+      }
+
+      newChatBtn.addEventListener('click', createNewChat);
+      sendBtn.addEventListener('click', sendPrompt);
+      promptEl.addEventListener('keydown', (event) => {
+        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+          sendPrompt();
+        }
+      });
+
+      ensureActiveChat();
+      render();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+# Canonical query example (EBNF.md section 4)
+WORLD {
+    alice owns car1 .
+    car1 rdf:type Car .
+}
+
+GOAL {
+    my:?car rdf:type Car .
+}
+
+MATCH WORLD {
+    alice owns my:?car .
+    my:?car rdf:type Car .
+} AS my:?result.
+
+RETURN my:?result.

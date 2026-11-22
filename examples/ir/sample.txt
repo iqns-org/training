@@ -1,0 +1,37 @@
+# BEFORE
+
+PREFIX my: <http://example.org/entity/>.
+PREFIX ai: <http://example.org/property/>.
+
+WORLD {
+    my:car1 ai:engineState my:Off .
+}
+
+# PROGRAM
+
+MATCH WORLD {
+    my:car1 ai:engineState my:?state .
+} AS my:?snapshot.
+
+BRANCH {
+    WHEN my:?state = my:Off THEN {
+        WRITE WORLD {
+            my:car1 ai:engineState my:Running .
+        }.
+    }
+    ELSE {
+        WRITE WORLD {
+            my:car1 ai:engineState my:Idle .
+        }.
+    }
+}
+
+RETURN my:car1.
+
+# AFTER
+
+WORLD {
+    my:car1 ai:engineState my:Running .
+}
+
+# RETURNED my:car1

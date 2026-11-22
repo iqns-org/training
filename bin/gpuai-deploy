@@ -1,0 +1,527 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
+
+next_sequential_dir() {
+  local parent_dir="$1"
+  local stem="$2"
+  local idx=1
+  local candidate
+
+  mkdir -p "$parent_dir"
+  while :; do
+    candidate="${parent_dir}/$(printf '%03d' "$idx")-${stem}"
+    if [ ! -e "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+    idx=$((idx + 1))
+  done
+}
+
+extract_gpu_json_payload() {
+  python3 -c '
+import json, sys
+text = sys.stdin.read()
+start = text.find("{")
+if start == -1:
+    raise SystemExit(1)
+for idx in range(start, len(text)):
+    try:
+        obj, end = json.JSONDecoder().raw_decode(text[idx:])
+    except json.JSONDecodeError:
+        continue
+    print(json.dumps(obj, separators=(",", ":")))
+    raise SystemExit(0)
+raise SystemExit(1)
+'
+}
+
+instance_is_active() {
+  local status="${1:-unknown}"
+  status="${status,,}"
+  case "$status" in
+    running|allocating|pending|provisioning|booting|starting|restarting|creating|unknown)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+instance_is_terminal_state() {
+  local status="${1:-unknown}"
+  status="${status,,}"
+  case "$status" in
+    error|failed|failed_to_create|failed_to_start|terminated|deleted|stopped|cancelled|canceled)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_gpu_deploy_json() {
+  local output
+  set +e
+  output="$(run_gpu_deploy 2>&1)"
+  local status=$?
+  set -e
+  if [ "$status" -ne 0 ]; then
+    printf '%s\n' "$output"
+    return "$status"
+  fi
+  printf '%s\n' "$output" | extract_gpu_json_payload
+}
+
+main() {
+  local quick=0
+  local positional=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -q|--quick)
+        quick=1
+        ;;
+      -h|--help)
+        echo "Usage: $0 [-q|--quick] <domain> [model] [strategy]"
+        echo "  -q, --quick  skip uploads and jump straight to remote axolotl execution"
+        exit 0
+        ;;
+      --)
+        shift
+        positional+=("$@")
+        break
+        ;;
+      -*)
+        echo "Unknown option: $1" >&2
+        echo "Usage: $0 [-q|--quick] <domain> [model] [strategy]" >&2
+        exit 1
+        ;;
+      *)
+        positional+=("$1")
+        ;;
+    esac
+    shift
+  done
+
+  set -- "${positional[@]}"
+
+  local env_file="${ROOT_DIR}/.env"
+  if [ -f "$env_file" ]; then
+    set -a
+    . "$env_file"
+    set +a
+  fi
+
+  local domain="${1:-}"
+  if [ -z "$domain" ]; then
+    echo "Usage: $0 [-q|--quick] <domain> [model] [strategy]"
+    exit 1
+  fi
+
+app="axolotl-finetuning"
+model="${2:-SmolLM2-360M-Instruct}"
+strategy="${3:-qlora}"
+
+find_config_file() {
+  local domain_dir="$1"
+  local model_name="$2"
+  local strategy_name="$3"
+  local base_model_name="${model_name%-Instruct}"
+
+  local candidates=(
+    "${model_name}-${strategy_name}.yaml"
+    "${base_model_name}-${strategy_name}.yaml"
+    "${model_name}.yaml"
+    "${base_model_name}.yaml"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [ -f "${domain_dir}/${candidate}" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  for candidate in "${domain_dir}"/*.yaml; do
+    [ -e "$candidate" ] || continue
+    local name
+    name="$(basename "$candidate")"
+    if [[ "$name" == "${model_name}"* ]] || [[ "$name" == "${base_model_name}"* ]] || [[ "$name" == *"-${strategy_name}.yaml" ]]; then
+      echo "$name"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+if ! command -v gpu >/dev/null 2>&1; then
+  echo "Error: 'gpu' CLI is not installed or not on PATH." >&2
+  exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "Error: 'jq' is required to parse GPU deployment metadata." >&2
+  exit 1
+fi
+
+require_final_artifacts() {
+  local dir="$1"
+  local required=(
+    "adapter_config.json"
+    "adapter_model.safetensors"
+    "config.json"
+    "tokenizer.json"
+    "tokenizer_config.json"
+  )
+
+  if [ ! -d "$dir" ]; then
+    echo "Error: expected model directory '$dir' does not exist." >&2
+    return 1
+  fi
+
+  if find "$dir" -mindepth 1 -maxdepth 2 -type d -name 'checkpoint-*' | grep -q .; then
+    echo "Error: checkpoint snapshots were detected in '$dir'; refusing to terminate the instance." >&2
+    return 1
+  fi
+
+  for file in "${required[@]}"; do
+    if [ ! -f "$dir/$file" ]; then
+      echo "Error: required final artifact '$file' is missing from '$dir'." >&2
+      return 1
+    fi
+  done
+
+  echo "Verified final artifact set in '$dir'"
+  return 0
+}
+
+run_gpu_deploy() {
+  local output
+  set +e
+  output="$(gpu deploy "$app" --name "${app}-${domain}" --ssh-key-id "$key_id" 2>&1)"
+  local status=$?
+  set -e
+  printf '%s\n' "$output"
+  return "$status"
+}
+
+key_id="$(gpu keys list -o table 2>/dev/null | awk -v host="$(hostname)" '$0 ~ host {print $1; exit}')"
+if [ -z "$key_id" ]; then
+  echo "No GPU key found for host $(hostname)" >&2
+  exit 1
+fi
+
+echo "** train: $model on $domain dataset"
+echo "** preparing: $app --name ${app}-${domain} --ssh-key-id ${key_id}"
+
+if [ "$quick" -eq 0 ]; then
+  echo "** expanding: '$domain' data"
+  mkdir -p "./tmp"
+  ./bin/prepare-domain "$domain" >/dev/null
+fi
+
+# Job file for the GPU deployment
+gpu_job_file="./tmp/gpuai_${app}_${domain}.job"
+
+if [ -f "${gpu_job_file}" ]; then
+  gpu_info="$(cat "${gpu_job_file}")"
+  if ! cleaned_gpu_info="$(printf '%s\n' "$gpu_info" | extract_gpu_json_payload 2>/dev/null)"; then
+    echo "Saved GPU job contains no valid JSON payload; creating a fresh deployment."
+    gpu_info=""
+    rm -f "$gpu_job_file"
+  else
+    gpu_info="$cleaned_gpu_info"
+  fi
+  saved_gpu_id="$(echo "$gpu_info" | jq -r '.instance.id // empty' 2>/dev/null || true)"
+  if [ -n "$saved_gpu_id" ]; then
+    gpu_instances="$(gpu instances list -o json 2>/dev/null || true)"
+    current_record="$(echo "$gpu_instances" | jq -c --arg id "$saved_gpu_id" '.[] | select(.id == $id)' 2>/dev/null || true)"
+    current_status="$(echo "$current_record" | jq -r '.status // "unknown"' 2>/dev/null || echo unknown)"
+    if [ -z "$current_record" ] || ! instance_is_active "$current_status"; then
+      echo "Saved GPU job for $saved_gpu_id is stale or no longer active; creating a fresh deployment."
+      gpu_info=""
+      rm -f "$gpu_job_file"
+    fi
+  fi
+fi
+
+if [ -z "${gpu_info:-}" ]; then
+  if ! gpu_info="$(run_gpu_deploy_json)"; then
+    available_templates="$(gpu templates list -o json 2>/dev/null || true)"
+    if [ -z "$available_templates" ] || [ "$available_templates" = "[]" ]; then
+      echo "Hint: no GPU deploy templates are available for this account or session. Run 'gpu login' and verify '${app}' exists for your workspace." >&2
+    fi
+    exit 1
+  fi
+  if [ -z "$gpu_info" ]; then
+    echo "Error: GPU deployment failed or returned no JSON payload." >&2
+    exit 1
+  fi
+  printf '%s\n' "$gpu_info" > "$gpu_job_file"
+fi
+
+if ! echo "$gpu_info" | jq -e '.instance' >/dev/null 2>&1; then
+  echo "Error: deployment payload is not valid JSON or missing the .instance payload." >&2
+  echo "$gpu_info" >&2
+  exit 1
+fi
+
+gpu_status="$(echo "$gpu_info" | jq -r '.instance.status // "unknown"')"
+gpu_id="$(echo "$gpu_info" | jq -r '.instance.id // empty')"
+gpu_type="$(echo "$gpu_info" | jq -r '.instance.gpu_type // "unknown"')"
+gpu_cost="$(echo "$gpu_info" | jq -r '.instance.price_per_hour // "n/a"')"
+
+if [ -z "$gpu_id" ]; then
+  echo "Error: deployment response did not include an instance id." >&2
+  exit 1
+fi
+
+wait_seconds=30
+max_wait=1800
+elapsed=0
+deploy_attempts=0
+max_redeploys=2
+while true; do
+  gpu_instances="$(gpu instances list -o json 2>/dev/null || true)"
+  if [ -n "$gpu_instances" ]; then
+    instance_record="$(echo "$gpu_instances" | jq -c --arg id "$gpu_id" '.[] | select(.id == $id)' 2>/dev/null || true)"
+    if [ -n "$instance_record" ]; then
+      instance_status="$(echo "$instance_record" | jq -r '.status // "unknown"' 2>/dev/null || echo unknown)"
+      if instance_is_terminal_state "$instance_status"; then
+        echo "Instance $gpu_id entered terminal error state: $instance_status; redeploying a fresh instance."
+        if gpu instances delete "$gpu_id" --wait-timeout 5m >/dev/null 2>&1; then
+          echo "Deleted failed instance: $gpu_id"
+        fi
+        deploy_attempts=$((deploy_attempts + 1))
+        if [ "$deploy_attempts" -gt "$max_redeploys" ]; then
+          echo "Error: instance $gpu_id repeatedly entered a terminal error state after ${max_redeploys} redeploy attempts." >&2
+          exit 1
+        fi
+        if ! gpu_info="$(run_gpu_deploy_json)"; then
+          echo "Error: redeploy failed after instance entered terminal error state." >&2
+          echo "$gpu_info" >&2
+          exit 1
+        fi
+        printf '%s\n' "$gpu_info" > "$gpu_job_file"
+        if ! echo "$gpu_info" | jq -e '.instance.id' >/dev/null 2>&1; then
+          echo "Error: redeploy response is invalid JSON or missing an instance id." >&2
+          echo "$gpu_info" >&2
+          exit 1
+        fi
+        gpu_id="$(echo "$gpu_info" | jq -r '.instance.id // empty')"
+        gpu_status="$(echo "$gpu_info" | jq -r '.instance.status // "unknown"')"
+        gpu_type="$(echo "$gpu_info" | jq -r '.instance.gpu_type // "unknown"')"
+        gpu_cost="$(echo "$gpu_info" | jq -r '.instance.price_per_hour // "n/a"')"
+        elapsed=0
+        continue
+      fi
+      jq -n --argjson instance "$instance_record" '{instance: $instance}' > "$gpu_job_file"
+      ssh_connection="$(echo "$instance_record" | jq -r '.connection.ssh_command // empty')"
+      remote_user="$(echo "$instance_record" | jq -r '(.connection.user // .connection.username // .connection.app_user // empty)')"
+      remote_host="$(echo "$instance_record" | jq -r '(.connection.hostname // .connection.host // .hostname // .host // empty)')"
+      remote_port="$(echo "$instance_record" | jq -r '((.connection.port // .port) | tostring) // empty')"
+      if [ -n "$remote_host" ] && [ -n "$remote_port" ] && [ -n "$remote_user" ]; then
+        break
+      fi
+      if [ -n "$ssh_connection" ]; then
+        break
+      fi
+    fi
+  fi
+
+  if [ "$elapsed" -ge "$max_wait" ]; then
+    if [ "$deploy_attempts" -ge "$max_redeploys" ]; then
+      echo "Error: instance $gpu_id did not provide SSH metadata within ${max_wait}s after ${deploy_attempts} redeploy attempts." >&2
+      echo "Last observed state:" >&2
+      echo "$gpu_instances" >&2
+      exit 1
+    fi
+
+    deploy_attempts=$((deploy_attempts + 1))
+    echo "Instance $gpu_id is stale or disappeared before SSH metadata became available; redeploying fresh instance (attempt ${deploy_attempts}/${max_redeploys})."
+    if gpu instances delete "$gpu_id" --wait-timeout 5m >/dev/null 2>&1; then
+      echo "Deleted stale instance: $gpu_id"
+    fi
+    if ! gpu_info="$(run_gpu_deploy_json)"; then
+      echo "Error: redeploy failed after stale SSH metadata timeout." >&2
+      echo "$gpu_info" >&2
+      exit 1
+    fi
+    if [ -z "$gpu_info" ]; then
+      echo "Error: redeploy failed after stale SSH metadata timeout." >&2
+      exit 1
+    fi
+    printf '%s\n' "$gpu_info" > "$gpu_job_file"
+    if ! echo "$gpu_info" | jq -e '.instance.id' >/dev/null 2>&1; then
+      echo "Error: redeploy response is invalid JSON or missing an instance id." >&2
+      echo "$gpu_info" >&2
+      exit 1
+    fi
+    gpu_id="$(echo "$gpu_info" | jq -r '.instance.id // empty')"
+    gpu_status="$(echo "$gpu_info" | jq -r '.instance.status // "unknown"')"
+    gpu_type="$(echo "$gpu_info" | jq -r '.instance.gpu_type // "unknown"')"
+    gpu_cost="$(echo "$gpu_info" | jq -r '.instance.price_per_hour // "n/a"')"
+    elapsed=0
+    continue
+  fi
+
+  echo "Waiting for instance $gpu_id to finish provisioning and expose SSH metadata (${elapsed}s/${max_wait}s)..."
+  sleep 15
+  elapsed=$((elapsed + 15))
+done
+
+ssh_connection="$(echo "$gpu_instances" | jq -r --arg id "$gpu_id" '.[] | select(.id == $id) | .connection.ssh_command // empty')"
+remote_user="$(echo "$gpu_instances" | jq -r --arg id "$gpu_id" '.[] | select(.id == $id) | (.connection.user // .connection.username // .connection.app_user // empty)')"
+remote_host="$(echo "$gpu_instances" | jq -r --arg id "$gpu_id" '.[] | select(.id == $id) | (.connection.hostname // .connection.host // .hostname // .host // empty)')"
+remote_port="$(echo "$gpu_instances" | jq -r --arg id "$gpu_id" '.[] | select(.id == $id) | ((.connection.port // .port) | tostring) // empty')"
+
+if [ -n "$ssh_connection" ]; then
+  if [[ "$ssh_connection" =~ -p[[:space:]]+([0-9]+)[[:space:]]+([^@[:space:]]+)@([A-Za-z0-9.-]+) ]]; then
+    remote_port="${BASH_REMATCH[1]}"
+    remote_user="${BASH_REMATCH[2]}"
+    remote_host="${BASH_REMATCH[3]}"
+  elif [[ "$ssh_connection" =~ ssh[[:space:]]+.*([^@[:space:]]+)@([A-Za-z0-9.-]+) ]]; then
+    remote_user="${BASH_REMATCH[1]}"
+    remote_host="${BASH_REMATCH[2]}"
+    if [[ "$ssh_connection" =~ -p[[:space:]]+([0-9]+) ]]; then
+      remote_port="${BASH_REMATCH[1]}"
+    fi
+  fi
+fi
+
+if [ -z "$remote_host" ] || [ -z "$remote_port" ] || [ -z "$remote_user" ]; then
+  echo "Error: instance $gpu_id is still missing SSH connection metadata after waiting." >&2
+  exit 1
+fi
+
+ssh_key_path="${ROOT_DIR}/secrets/gpuai"
+if [ ! -f "$ssh_key_path" ]; then
+  echo "Error: SSH private key not found at $ssh_key_path" >&2
+  exit 1
+fi
+
+ssh_opts=(-o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i "$ssh_key_path" -p "$remote_port")
+scp_opts=(-o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i "$ssh_key_path" -P "$remote_port")
+rsync_rsh="ssh -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes -i ${ssh_key_path} -p ${remote_port}"
+ssh_target="${remote_user}@${remote_host}"
+
+if [ -n "$ssh_connection" ]; then
+  echo "** GPU: $gpu_type = $gpu_id status: $gpu_status type: $gpu_type price: $gpu_cost"
+else
+  echo "** GPU: $gpu_type = $gpu_id status: $gpu_status type: $gpu_type price: $gpu_cost (ssh metadata pending)"
+  exit 1
+fi
+
+if ! ssh "${ssh_opts[@]}" "$ssh_target" "true" >/dev/null 2>&1; then
+  echo "SSH to instance $gpu_id is rejecting connections; the saved instance is stale. Redeploying a fresh GPU instance."
+  rm -f "$gpu_job_file"
+  if ! gpu_info="$(run_gpu_deploy_json)"; then
+    echo "Error: redeploy failed after stale SSH connection was detected." >&2
+    echo "$gpu_info" >&2
+    exit 1
+  fi
+  if [ -z "$gpu_info" ]; then
+    echo "Error: redeploy failed after stale SSH connection was detected." >&2
+    exit 1
+  fi
+  printf '%s\n' "$gpu_info" > "$gpu_job_file"
+  echo "$gpu_info" | jq -e '.instance.id' >/dev/null 2>&1 || {
+    echo "Error: redeploy response is invalid JSON." >&2
+    exit 1
+  }
+  gpu_id="$(echo "$gpu_info" | jq -r '.instance.id // empty')"
+  gpu_status="$(echo "$gpu_info" | jq -r '.instance.status // "unknown"')"
+  if [ -z "$gpu_id" ]; then
+    echo "Error: redeploy did not include an instance id." >&2
+    exit 1
+  fi
+fi
+
+remote_cfg_name="$(find_config_file "${ROOT_DIR}/axolotl/${domain}" "$model" "$strategy" || true)"
+if [ -z "$remote_cfg_name" ]; then
+  echo "Error: no Axolotl YAML config found for model '$model' and strategy '$strategy' under ${ROOT_DIR}/axolotl/${domain}" >&2
+  exit 1
+fi
+
+domain_cfg="${ROOT_DIR}/tmp/${remote_cfg_name}"
+cp "./axolotl/$domain/${remote_cfg_name}" "$domain_cfg"
+
+if [ "$quick" -eq 0 ]; then
+  echo "** copy to: ${ssh_target} "
+  ssh "${ssh_opts[@]}" "$ssh_target" "rm -f ~/${remote_cfg_name} ~/datasets/queer.jsonl ~/datasets/prepared/* 2>/dev/null || true; rm -rf ~/datasets/prepared 2>/dev/null || true; mkdir -p ~/datasets ./datasets/prepared"
+
+  rsync -aqz --progress -e "$rsync_rsh" "./tmp/${domain}.jsonl" "${ssh_target}:~/datasets/"
+else
+  echo "** quick mode: skipping dataset upload; refreshing the current remote config and runtime scripts only"
+  ssh "${ssh_opts[@]}" "$ssh_target" "mkdir -p ~/datasets ./datasets/prepared; rm -rf ~/datasets/prepared 2>/dev/null || true; mkdir -p ~/datasets/prepared"
+fi
+
+rsync -aqz --progress -e "$rsync_rsh" "$domain_cfg" "${ssh_target}:~/${remote_cfg_name}"
+rsync -aqz --progress -e "$rsync_rsh" "./axolotl/fix-axolotl.sh" "${ssh_target}:~/fix-axolotl.sh"
+if [ -f "$env_file" ]; then
+  rsync -aqz --progress -e "$rsync_rsh" "$env_file" "${ssh_target}:~/.env"
+fi
+
+echo "** execute axolotl on remote instance"
+remote_run_script="${ROOT_DIR}/src/remote_axolotl_run.sh"
+
+set +e
+rsync -aqz --progress -e "$rsync_rsh" "$remote_run_script" "${ssh_target}:~/run-axolotl.sh"
+ssh "${ssh_opts[@]}" "$ssh_target" "REMOTE_CFG_NAME='${remote_cfg_name}' bash ~/run-axolotl.sh"
+remote_status=$?
+set -e
+
+if [ "$remote_status" -ne 0 ]; then
+  echo "Error: axolotl job failed or did not finish on remote instance with exit code $remote_status" >&2
+  echo "Keeping the instance alive for inspection; no model download or cleanup was performed." >&2
+  exit "$remote_status"
+fi
+
+if ! ssh "${ssh_opts[@]}" "$ssh_target" "test -f ~/axolotl-job-success && test -d ~/outputs && find ~/outputs -mindepth 1 -maxdepth 3 -type f | head -n 1 | grep -q ." >/dev/null 2>&1; then
+  echo "Error: remote training exited successfully, but no success marker or output artifacts were found." >&2
+  echo "Keeping the instance alive for inspection because the artifact set is incomplete." >&2
+  exit 1
+fi
+
+echo "** axolotl job completed successfully on remote instance"
+
+local_model_dir="$(next_sequential_dir "${ROOT_DIR}/tmp" "${domain}-model")"
+mkdir -p "$local_model_dir"
+if ssh "${ssh_opts[@]}" "$ssh_target" "test -d ~/outputs" >/dev/null 2>&1; then
+  echo "** downloading trained model artifacts to: $local_model_dir"
+  rsync -aqz --progress \
+    --filter='- /checkpoint-*' \
+    --filter='- /checkpoint-*/**' \
+    --filter='- /runs/**' \
+    --filter='- /logs/**' \
+    -e "$rsync_rsh" "${ssh_target}:~/outputs/" "${local_model_dir}/"
+else
+  echo "** success marker exists, but no ~/outputs directory was found; skipping model download"
+  echo "The instance is being kept alive for inspection because the artifact location is unexpected." >&2
+  exit 1
+fi
+
+if ! require_final_artifacts "$local_model_dir"; then
+  echo "The instance is being kept alive for inspection because the final artifact gate did not pass." >&2
+  exit 1
+fi
+
+if gpu instances delete "$gpu_id" --wait-timeout 5m >/dev/null 2>&1; then
+  echo "** deleted remote instance: $gpu_id"
+else
+  echo "Warning: failed to delete remote instance $gpu_id automatically; you may need to terminate it manually." >&2
+fi
+
+echo "** deployed: $domain"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

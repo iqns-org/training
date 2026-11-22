@@ -1,0 +1,23 @@
+# Canonical goal-directed planning example (EBNF.md section 4)
+WORLD {
+    alice owns car1 .
+    car1 engineState Off .
+}
+
+GOAL {
+    car1 engineState Running .
+}
+
+MATCH WORLD {
+    alice owns car1 .
+}.
+
+CALL ex:startEngine(car1) AS my:?result.
+
+WRITE WORLD {
+    car1 engineState Running .
+}.
+
+EMIT ex:EngineStarted(car1).
+
+RETURN my:?result.

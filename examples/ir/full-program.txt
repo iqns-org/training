@@ -1,0 +1,89 @@
+# Full-surface Graph IR program: every declaration, context, and statement.
+
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>.
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>.
+PREFIX ex: <http://example.org/>.
+
+WORLD {
+    <alice> owns ex:car1 .
+    ex:car1 engineState Off .
+    ex:car1 a ex:Vehicle .
+    _:b0 ex:note "engineering" .
+}
+
+MEMORY {
+    ex:car1 lastService "2024-01-15"^^xsd:date .
+}
+
+HISTORY {
+    ex:car1 event ex:CarRegistered .
+}
+
+GOAL {
+    ex:car1 ex:engineState ex:Running .
+}
+
+TYPE ex:Vehicle EXTENDS rdf:Resource.
+
+EVENT ex:EngineStarted {
+    _:e a ex:EngineStarted .
+    _:e ex:runsOn my:?car.
+}.
+
+CAPABILITY ex:startEngine(my:?engine : ex:Vehicle) RETURNS ex:Vehicle.
+
+PROJECTION fleetStatus(my:?car : ex:Vehicle) {
+    READ WORLD my:?car a ex:Vehicle . AS my:?type.
+    RETURN my:?car.
+}
+
+WAIT EVENT ex:DriverReady TIMEOUT 30s.
+
+PLAN startEngine(my:?car : ex:Vehicle) {
+    MATCH WORLD {
+        my:?car engineState my:?state .
+    } AS my:?snapshot.
+
+    BIND my:?target = ex:Running.
+
+    DERIVE my:?plan = {
+        my:?car engineState my:?target .
+    } USING fleetStatus.
+
+    BRANCH {
+        WHEN my:?state = ex:Off THEN {
+            CALL ex:startEngine(my:?car) AS my:?result.
+        }
+        ELSE {
+            EMIT ex:EngineStarted(my:?car).
+        }
+    }
+
+    EACH my:?wheel IN MATCH WORLD {
+        my:?car hasWheel my:?wheel .
+    } DO {
+        WRITE WORLD {
+            my:?wheel mounted true .
+        }.
+    }
+
+    PARALLEL {
+        { SPAWN ex:MonitorActor WITH { monitor watches ex:car1 . } AS my:?monitor. }
+        { WAIT my:?monitor IN [my:?monitor] TIMEOUT 500ms. }
+    }
+
+    TRY {
+        DELETE MEMORY {
+            ex:car1 engineState Off .
+        }.
+        WRITE WORKING {
+            ex:car1 engineState Running .
+        }.
+    } CATCH my:?err {
+        EMIT ex:EngineStartFailed(my:?err).
+    }
+
+    READ WORLD my:?car engineState my:?newState . AS my:?verified.
+
+    RETURN my:?car.
+}

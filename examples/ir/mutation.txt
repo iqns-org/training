@@ -1,0 +1,8 @@
+# Canonical mutation example (EBNF.md section 4)
+WRITE WORLD {
+    car1 engineState Running .
+}.
+
+EMIT ex:EngineStarted(car1).
+
+RETURN car1.

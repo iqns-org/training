@@ -1,0 +1,15 @@
+# Canonical stateful reasoning example (EBNF.md section 4)
+MATCH WORLD {
+    my:?device rdf:type Device .
+    my:?device state my:?state .
+} AS my:?deviceState.
+
+BRANCH {
+    WHEN my:?state = ex:Off THEN {
+        CALL ex:turnOn(my:?device) AS my:?result.
+    }
+
+    WHEN my:?state = ex:On THEN {
+        RETURN my:?device.
+    }
+}

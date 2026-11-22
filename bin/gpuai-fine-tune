@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$ROOT_DIR"
+
+domain="${1:-}"
+if [ -z "$domain" ]; then
+  echo "Usage: $0 <domain> [model] [method]"
+  exit 1
+fi
+
+
+echo "** train: $model on $domain dataset"
+
+echo "** preparing: $app --name ${app}-${domain} --ssh-key-id ${key_id}"
+
+echo "** expanding: '$domain' data"
+./bin/prepare-domain "$domain" >/dev/null
+
+# Deploy the fine-tune job 
+
+model="${2:-SmolLM2-360M-Instruct}"
+method="${3:-qlora}"
+max_budget=1
+wait_timeout=2h
+lora_alpha=32
+lora_dropout=0.05
+lora_r=16
+
+job=$(gpu fine-tune --dataset "./tmp/${domain}.jsonl" --model "$model" --method "$method" --max-budget "$max_budget" --lora-alpha "$lora_alpha" --lora-dropout "$lora_dropout" --lora-r "$lora_r" --wait-timeout "$wait_timeout")
+
+echo "$job" > "./tmp/${model}_${domain}_${method}.job"
