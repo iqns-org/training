@@ -327,6 +327,15 @@ it is small and arch-flexible, built by the existing mcps-fleet CI pattern.
 First-run gates to verify: mirror syncs tags, Actions is enabled for the
 repo/org, and `GITHUB_TOKEN` may push packages (org settings).
 
+**CI cost policy (2026-11-23, user directive):** tagged releases ONLY.
+Triggers: `push: tags v*` — `workflow_dispatch` removed (minutes are
+billable and the base pull is ~8 GB; `concurrency` group prevents
+overlapping builds). The base-image probe step runs `if: failure()` only:
+run #3 showed an always-on probe can itself fail (Docker Hub anonymous
+pull rate-limit on shared runner IPs → exit 2) and *skip the build it was
+diagnosing*. Order now: login → build+push → pin-summary → probe-if-red.
+Retagging (`git push --force v0.1.0`) is the deliberate rebuild lever.
+
 ## 11. Phases
 
 - **P0 — image + skeleton** (~1 day): repo layout above (git mv), Dockerfile
