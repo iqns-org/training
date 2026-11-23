@@ -382,10 +382,11 @@ STAGE_SPECS = {
              "prelude": "pip install --no-cache-dir -q onnx"},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
             "gpu": True, "needs_dataset": True,
-            # EU-RO-1 currently stocks only Blackwell -> swap torch for
-            # cu128 at boot (image baked cu124, no sm_120 kernels). ~3 min
-            # download on pod NVMe; retires with the cu128 p-v0.1.4 image.
-            "prelude": "pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cu128 torch"
+            # cu128 torch swap ONLY on Blackwell (sm_120) — the baked
+            # cu124 covers Ada/Ampere fine, so the guard skips the 3.5GB
+            # download there (3df2ea wasted it on an RTX 2000 Ada).
+            # tokenizer list-form sanitized for newer transformers.
+            "prelude": "if nvidia-smi --query-gpu=compute_cap --format=csv,noheader | grep -q '^12'; then pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cu128 torch; fi"
                        " && sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
 }
 
@@ -486,10 +487,6 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
            f"--in /work/inputs/model --out /work/outputs")
     if spec.get("needs_base"):
         cmd += f" --base {shlex.quote(base_model)}"
-    if spec.get("prelude"):
-        # the runner execs shlex.split(command) — no shell — so multi-part
-        # chains must arrive as one explicit `sh -c` invocation
-        cmd = "sh -c " + shlex.quote(f"{spec['prelude']} && {cmd}")
     inputs: list[dict] = [{"name": "model", "path": f"{mount}/{in_key}",
                            "extract": True}]
     if spec.get("needs_dataset"):
@@ -517,6 +514,10 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             ds_ref["sha256"] = ds["sha256"]
         inputs.append(ds_ref)
         cmd += " --dataset /work/inputs/data"
+    if spec.get("prelude"):
+        # wrap LAST: the runner execs shlex.split(command) — no shell — so
+        # the whole chain must arrive as ONE quoted `sh -c` invocation
+        cmd = "sh -c " + shlex.quote(f"{spec['prelude']} && {cmd}")
     payload = {"run_id": run_id, "command": cmd, "config_yaml": "",
                "inputs": inputs,
                "outputs_dir": "/work/outputs",
