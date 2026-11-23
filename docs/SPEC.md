@@ -934,3 +934,25 @@ the ladder finding a cheap-fit offer is the system working), zero pods left
 behind. Event-semantics fix surfaced by the same log: a gate-FAILED
 harvest must emit run_gated, not run_done (and must not train the
 self-calibration stats).
+
+**(t) 805ff2 forensics: the model shape decides the quantizer (2026-11-24).**
+The merged base is llama-type with hidden_size=960 (15 heads x 64):
+EVERY linear except down_proj has 960 input columns, and 960 % 128 != 0.
+Consequences now baked into quantize_awq.py: (1) an ignore-list strategy
+is worthless here — a header scan shows 193 modules / 78% of weight
+bytes non-divisible, i.e. "quantize around it" would quantize almost
+nothing; (2) group_size 64 divides both 960 and 2560 exactly — it is
+THE right answer for this family; (3) 805ff2's pydantic `list_type`
+error decoded: QuantizationModifier's `scheme` accepts a preset NAME or
+a LIST of scheme dicts (targets inside) — a dict-of-presets is not it;
+the ladder now leads with the scheme-list shape, then ignore-fit (still
+correct for models where offending bytes are a minority — the scan
+decides the order per model, so the same script serves 960-hidden and
+1024-hidden families), then QuantizationConfig-object, AWQ+, legacy.
+Also fixed a self-inflicted blind spot: variant CONSTRUCTION failures
+were swallowed silently (the first two variants of v2 died unseen).
+Rule adopted: every rejected variant logs its error; every probe run
+leaves the ladder's full decision trace in run.log. Cost of 805ff2:
+$0.02-ish; the loop broke on run_gated (by design — a non-capacity
+failure stops retries and demands forensics, which is exactly what the
+lane log delivered in one read).
