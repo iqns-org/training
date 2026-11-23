@@ -106,6 +106,25 @@ def _open_row(tmp_path, monkeypatch):
     return led, rid
 
 
+def test_submit_local_lane_dry(tmp_path, monkeypatch, recipe):
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join(['{"m":1}'] * 60))
+    monkeypatch.setattr(dispatch.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.storage, "sha256_file", lambda p: "0" * 64)
+    puts = []
+    monkeypatch.setattr(dispatch.storage, "host_put",
+                        lambda k, d: puts.append(k))
+    res = dispatch.submit("queer", recipe, mini=True, dry=True,
+                          provider="local")
+    assert res["lane"] == "host" and res.get("dry")
+    payload = None
+    for k in puts:
+        if k.endswith("payload.json"):
+            payload = k
+    assert payload and any(k.startswith("datasets/queer/") for k in puts)
+
+
 def test_resume_tolerates_lane_blips(tmp_path, monkeypatch):
     """Transient lane errors (network blip) must NOT kill a healthy run:
     _watch tolerates a streak, then harvests normally."""

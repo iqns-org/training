@@ -43,7 +43,9 @@ def _led() -> Ledger:
     return Ledger(ROOT / LEDGER)
 
 
-def _lane_get(key: str) -> bytes | None:
+def _lane_get(key: str, provider: str = "runpod") -> bytes | None:
+    if provider == "local":
+        return storage.host_get(key)
     vol = storage.vol_cfg()
     return storage.vol_get(key) if vol else storage.get_object(key)
 
@@ -137,10 +139,11 @@ def job_status(run_id: str) -> dict:
            "artifact_uri": row["artifact_uri"], "error": row["error"],
            "updated_at": row["updated_at"]}
     try:
-        hb = _lane_get(f"runs/{run_id}/status.json")
+        prov = row["provider"] or "runpod"
+        hb = _lane_get(f"runs/{run_id}/status.json", prov)
         if hb:
             out["heartbeat"] = json.loads(hb)
-        man = _lane_get(f"runs/{run_id}/manifest.json")
+        man = _lane_get(f"runs/{run_id}/manifest.json", prov)
         if man:
             m = json.loads(man)
             out["manifest"] = {
@@ -152,13 +155,18 @@ def job_status(run_id: str) -> dict:
     return out
 
 
+def row_provider(run_id: str) -> str:
+    row = next((r for r in _led().list() if r["run_id"] == run_id), None)
+    return (row or {}).get("provider") or "runpod"
+
+
 @mcp.tool
 def job_logs(run_id: str, tail: int = 100) -> dict:
     """Training log: prefer local harvest (runs/<id>/run.log), else the
     lane copy. tail = last N lines."""
     local = ROOT / "runs" / run_id / "run.log"
     raw = local.read_bytes() if local.is_file() else _lane_get(
-        f"runs/{run_id}/run.log")
+        f"runs/{run_id}/run.log", row_provider(run_id))
     if raw is None:
         return {"error": "no run.log on disk or lane (still running on an "
                          "older image? heartbeat has progress meanwhile)"}

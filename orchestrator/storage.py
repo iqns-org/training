@@ -11,6 +11,8 @@ import datetime as dt
 import hashlib
 import hmac
 import os
+import shlex
+import subprocess
 import urllib.parse
 from pathlib import Path
 
@@ -162,6 +164,57 @@ def s3_request(method: str, endpoint: str, region: str, access_key: str,
                                   "Authorization":
                                   f"{ALGO} Credential={access_key}/{scope}, "
                                   f"SignedHeaders={signed}, Signature={sig}"})
+
+
+# -- host lane (local provider): workdir files on cluster machines -------
+# Inside the mcp-trainer pod the same tree is mounted, so reads/writes are
+# plain filesystem ops; from any box WITHOUT the mount (workstation) they
+# ride ssh cat. LOCAL_WORKDIR = the real host path (docker -v source);
+# LOCAL_LANE_DIR = orchestrator's view of it (/app inside the pod).
+
+def _lane_dir() -> str | None:
+    d = os.environ.get("LOCAL_LANE_DIR") or os.environ.get(
+        "LOCAL_WORKDIR", "/srv/mcps/trainer")
+    return d if Path(d).is_dir() else None
+
+
+def _default_host() -> str:
+    return os.environ.get("LOCAL_SSH_HOST", "me@pi00.lan")
+
+
+def host_put(key: str, data: bytes) -> None:
+    direct = _lane_dir()
+    if direct:
+        p = Path(direct) / key
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".part")
+        tmp.write_bytes(data)
+        tmp.replace(p)
+        return
+    r = subprocess.run(["ssh", "-o", "ConnectTimeout=10",
+                        "-o", "BatchMode=yes", _default_host(),
+                        f"mkdir -p $(dirname {shlex.quote(key_path(key))}) && "
+                        f"cat > {shlex.quote(key_path(key))}"],
+                       input=data, capture_output=True, timeout=300)
+    if r.returncode != 0:
+        raise StorageError(f"host_put {key}: {r.stderr[:200]!r}")
+
+
+def key_path(key: str) -> str:
+    wd = os.environ.get("LOCAL_WORKDIR", "/srv/mcps/trainer")
+    return f"{wd.rstrip('/')}/{key.lstrip('/')}"
+
+
+def host_get(key: str) -> bytes | None:
+    direct = _lane_dir()
+    if direct:
+        p = Path(direct) / key
+        return p.read_bytes() if p.is_file() else None
+    r = subprocess.run(["ssh", "-o", "ConnectTimeout=10",
+                        "-o", "BatchMode=yes", _default_host(),
+                        f"cat {shlex.quote(key_path(key))}"],
+                       capture_output=True, timeout=300)
+    return r.stdout if r.returncode == 0 else None
 
 
 def ensure_bucket() -> None:

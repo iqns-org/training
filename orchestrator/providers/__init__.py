@@ -1,10 +1,12 @@
 """Provider registry."""
 
+from .local import LocalProvider
 from .mock import MockProvider
 from .runpod import RunpodProvider
 
 _PROVIDERS = {
     "runpod": RunpodProvider,
+    "local": LocalProvider,
     "mock": MockProvider,
 }
 

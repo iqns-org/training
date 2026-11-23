@@ -110,7 +110,8 @@ def _sha(path: Path) -> str:
 def prepare_dataset(domain: str, mini: bool = False,
                     vol: dict | None = None) -> tuple[str, Path, str]:
     """Run corpus expansion (via prepare-domain), upload to the lane, return
-    (key, pod_local_path, sha256)."""
+    (key, local_path, sha256). vol=None -> presign lane; vol dict -> volume
+    lane; vol["local"] set -> host lane."""
     subprocess.run([sys.executable, str(ROOT / "bin/prepare-domain"),
                     domain], check=True, capture_output=True, text=True)
     src = ROOT / "tmp" / f"{domain}.jsonl"
@@ -124,7 +125,9 @@ def prepare_dataset(domain: str, mini: bool = False,
     sha = _sha(src)
     key = f"datasets/{domain}/{sha[:16]}/{src.name}"
     data = src.read_bytes()
-    if vol:
+    if vol and vol.get("local"):
+        storage.host_put(key, data)
+    elif vol:
         storage.vol_put(key, data)
     else:
         storage.ensure_bucket()
@@ -206,8 +209,11 @@ def resume(run_id: str | None = None, poll: int = 30,
     inst_id = row["instance_id"]
     result = {"run_id": run_id, "resumed_from": row["state"],
               "instance": inst_id}
-    vol = storage.vol_cfg() if provider == "runpod" else None
-    get_run = (lambda k: storage.vol_get(k)) if vol else storage.get_object
+    if provider == "local":
+        get_run = storage.host_get
+    else:
+        vol = storage.vol_cfg() if provider == "runpod" else None
+        get_run = (lambda k: storage.vol_get(k)) if vol else storage.get_object
     try:
         prov = get_provider(provider) if inst_id else None
         _watch(run_id, get_run, result, led, poll, started=time.time(),
@@ -245,18 +251,25 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         on_run_id(run_id)
     result = {"run_id": run_id}
     pod_id = ""
-    vol = storage.vol_cfg() if provider == "runpod" else None
-    if force_lane == "presign":
-        vol = None
-    elif force_lane == "volume" and not vol:
-        led.update(run_id, state="failed", error="volume lane not configured")
-        return {"run_id": run_id, "status": "error",
-                "error": "RUNPOD_VOLUME_ID/RUNPOD_S3_* unset — volume lane off"}
-    lane = "volume" if vol else "presign"
+    if provider == "local":
+        mount = os.environ.get("LOCAL_MOUNT", "/data")
+        vol = {"mount": mount, "local": True}
+        lane = "host"
+        get_run = storage.host_get
+        put_run = lambda k, d, ct="": storage.host_put(k, d)
+    else:
+        vol = storage.vol_cfg() if provider == "runpod" else None
+        if force_lane == "presign":
+            vol = None
+        elif force_lane == "volume" and not vol:
+            led.update(run_id, state="failed", error="volume lane not configured")
+            return {"run_id": run_id, "status": "error",
+                    "error": "RUNPOD_VOLUME_ID/RUNPOD_S3_* unset — volume lane off"}
+        lane = "volume" if vol else "presign"
+        get_run = (lambda k: storage.vol_get(k)) if vol else storage.get_object
+        put_run = ((lambda k, d, ct="": storage.vol_put(k, d)) if vol
+                   else (lambda k, d, ct="": storage.put_object(k, d, ct)))
     result["lane"] = lane
-    get_run = (lambda k: storage.vol_get(k)) if vol else storage.get_object
-    put_run = ((lambda k, d, ct="": storage.vol_put(k, d)) if vol
-               else (lambda k, d, ct="": storage.put_object(k, d, ct)))
     try:
         dataset_key, dataset_path, dataset_sha = prepare_dataset(domain, mini, vol)
         ov = dict(overrides or {})
@@ -313,7 +326,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                     env={**payload_env, "AGENT_TOKEN": token,
                          "IMAGE_TAG": _image_tag()},
                     **({"volume_id": vol["bucket"], "volume_path": vol["mount"],
-                        "data_center": vol["dc"]} if vol else {}))
+                        "data_center": vol["dc"]}
+                       if (vol and not vol.get("local")) else {}))
                 pod_id = inst.id
                 result["instance"] = {"id": inst.id, "gpu": o.gpu_id,
                                       "price_hr": o.price_hr}
