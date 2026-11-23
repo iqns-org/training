@@ -751,3 +751,11 @@ sanitize at boundaries + floor pins, p-v0.1.4), (2) Forgejo->GitHub push
 mirror stalled on 'context deadline exceeded' -> p-v0.1.3/0.1.4 tags
 never reached Actions. Unblock path: podman-native local image builds
 pushed straight to ghcr (also faster than CI: no QEMU).
+
+**Mirror incident (2026-11-23):** push-mirror task queue wedged — 4
+commits + 2 tags piled up for 35 min with 'context deadline exceeded'
+and zero retries despite sync_on_commit=1; pi00->github.com itself
+measured 200/0.7s. Recovery: forgejo rollout restart (clears queue
+state) + any new push re-triggers the mirror. NOTE: GitHub is only the
+BUILD HOST (tag->Actions); Forgejo main remains the repo of record.
+Do not push to GitHub directly.
