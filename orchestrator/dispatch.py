@@ -378,8 +378,11 @@ STAGE_SPECS = {
              "prelude": "pip install --no-cache-dir -q onnx"},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
             "gpu": True, "needs_dataset": True,
-            "arch_exclude": ["Blackwell"],
-            "prelude": "sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
+            # EU-RO-1 currently stocks only Blackwell -> swap torch for
+            # cu128 at boot (image baked cu124, no sm_120 kernels). ~3 min
+            # download on pod NVMe; retires with the cu128 p-v0.1.4 image.
+            "prelude": "pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cu128 torch"
+                       " && sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
 }
 
 POSTPROC_PIN = ("ghcr.io/iqns-org/postproc"
