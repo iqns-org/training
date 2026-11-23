@@ -10,7 +10,8 @@ def _tool_names():
 def test_tools_registered():
     expected = {"gpu_catalog", "list_recipes", "submit_training",
                 "job_status", "job_logs", "list_runs", "list_pods",
-                "terminate_pod", "doctor", "refresh_corpora", "reconcile"}
+                "terminate_pod", "doctor", "refresh_corpora", "reconcile",
+                "submit_stage"}
     assert expected <= _tool_names()
 
 

@@ -157,6 +157,41 @@ def job_status(run_id: str) -> dict:
     return out
 
 
+@mcp.tool
+def submit_stage(kind: str, from_run: str, base_model: str | None = None,
+                 provider: str = "local", max_runtime: int = 5400,
+                 dry: bool = False) -> dict:
+    """Post-process a finished run on the $0 local lane: kind merge
+    (needs base_model) | onnx | int8. Non-blocking; track with
+    job_status(). Stage outputs chain as the next stage's from_run."""
+    holder: dict = {}
+    gate = threading.Event()
+
+    def _on_run_id(rid: str) -> None:
+        holder["run_id"] = rid
+        gate.set()
+
+    def _bg() -> None:
+        try:
+            holder["result"] = dispatch.submit_stage(
+                kind, from_run, base_model=base_model, provider=provider,
+                max_runtime=max_runtime, dry=dry, on_run_id=_on_run_id)
+        except Exception as e:                          # noqa: BLE001
+            holder["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            gate.set()
+
+    threading.Thread(target=_bg, daemon=True, name="submit-stage").start()
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        if "run_id" in holder:
+            return {"run_id": holder["run_id"], "state": "submitted"}
+        if "error" in holder or "result" in holder:
+            return {"error": holder.get("error"), "result": holder.get("result")}
+        time.sleep(0.25)
+    return {"error": "stage did not register within 60s"}
+
+
 def row_provider(run_id: str) -> str:
     row = next((r for r in _led().list() if r["run_id"] == run_id), None)
     return (row or {}).get("provider") or "runpod"
