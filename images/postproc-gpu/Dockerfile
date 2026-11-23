@@ -7,9 +7,9 @@ WORKDIR /work
 COPY postproc/ /opt/postproc/
 COPY agent/trainer_agent/ /opt/agent/trainer_agent/
 
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu124 \
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128 \
  && pip install --no-cache-dir \
-    "transformers<5" accelerate datasets safetensors sentencepiece protobuf \
+    "transformers>=4.51" accelerate datasets safetensors sentencepiece protobuf \
     llmcompressor fastapi uvicorn httpx
 
 ENV PYTHONPATH=/opt/agent \

@@ -29,6 +29,10 @@ def main() -> int:
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import QuantizationModifier
 
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from util import sanitize_tokenizer_config  # noqa: E402
+    sanitize_tokenizer_config(a.input)
     tok = AutoTokenizer.from_pretrained(a.input)
     texts = []
     for line in Path(a.dataset).read_text().splitlines():

@@ -10,7 +10,7 @@ COPY agent/trainer_agent/ /opt/agent/trainer_agent/
 
 RUN pip install --no-cache-dir \
     torch "optimum[exporters]" onnx onnxruntime \
-    transformers peft accelerate \
+    "transformers>=4.51" peft accelerate \
     fastapi uvicorn httpx
 
 ENV PYTHONPATH=/opt/agent \

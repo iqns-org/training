@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Merge a LoRA adapter into its base model (CPU-friendly, fp16 out)."""
 import argparse
+import sys
 from pathlib import Path
 
 import torch
@@ -20,4 +21,7 @@ model = PeftModel.from_pretrained(model, a.input)
 model = model.merge_and_unload()
 model.save_pretrained(a.out, safe_serialization=True)
 AutoTokenizer.from_pretrained(a.base).save_pretrained(a.out)
+sys.path.insert(0, str(Path(__file__).parent))
+from util import sanitize_tokenizer_config  # noqa: E402
+sanitize_tokenizer_config(a.out)
 print(f"merged -> {a.out}", flush=True)
