@@ -477,7 +477,9 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     if spec.get("needs_base"):
         cmd += f" --base {shlex.quote(base_model)}"
     if spec.get("prelude"):
-        cmd = f"{spec['prelude']} && {cmd}"
+        # the runner execs shlex.split(command) — no shell — so multi-part
+        # chains must arrive as one explicit `sh -c` invocation
+        cmd = "sh -c " + shlex.quote(f"{spec['prelude']} && {cmd}")
     inputs: list[dict] = [{"name": "model", "path": f"{mount}/{in_key}",
                            "extract": True}]
     if spec.get("needs_dataset"):
