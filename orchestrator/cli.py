@@ -122,7 +122,8 @@ def cmd_submit(args):
 def cmd_stage(args):
     res = dispatch.submit_stage(
         args.kind, args.from_run, base_model=args.base,
-        provider=args.provider, dry=args.dry, max_runtime=args.max_runtime)
+        provider=args.provider, dry=args.dry, max_runtime=args.max_runtime,
+        max_cost=args.max_cost)
     _print(res)
     raise SystemExit(0 if res.get("status") in ("succeeded", None)
                      and not res.get("error") else 1)
@@ -261,6 +262,7 @@ def build_parser():
                    choices=available_providers())
     s.add_argument("--dry", action="store_true")
     s.add_argument("--max-runtime", type=int, default=5400)
+    s.add_argument("--max-cost", type=float, default=1.0)
     s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("register", help="deliver a run/stage artifact to a "
