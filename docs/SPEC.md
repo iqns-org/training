@@ -715,3 +715,31 @@ hostPath lane = the exact tree mcp-trainer mounts). LIVE-VERIFIED:
 alpine Job -> /data/runs/smoke-1/manifest.json -> ssh host_get -> delete.
 GPU/nano0 offer gated by LOCAL_GPU_OFFER. postproc (arm64 quantize/
 export) image + stage jobs = next (p-v* workflow).
+
+**(n) Stage-chain v1 lives: merge ✅, onnx fixed-in-flight, awq added (2026-11-23).**
+First production stage runs (cloud policy from user call):
+* merge (20e8db): SUCCESS on RTX PRO 4000 Blackwell — full-corpus adapter +
+  SmolLM2-360M -> 723.7 MB fp16 model.safetensors + tokenizer +
+  chat_template, gate-passed, sha-verified. Merge command itself: 0.3
+  min (started_at→finished_at); full pod wall incl. image pull + HF download
+  ~15 min ≈ $0.14 on $0.57/hr hardware. Chain input
+  resolution: stage borrows /data/runs/<from>/artifacts.tar.gz.
+* onnx (632689): FAILED LOUD (the system working as designed): gate caught
+  empty outputs; run.log showed ModuleNotFoundError:
+  optimum.exporters.onnx -> bare `optimum` lacks exporters + one invented
+  kwarg in my export call. Fixed (optimum[exporters]+onnx, honest
+  main_export args) -> p-v0.1.3 rebuild, rerun follows.
+* awq stage: STAGE_SPECS kind "awq" (postproc-gpu image, amd64 CUDA
+  torch cu124 + llmcompressor): W4A16_AWQ (fallback W4A16) compressed-
+  tensors out -> vLLM native (nano0 Orin serves int4 weight-only well;
+  bf16 1.7B/4B don't fit 8 GiB — this is THE nano0-serving format for
+  bigger tunes). Calibration provenance: the stage reads the SOURCE
+  RUN's payload and reuses its dataset pointer+sha — quantization
+  calibrates on exactly what the model trained on.
+* qtrain register: verified stage artifact -> streamed through ssh into
+  nano0:/home/me/models/<name>/ (sha re-checked against manifest),
+  prints the serve-vllm invocation. vLLM auto-detects
+  compressed-tensors from config.json — no flags needed.
+* CI: postproc-image.yml builds BOTH variants per p-v* tag (multi-arch
+  cpu + amd64 gpu). runs/ gitignored post-close-call (artifacts were
+  one add -A from the repo — caught it).
