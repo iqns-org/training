@@ -119,6 +119,13 @@ def cmd_submit(args):
     raise SystemExit(0 if res.get("status") in ("succeeded", None) and not res.get("error") else 1)
 
 
+def cmd_reconcile(args):
+    res = dispatch.resume(run_id=args.run_id, poll=args.poll)
+    _print(res)
+    raise SystemExit(0 if res.get("status") in ("succeeded", None)
+                     and not res.get("error") else 1)
+
+
 def cmd_progress(args):
     vol = storage.vol_cfg()
     key = f"runs/{args.run_id}/status.json"
@@ -225,6 +232,12 @@ def build_parser():
     s.add_argument("--max-runtime", type=int, default=3600)
     s.add_argument("--max-cost", type=float, default=0.75)
     s.set_defaults(func=cmd_submit)
+
+    s = sub.add_parser("reconcile", help="re-attach to an open run "
+                        "(post-crash harvest + terminate)")
+    s.add_argument("run_id", nargs="?")
+    s.add_argument("--poll", type=int, default=30)
+    s.set_defaults(func=cmd_reconcile)
 
     s = sub.add_parser("progress", help="live heartbeat from the lane")
     s.add_argument("run_id")

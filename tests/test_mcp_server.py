@@ -10,7 +10,7 @@ def _tool_names():
 def test_tools_registered():
     expected = {"gpu_catalog", "list_recipes", "submit_training",
                 "job_status", "job_logs", "list_runs", "list_pods",
-                "terminate_pod", "doctor", "refresh_corpora"}
+                "terminate_pod", "doctor", "refresh_corpora", "reconcile"}
     assert expected <= _tool_names()
 
 
@@ -46,7 +46,7 @@ def test_bearer_gate(monkeypatch):
     assert r.status_code == 200 and r.text == "inner"
 
 
-def test_gate_open_mode_without_token():
+def test_gate_open_mode_needs_explicit_flag(monkeypatch):
     from starlette.testclient import TestClient
 
     from mcp_trainer.auth import BearerGate
@@ -56,5 +56,12 @@ def test_gate_open_mode_without_token():
                     "headers": []})
         await send({"type": "http.response.body", "body": b"inner"})
 
+    monkeypatch.delenv("MCP_TRAINER_TOKEN", raising=False)
+    monkeypatch.delenv("MCP_TRAINER_ALLOW_OPEN", raising=False)
     client = TestClient(BearerGate(ok_app, token=""))
-    assert client.get("/mcp").status_code == 200
+    r = client.get("/mcp")                      # refuse-all default
+    assert r.status_code == 503
+    assert client.get("/healthz").status_code == 200
+    monkeypatch.setenv("MCP_TRAINER_ALLOW_OPEN", "1")
+    open_client = TestClient(BearerGate(ok_app, token=""))  # explicit opt-in
+    assert open_client.get("/mcp").status_code == 200

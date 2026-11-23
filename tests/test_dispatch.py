@@ -96,3 +96,68 @@ def test_submit_lane_force_presign(tmp_path, monkeypatch, recipe, fake_s3):
     res = dispatch.submit("queer", recipe, mini=True, dry=True,
                           force_lane="presign")
     assert res["lane"] == "presign"
+
+
+def _open_row(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {"domain": "queer"}, provider="runpod")
+    led.update(rid, state="provisioning", instance_id="i1")
+    return led, rid
+
+
+def test_resume_harvests_and_terminates(tmp_path, monkeypatch):
+    import hashlib
+    from orchestrator.models import Instance
+    led, rid = _open_row(tmp_path, monkeypatch)
+    tar = b"fake-tar-bytes"
+    manifest = {"status": "succeeded", "artifacts": {"a": {"size": 1}},
+                "artifacts_tar_sha256": hashlib.sha256(tar).hexdigest()}
+    monkeypatch.setattr(dispatch.storage, "vol_cfg", lambda: {"bucket": "v"})
+
+    def vget(k):
+        if k.endswith("manifest.json"):
+            return json.dumps(manifest).encode()
+        if k.endswith("artifacts.tar.gz"):
+            return tar
+        return b"log line\n"
+    monkeypatch.setattr(dispatch.storage, "vol_get", vget)
+    term = []
+
+    class Stub:
+        def poll(self, i):
+            return Instance(provider="runpod", id=i, status="running")
+
+        def terminate(self, i):
+            term.append(i)
+            return True
+    monkeypatch.setattr(dispatch, "get_provider", lambda name: Stub())
+    res = dispatch.resume(rid, poll=1)
+    assert res["status"] == "succeeded"
+    assert term == ["i1"] and res.get("terminated")
+    assert (tmp_path / "runs" / rid / "artifacts.tar.gz").read_bytes() == tar
+    assert (tmp_path / "runs" / rid / "run.log").is_file()
+    row = next(r for r in led.list() if r["run_id"] == rid)
+    assert row["state"] == "done" and row["artifact_uri"]
+
+
+def test_resume_instance_gone_without_manifest(tmp_path, monkeypatch):
+    from orchestrator.models import Instance
+    led, rid = _open_row(tmp_path, monkeypatch)
+    monkeypatch.setattr(dispatch.storage, "vol_cfg", lambda: {"bucket": "v"})
+    monkeypatch.setattr(dispatch.storage, "vol_get", lambda k: None)
+    term = []
+
+    class Stub:
+        def poll(self, i):
+            return Instance(provider="runpod", id=i, status="terminated")
+
+        def terminate(self, i):
+            term.append(i)
+            return True
+    monkeypatch.setattr(dispatch, "get_provider", lambda name: Stub())
+    res = dispatch.resume(rid, poll=1)
+    assert res["status"] == "error" and "without manifest" in res["error"]
+    assert term == ["i1"]
+    row = next(r for r in led.list() if r["run_id"] == rid)
+    assert row["state"] == "failed"

@@ -99,6 +99,91 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str) -> str:
     return yaml.safe_dump(cfg, sort_keys=False)
 
 
+def _harvest(run_id: str, manifest_raw: bytes, get_run, led: Ledger,
+             result: dict) -> None:
+    """Terminal-lane logic shared by submit() and resume(): verify, store,
+    ledger. Raises on artifact corruption (state stays failed-able)."""
+    manifest = json.loads(manifest_raw)
+    ok = manifest.get("status") == "succeeded"
+    local = ROOT / "runs" / run_id
+    local.mkdir(parents=True, exist_ok=True)
+    (local / "manifest.json").write_bytes(manifest_raw)
+    if ok:
+        tar = get_run(f"runs/{run_id}/artifacts.tar.gz")
+        assert tar is not None
+        (local / "artifacts.tar.gz").write_bytes(tar)
+        log = get_run(f"runs/{run_id}/run.log")   # forensic trail
+        if log:
+            (local / "run.log").write_bytes(log)
+        got = hashlib.sha256(tar).hexdigest()
+        want = str(manifest.get("artifacts_tar_sha256", "")).removeprefix("sha256:")
+        if want and got != want:
+            raise ProviderError(f"artifact sha mismatch: {got} != {want}")
+        led.update(run_id, state="done",
+                   artifact_uri=f"runs/{run_id}/artifacts.tar.gz")
+        result.update({"status": "succeeded", "local": str(local),
+                       "artifacts": len(manifest.get("artifacts", {}))})
+    else:
+        log = get_run(f"runs/{run_id}/run.log") or b""
+        (local / "run.log").write_bytes(log[-20000:])
+        led.update(run_id, state="failed",
+                   error=str(manifest.get("problems"))[:400])
+        result.update({"status": "failed", "problems": manifest.get("problems")})
+
+
+OPEN_STATES = ("pending", "verified", "provisioning", "running", "uploading")
+
+
+def resume(run_id: str | None = None, poll: int = 30,
+           max_runtime: int = 4 * 3600) -> dict:
+    """Re-attach to an open (non-terminal) run: resume lane polling,
+    harvest, ALWAYS terminate the instance. Recovery path for crashed
+    orchestrators / fleet restarts mid-job (2026-11-23 incident)."""
+    led = Ledger(ROOT / "state" / "ledger.db")
+    rows = [r for r in led.list() if r["state"] in OPEN_STATES]
+    if run_id:
+        rows = [r for r in rows if r["run_id"] == run_id]
+    if not rows:
+        return {"resumed": None, "note": "no open runs"}
+    row = rows[-1]
+    run_id = row["run_id"]
+    provider = row["provider"] or "runpod"
+    inst_id = row["instance_id"]
+    result = {"run_id": run_id, "resumed_from": row["state"],
+              "instance": inst_id}
+    vol = storage.vol_cfg() if provider == "runpod" else None
+    get_run = (lambda k: storage.vol_get(k)) if vol else storage.get_object
+    try:
+        prov = get_provider(provider) if inst_id else None
+        deadline = time.time() + max_runtime
+        while time.time() < deadline:
+            manifest_raw = get_run(f"runs/{run_id}/manifest.json")
+            if manifest_raw:
+                _harvest(run_id, manifest_raw, get_run, led, result)
+                return result
+            if prov and inst_id:
+                try:
+                    st = prov.poll(inst_id).status
+                except ProviderError:
+                    st = "gone"
+                if st in {"terminated", "deleted", "failed", "error", "gone"}:
+                    raise ProviderError(
+                        f"instance {inst_id} {st} without manifest — run lost")
+            time.sleep(poll)
+        raise ProviderError("resume: max runtime exceeded without manifest")
+    except Exception as e:
+        led.update(run_id, state="failed", error=str(e)[:400])
+        result.update({"status": "error", "error": str(e)})
+        return result
+    finally:
+        if inst_id:
+            try:
+                get_provider(provider).terminate(inst_id)
+                result["terminated"] = True
+            except Exception as e:
+                result["terminate_error"] = str(e)
+
+
 def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            overrides: dict | None = None, provider: str = "runpod",
            gpus: list[str] | None = None, tier: str | None = None,
@@ -207,35 +292,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 _keepalive_public_lane()
             manifest_raw = get_run(f"runs/{run_id}/manifest.json")
             if manifest_raw:
-                manifest = json.loads(manifest_raw)
-                ok = manifest.get("status") == "succeeded"
-                local = ROOT / "runs" / run_id
-                local.mkdir(parents=True, exist_ok=True)
-                (local / "manifest.json").write_bytes(manifest_raw)
-                if ok:
-                    tar = get_run(f"runs/{run_id}/artifacts.tar.gz")
-                    assert tar is not None
-                    (local / "artifacts.tar.gz").write_bytes(tar)
-                    log = get_run(f"runs/{run_id}/run.log")   # forensic trail
-                    if log:
-                        (local / "run.log").write_bytes(log)
-                    got = hashlib.sha256(tar).hexdigest()
-                    want = str(manifest.get("artifacts_tar_sha256", ""))
-                    want = want.removeprefix("sha256:")   # dialect-agnostic
-                    if want and got != want:
-                        raise ProviderError(
-                            f"artifact sha mismatch: {got} != {want}")
-                    led.update(run_id, state="done",
-                               artifact_uri=f"runs/{run_id}/artifacts.tar.gz")
-                    result.update({"status": "succeeded", "local": str(local),
-                                   "artifacts": len(manifest.get("artifacts", {}))})
-                else:
-                    log = get_run(f"runs/{run_id}/run.log") or b""
-                    (local / "run.log").write_bytes(log[-20000:])
-                    led.update(run_id, state="failed",
-                               error=str(manifest.get("problems"))[:400])
-                    result.update({"status": "failed",
-                                   "problems": manifest.get("problems")})
+                _harvest(run_id, manifest_raw, get_run, led, result)
                 return result
             time.sleep(poll)
         raise ProviderError("max runtime exceeded without manifest")

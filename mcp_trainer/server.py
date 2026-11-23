@@ -214,6 +214,49 @@ def refresh_corpora() -> dict:
     return {"rc": r.returncode, "out": (r.stdout or r.stderr).strip()[:300]}
 
 
+@mcp.tool
+def reconcile(run_id: str | None = None) -> dict:
+    """Re-attach the orchestrator to an OPEN run (state not terminal) and
+    finish it: poll lane -> harvest -> terminate instance. Use after a
+    crash/restart dropped the watch loop; run_id None = most recent open."""
+    holder: dict = {}
+    gate = threading.Event()
+
+    def _bg() -> None:
+        try:
+            holder["result"] = dispatch.resume(run_id=run_id)
+        except Exception as e:                          # noqa: BLE001
+            holder["error"] = f"{type(e).__name__}: {e}"
+        finally:
+            gate.set()
+
+    threading.Thread(target=_bg, daemon=True, name="reconcile").start()
+    gate.wait(15)
+    if "result" in holder and holder["result"].get("resumed") is None:
+        return holder["result"]                          # no open runs: fast
+    if "error" in holder:
+        return {"error": holder["error"]}
+    return {"state": "reconciling",
+            "note": "watch resumed in background; poll job_status()",
+            "run_id": run_id or "most-recent-open"}
+
+
+def resume_open_runs() -> int:
+    """Boot hook: fleet restarts mid-job must not orphan runs. Any ledger
+    row in an open state gets a watcher thread (harvest + terminate)."""
+    try:
+        rows = [r for r in _led().list() if r["state"] in dispatch.OPEN_STATES]
+    except Exception:                                    # noqa: BLE001
+        return 0
+    for row in rows:
+        threading.Thread(target=dispatch.resume,
+                         kwargs={"run_id": row["run_id"]}, daemon=True,
+                         name=f"resume-{row['run_id'][-6:]}").start()
+        print(f"mcp-trainer: resumed watch for open run {row['run_id']} "
+              f"(state={row['state']})", flush=True)
+    return len(rows)
+
+
 # ------------------------------------------------------------------ serve
 
 def build_app():
@@ -239,6 +282,9 @@ def main(argv=None) -> int:
               "except /healthz (set MCP_TRAINER_ALLOW_OPEN=1 for local dev)",
               flush=True)
     port = _port()
+    n = resume_open_runs()
+    if n:
+        print(f"mcp-trainer: {n} open run(s) re-attached", flush=True)
     print(f"mcp-trainer {__version__} listening :{port} (/mcp, /healthz)",
           flush=True)
     uvicorn.run(build_app(), host="0.0.0.0", port=port, log_level="info")
