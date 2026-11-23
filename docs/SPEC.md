@@ -743,3 +743,11 @@ First production stage runs (cloud policy from user call):
 * CI: postproc-image.yml builds BOTH variants per p-v* tag (multi-arch
   cpu + amd64 gpu). runs/ gitignored post-close-call (artifacts were
   one add -A from the repo — caught it).
+
+**Status map (2026-11-23 late).** train x2 ✅, MCP server live ✅, merge
+stage ✅ (723.7MB fp16 verified), awq+onnx blocked by TWO discovered
+issues: (1) transformers version drift between image builds (fixed:
+sanitize at boundaries + floor pins, p-v0.1.4), (2) Forgejo->GitHub push
+mirror stalled on 'context deadline exceeded' -> p-v0.1.3/0.1.4 tags
+never reached Actions. Unblock path: podman-native local image builds
+pushed straight to ghcr (also faster than CI: no QEMU).
