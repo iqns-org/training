@@ -6,23 +6,27 @@ survives quantization because calibration sees its own distribution.
 Output is compressed-tensors format: vLLM (nano0/Orin included) loads it
 natively (auto-detected from config.json).
 
-Version-tolerant ON PURPOSE — llmcompressor has drifted under us four
-times (530b30 tokenizer shape; 88a662 divisibility; 805ff2 constructor
-kwargs + swallowed variant errors). Two hard-won facts steer the ladder:
+Version-tolerant ON PURPOSE — llmcompressor has drifted under us five
+times (530b30 tokenizer shape; 88a662 divisibility; 805ff2 swallowed
+variant errors; c38f58/54c2f6: my dict args used type='float', which is
+FP8-only — the REAL W4A16 preset is type=INT/4bit/group/128/symmetric/
+dynamic=False, so the version-agnostic move is to CLONE the installed
+preset via compressed_tensors preset_name_to_scheme and override ONLY
+group_size). Two hard-won facts steer the ladder:
 
   * THIS model (llama-type, hidden 960, heads 15x64) has 960 % 128 != 0
     on every linear except down_proj -> group_size=128 is impossible
     for most of the model, and an `ignore` list there would preserve
     almost nothing. group_size 64 divides 960 and 2560 exactly.
-  * 805ff2's pydantic `list_type` error says QuantizationModifier wants
-    scheme as a LIST of scheme dicts (targets inside), not a dict —
-    so the scheme-list shape leads, with the old shapes behind it.
+  * group_size is NOT a constructor kwarg and dict-schemes under
+    `scheme` never validate in 0.11 — custom configs live in
+    config_groups (built from the cloned preset, above).
 
 Variants are ordered by a safetensors-header scan (no tensor load): if
-the non-divisible-by-128 modules hold >50% of weight bytes, group_size
-variants go first; otherwise ignore-fit (proven constructible) leads.
-Every construction rejection is LOGGED — silent swallowing was 805ff2's
-blind spot.
+the non-divisible-by-128 modules hold >50% of weight bytes, group-size
+variants go first; otherwise ignore-fit (proven end-to-end in c38f58:
+valid compressed-tensors, just mostly-fp16) leads. Every construction
+rejection is LOGGED — silent swallowing was 805ff2's blind spot.
 """
 import argparse
 import inspect
@@ -114,11 +118,26 @@ def variant_builds(QM, AWQ, ignore, group_first):
             return None
 
     def cfg_groups(gs):
-        """Build via the installed compressed_tensors model classes."""
+        """THE version-agnostic path, settled from installed source:
+        W4A16's real preset is type=INT num_bits=4 strategy=GROUP
+        group_size=128 symmetric=True dynamic=False, activations fp16
+        (input_activations omitted). My earlier variants used
+        type='float' — which is FP8-only and raised
+        'Only num_bits in (8) are supported' (54c2f6 attempt 1). Clone
+        the INSTALLED preset and change only group_size, so the answer
+        is never a guess about a future version."""
+        try:
+            from compressed_tensors.quantization.quant_scheme import (
+                preset_name_to_scheme)
+            base = preset_name_to_scheme("W4A16", ["Linear"])
+            w = base.weights.model_copy(update={"group_size": gs})
+            return {"group_0": base.model_copy(update={"weights": w})}
+        except Exception:                              # noqa: BLE001
+            pass
         from compressed_tensors.quantization import (QuantizationArgs,
                                                      QuantizationScheme)
-        w = QuantizationArgs(num_bits=4, type="float", strategy="group",
-                             group_size=gs, symmetric=True)
+        w = QuantizationArgs(num_bits=4, type="int", strategy="group",
+                             group_size=gs, symmetric=True, dynamic=False)
         return {"group_0": QuantizationScheme(targets=["Linear"],
                                               weights=w,
                                               input_activations=None)}
