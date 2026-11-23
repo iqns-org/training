@@ -317,6 +317,10 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
 
         prov = get_provider(provider)
         offers = prov.catalog(gpus, tier)
+        if vol:
+            # network volumes exist only in the SECURE cloud; community
+            # launches that ask for one 400 as "no instances available"
+            offers = [o for o in offers if o.secure]
         token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
         last_err = None
         inst = None
@@ -539,9 +543,11 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             lk = {}
         else:
             # >=10GB-vram proxy for "real RAM + NVMe" boxes; cheapest
-            # first; stage specs can exclude archs the pinned image
-            # lacks kernels for (cu124 image + Blackwell = no)
+            # first; volume lane needs SECURE offers (network volumes do
+            # not exist in community cloud); stage specs can also exclude
+            # archs the pinned image lacks kernels for
             pool = prov.catalog()
+            pool = [o for o in pool if o.secure]
             for pat in spec.get("arch_exclude", []):
                 pool = [o for o in pool if pat.lower() not in o.gpu_id.lower()]
             offers = [o for o in pool if o.vram_gb >= 10][:12]
