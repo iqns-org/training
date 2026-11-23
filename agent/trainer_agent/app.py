@@ -119,7 +119,8 @@ def start_boot_job() -> None:
                     outputs_dir=run["outputs_dir"],
                     post_hook=lambda state: finalize(
                         run["run_id"], run["outputs_dir"], state,
-                        runner.log_path, run["urls"], run.get("volume")))
+                        runner.log_path, run["urls"], run.get("volume"),
+                        run.get("gate")))
     runner.start()
     runner.start_heartbeat(volume=run.get("volume"), urls=run["urls"])
     _active = runner

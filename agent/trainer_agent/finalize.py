@@ -27,18 +27,20 @@ REQUIRED_FILES = (
 EXCLUDE_DIRS = {"checkpoint-", "runs", "logs", "prepared", "hf-cache"}
 
 
-def _excluded(name: str) -> bool:
+def _excluded(name: str, exclude: tuple | list | None = None) -> bool:
     return any(part.startswith(p) for part in Path(name).parts
-               for p in EXCLUDE_DIRS)
+               for p in (exclude if exclude is not None else EXCLUDE_DIRS))
 
 
-def gate(outputs_dir: Path) -> tuple[bool, list[str]]:
-    """(ok, problems). Required final files present; checkpoint-* leftovers are
-    NORMAL (axolotl saves_per_epoch) — excluded from pack, never fatal."""
+def gate(outputs_dir: Path, gate_spec: dict | None = None) -> tuple[bool, list[str]]:
+    """(ok, problems). Required final files present; checkpoint-* leftovers
+    are NORMAL (axolotl saves_per_epoch) — excluded from pack, never fatal.
+    Stage jobs override the required set (ONNX dirs have no adapter files)."""
+    required = (gate_spec or {}).get("required_files", REQUIRED_FILES)
     problems = []
     if not outputs_dir.is_dir():
         return False, [f"outputs dir missing: {outputs_dir}"]
-    for f in REQUIRED_FILES:
+    for f in required:
         if not (outputs_dir / f).is_file():
             problems.append(f"required artifact missing: {f}")
     if not any(p.is_file() for p in outputs_dir.rglob("*")):
@@ -46,11 +48,13 @@ def gate(outputs_dir: Path) -> tuple[bool, list[str]]:
     return (not problems), problems
 
 
-def pack(outputs_dir: Path, dest: Path) -> Path:
+def pack(outputs_dir: Path, dest: Path,
+         exclude: tuple | list | None = None) -> Path:
     """tar.gz of the artifact set minus excluded dirs."""
     with tarfile.open(dest, "w:gz") as tf:
         for p in sorted(outputs_dir.rglob("*")):
-            if p.is_file() and not _excluded(str(p.relative_to(outputs_dir))):
+            if p.is_file() and not _excluded(str(p.relative_to(outputs_dir)),
+                                             exclude):
                 tf.add(p, arcname=str(p.relative_to(outputs_dir)))
     return dest
 
@@ -67,12 +71,13 @@ def gpu_info() -> dict:
 
 
 def build_manifest(run_id: str, outputs_dir: Path, state: dict,
-                   status: str, problems: list[str] | None = None) -> dict:
+                   status: str, problems: list[str] | None = None,
+                   exclude: tuple | list | None = None) -> dict:
     files = {}
     if outputs_dir.is_dir():
         for p in outputs_dir.rglob("*"):
             rel = str(p.relative_to(outputs_dir))
-            if p.is_file() and not _excluded(rel):
+            if p.is_file() and not _excluded(rel, exclude):
                 files[rel] = {"size": p.stat().st_size, "sha256": sha256_file(p)}
     return {
         "schema": 1, "run_id": run_id, "status": status,
@@ -99,19 +104,23 @@ def _vol_write(src: Path, volume: dict, name: str) -> None:
 
 
 def finalize(run_id: str, outputs_dir: Path, state: dict, log_path: Path,
-             urls: dict[str, str], volume: dict | None = None) -> dict:
+             urls: dict[str, str], volume: dict | None = None,
+             gate_spec: dict | None = None) -> dict:
     """Gate → pack → publish artifacts/manifest/log via the payload's lane
     (presigned URLs and/or mounted volume). Manifest LAST = completion
-    signal. Returns the manifest."""
-    ok, problems = gate(outputs_dir)
+    signal. gate_spec overrides required files/excludes for stage jobs.
+    Returns the manifest."""
+    ok, problems = gate(outputs_dir, gate_spec)
+    exclude = (gate_spec or {}).get("exclude_dirs", EXCLUDE_DIRS)
     manifest = build_manifest(run_id, outputs_dir, state,
-                              "succeeded" if ok else "failed", problems)
+                              "succeeded" if ok else "failed", problems,
+                              exclude)
     mpath = Path(outputs_dir).parent / "manifest.json"
     mpath.write_text(json.dumps(manifest, indent=1))
 
     tar = None
     if ok:
-        tar = pack(outputs_dir, mpath.parent / "artifacts.tar.gz")
+        tar = pack(outputs_dir, mpath.parent / "artifacts.tar.gz", exclude)
         manifest["artifacts_tar_sha256"] = sha256_file(tar)
         mpath.write_text(json.dumps(manifest, indent=1))
         if urls.get("artifacts_put"):

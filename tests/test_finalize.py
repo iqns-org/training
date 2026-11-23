@@ -86,6 +86,42 @@ def test_finalize_volume_writes_manifest_last(monkeypatch, good_outputs, tmp_pat
     assert not list(out.glob("*.part"))
 
 
+def test_gate_spec_stage_dir(tmp_path, monkeypatch):
+    """Stage jobs (ONNX outputs) pass a custom required-files set."""
+    out = tmp_path / "outputs"
+    out.mkdir()
+    (out / "model.onnx").write_bytes(b"\x08\x00")
+    ok, problems = fz.gate(out, {"required_files": ["model.onnx"]})
+    assert ok and problems == []
+    ok, problems = fz.gate(out)          # default adapter gate fails
+    assert not ok and any("adapter_config" in p for p in problems)
+
+
+def test_materialize_stage_inputs_extract(tmp_path):
+    import tarfile
+    src = tmp_path / "artifacts.tar.gz"
+    with tarfile.open(src, "w:gz") as tf:
+        for name in ("adapter_config.json", "adapter_model.safetensors"):
+            p = tmp_path / name
+            p.write_bytes(b"x")
+            tf.add(p, arcname=name)
+    payload = {"run_id": "r9", "command": "true",
+               "inputs": [{"name": "model", "path": str(src),
+                           "extract": True}],
+               "gate": {"required_files": ["model.onnx"]}}
+    run = joblane.materialize(payload, work=tmp_path / "work")
+    assert (tmp_path / "work/inputs/model/adapter_config.json").is_file()
+    assert not (tmp_path / "work/inputs/model.tar.gz").exists()  # cleaned
+    assert run["gate"] == {"required_files": ["model.onnx"]}
+
+
+def test_materialize_no_config_yaml(tmp_path):
+    payload = {"run_id": "r10", "command": "true"}
+    run = joblane.materialize(payload, work=tmp_path / "w")
+    assert not (tmp_path / "w/job/train.yaml").exists()
+    assert run["urls"] == {} and run.get("gate") is None
+
+
 def test_finalize_failed_status(monkeypatch, tmp_path):
     empty = tmp_path / "outputs" / "run-2"
     empty.mkdir(parents=True)

@@ -86,6 +86,29 @@ def test_submit_volume_lane_dry(tmp_path, monkeypatch, recipe):
     assert payload["urls"] == {}
 
 
+def test_submit_stage_dry_local(tmp_path, monkeypatch):
+    puts = {}
+    monkeypatch.setattr(dispatch.storage, "host_put",
+                        lambda k, d: puts.__setitem__(k, d))
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    res = dispatch.submit_stage("merge", "from-1", base_model="A/B",
+                                dry=True)
+    assert res["lane"] == "host" and res.get("dry")
+    payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
+    assert payload["inputs"][0]["path"] == "/data/runs/from-1/artifacts.tar.gz"
+    assert payload["gate"] == {"required_files": ["config.json"]}
+    assert "merge_adapter.py" in payload["command"] and "--base A/B" in payload["command"]
+    assert payload["config_yaml"] == ""
+
+
+def test_submit_stage_validation(monkeypatch):
+    monkeypatch.setattr(dispatch, "ROOT", Path("/nonexistent"))
+    assert "unknown stage" in dispatch.submit_stage("bogus", "r")["error"]
+    assert "base_model" in dispatch.submit_stage("merge", "r")["error"]
+    assert "local provider" in dispatch.submit_stage("onnx", "r",
+                                                     provider="runpod")["error"]
+
+
 def test_submit_lane_force_presign(tmp_path, monkeypatch, recipe, fake_s3):
     monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
     monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "user_x")

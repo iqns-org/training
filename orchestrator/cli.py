@@ -119,6 +119,15 @@ def cmd_submit(args):
     raise SystemExit(0 if res.get("status") in ("succeeded", None) and not res.get("error") else 1)
 
 
+def cmd_stage(args):
+    res = dispatch.submit_stage(
+        args.kind, args.from_run, base_model=args.base,
+        provider=args.provider, dry=args.dry, max_runtime=args.max_runtime)
+    _print(res)
+    raise SystemExit(0 if res.get("status") in ("succeeded", None)
+                     and not res.get("error") else 1)
+
+
 def cmd_reconcile(args):
     res = dispatch.resume(run_id=args.run_id, poll=args.poll)
     _print(res)
@@ -232,6 +241,18 @@ def build_parser():
     s.add_argument("--max-runtime", type=int, default=3600)
     s.add_argument("--max-cost", type=float, default=0.75)
     s.set_defaults(func=cmd_submit)
+
+    s = sub.add_parser("stage", help="post-process a run's artifacts "
+                        "(merge|onnx|int8) — $0 local K8s Jobs")
+    s.add_argument("kind", choices=sorted(dispatch.STAGE_SPECS))
+    s.add_argument("--from-run", required=True, help="run id whose "
+                    "artifacts.tar.gz is the input")
+    s.add_argument("--base", help="HF base model id (merge)")
+    s.add_argument("--provider", default="local",
+                   choices=available_providers())
+    s.add_argument("--dry", action="store_true")
+    s.add_argument("--max-runtime", type=int, default=5400)
+    s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("reconcile", help="re-attach to an open run "
                         "(post-crash harvest + terminate)")

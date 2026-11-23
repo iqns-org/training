@@ -1,0 +1,50 @@
+name: postproc-image
+
+# Cost policy: builds fire on p-v* release tags ONLY. arm64 (local
+# cluster jobs). No gha cache: torch layers make mode=max exports slow,
+# and postproc builds are rare enough to start cold.
+
+on:
+  push:
+    tags: ["p-v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: postproc-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push (arm64)
+        uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: images/postproc/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/postproc:${{ github.ref_name }}
+
+      - name: Pin string
+        run: |
+          echo "Stage jobs launch with:" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "    ghcr.io/${GITHUB_REPOSITORY_OWNER}/postproc@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

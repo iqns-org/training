@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tarfile
 from pathlib import Path
 
 from .transfer import download, sha256_file
@@ -29,32 +30,62 @@ from .transfer import download, sha256_file
 WORK = Path("/work")
 
 
+def _fetch(inp: dict, blob: Path) -> None:
+    """Stage input: local path (volume/host lane) or URL (presign lane)."""
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    if inp.get("path"):
+        src = Path(inp["path"])
+        if src != blob:
+            shutil.copyfile(src, blob)
+        if inp.get("sha256") and sha256_file(blob) != inp["sha256"]:
+            raise ValueError(f"input sha mismatch for {blob.name}")
+    elif inp.get("url"):
+        download(inp["url"], blob, sha256=inp.get("sha256"))
+    else:
+        raise ValueError(f"input {inp.get('name')!r} has neither path nor url")
+
+
 def materialize(payload: dict, work: Path = WORK) -> dict:
-    """Write config + dataset under work/, return {run_id, command,
-    outputs_dir, log_path, urls, volume}."""
+    """Write config + dataset + stage inputs under work/, return
+    {run_id, command, outputs_dir, log_path, urls, volume, gate}."""
     run_id = payload["run_id"]
     jobdir = work / "job"
     jobdir.mkdir(parents=True, exist_ok=True)
-    (jobdir / "train.yaml").write_text(payload["config_yaml"])
+    if payload.get("config_yaml"):
+        (jobdir / "train.yaml").write_text(payload["config_yaml"])
 
     ds = payload.get("dataset") or {}
-    dest = work / "datasets" / ds.get("name", "data.jsonl")
-    if ds.get("path"):                                  # volume lane: copy
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if Path(ds["path"]) != dest:
-            shutil.copyfile(ds["path"], dest)
-        if ds.get("sha256") and sha256_file(dest) != ds["sha256"]:
-            raise ValueError(f"dataset sha mismatch for {dest.name}")
-        ds = {**ds, "name": dest.name}                  # agent-local path
-    elif ds.get("url"):                                 # presign lane: fetch
-        download(ds["url"], dest, sha256=ds.get("sha256"))
+    if ds:
+        dest = work / "datasets" / ds.get("name", "data.jsonl")
+        if ds.get("path"):                               # volume lane: copy
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if Path(ds["path"]) != dest:
+                shutil.copyfile(ds["path"], dest)
+            if ds.get("sha256") and sha256_file(dest) != ds["sha256"]:
+                raise ValueError(f"dataset sha mismatch for {dest.name}")
+        elif ds.get("url"):                              # presign lane: fetch
+            download(ds["url"], dest, sha256=ds.get("sha256"))
+
+    for inp in payload.get("inputs", []):                # stage jobs
+        name = inp.get("name", "in")
+        blob = work / "inputs" / f"{name}.tar.gz"
+        if inp.get("extract"):
+            _fetch(inp, blob)
+            out = work / "inputs" / name
+            out.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(blob) as tf:
+                tf.extractall(out, filter="data")       # no path games
+            blob.unlink()
+        else:
+            _fetch(inp, out := work / "inputs" / name)
 
     outputs = Path(payload.get("outputs_dir") or work / "outputs" / run_id)
     outputs.mkdir(parents=True, exist_ok=True)
     return {"run_id": run_id, "command": payload["command"],
             "outputs_dir": outputs, "log_path": None,
             "urls": payload.get("urls", {}),
-            "volume": payload.get("volume")}
+            "volume": payload.get("volume"),
+            "gate": payload.get("gate")}
 
 
 def boot_from_env(work: Path = WORK) -> dict | None:

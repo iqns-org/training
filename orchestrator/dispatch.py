@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -343,6 +344,111 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                max_runtime=max_runtime, prov=prov, inst_id=inst.id,
                price_hr=inst.price_hr, max_cost=max_cost,
                keepalive=(lane == "presign"))
+        return result
+    except Exception as e:
+        led.update(run_id, state="failed", error=str(e)[:400])
+        result.update({"status": "error", "error": str(e)})
+        return result
+    finally:
+        if pod_id:
+            try:
+                get_provider(provider).terminate(pod_id)
+                result["terminated"] = True
+            except Exception as e:
+                result["terminate_error"] = str(e)
+
+
+STAGE_SPECS = {
+    "merge": {"script": "merge_adapter.py", "needs_base": True,
+              "required": ["config.json"]},
+    "onnx": {"script": "export_onnx.py", "required": ["model.onnx"]},
+    "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"]},
+}
+
+POSTPROC_PIN = "ghcr.io/iqns-org/postproc:p-v0.1.0"
+
+
+def _postproc_image() -> str:
+    return os.environ.get("POSTPROC_IMAGE", POSTPROC_PIN)
+
+
+def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
+                 provider: str = "local", max_runtime: int = 5400,
+                 poll: int = 15, dry: bool = False,
+                 on_run_id: "callable | None" = None) -> dict:
+    """Post-process a finished run's artifacts (merge|onnx|int8) as a
+    $0 local K8s Job. Input = runs/<from_run>/artifacts.tar.gz extracted
+    to /work/inputs/model on the pod; output packed via the SAME finalize
+    contract with a stage-specific gate. Chainable: every stage's own
+    artifacts.tar.gz is a valid input for the next."""
+    if kind not in STAGE_SPECS:
+        return {"status": "error",
+                "error": f"unknown stage {kind!r} (have: "
+                         f"{', '.join(STAGE_SPECS)})"}
+    spec = STAGE_SPECS[kind]
+    if spec.get("needs_base") and not base_model:
+        return {"status": "error", "error": "merge stage needs base_model"}
+    if provider != "local":
+        return {"status": "error",
+                "error": "stage v1 runs on the local provider only "
+                         "(runpod/gpuai stage capacity = later)"}
+    led = Ledger(ROOT / "state" / "ledger.db")
+    run_id = led.create("stage", {"kind": kind, "from_run": from_run,
+                                  "base_model": base_model},
+                        provider=provider)
+    if on_run_id:
+        on_run_id(run_id)
+    result = {"run_id": run_id, "kind": kind, "from_run": from_run,
+              "lane": "host"}
+    pod_id = ""
+    mount = os.environ.get("LOCAL_MOUNT", "/data")
+    in_key = f"runs/{from_run}/artifacts.tar.gz"
+    cmd = (f"python /opt/postproc/{spec['script']} "
+           f"--in /work/inputs/model --out /work/outputs")
+    if spec.get("needs_base"):
+        cmd += f" --base {shlex.quote(base_model)}"
+    payload = {"run_id": run_id, "command": cmd, "config_yaml": "",
+               "inputs": [{"name": "model", "path": f"{mount}/{in_key}",
+                           "extract": True}],
+               "outputs_dir": "/work/outputs",
+               "gate": {"required_files": spec["required"]},
+               "urls": {},
+               "volume": {"mount": mount, "prefix": f"runs/{run_id}"}}
+    try:
+        storage.host_put(f"runs/{run_id}/payload.json",
+                         json.dumps(payload).encode())
+        result["payload_key"] = f"runs/{run_id}/payload.json"
+        if dry:
+            led.update(run_id, state="verified", note=f"dry stage {kind}")
+            result["dry"] = True
+            return result
+
+        prov = get_provider(provider)
+        offers = prov.catalog()
+        token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
+        inst = None
+        last_err = None
+        for o in offers:
+            try:
+                inst = prov.launch(
+                    name=f"trainer-{run_id[-8:]}", image=_postproc_image(),
+                    gpu_id=o.gpu_id,
+                    env={"JOB_PAYLOAD_PATH":
+                         f"{mount}/runs/{run_id}/payload.json",
+                         "AGENT_TOKEN": token})
+                break
+            except ProviderError as e:
+                last_err = e
+        if not inst:
+            raise ProviderError(f"local launch failed: {last_err}")
+        pod_id = inst.id
+        result["instance"] = {"id": inst.id, "gpu": inst.gpu_type}
+        led.update(run_id, state="provisioning", instance_id=inst.id)
+
+        _watch(run_id, storage.host_get, result, led, poll,
+               started=time.time(), max_runtime=max_runtime,
+               prov=prov, inst_id=inst.id)
+        result["output"] = f"runs/{run_id}/artifacts.tar.gz"
         return result
     except Exception as e:
         led.update(run_id, state="failed", error=str(e)[:400])
