@@ -601,3 +601,26 @@ Remaining P1 tail: full-dataset submit (~22.8k rows, 2 epochs, expect
 $0.5–1.5); agent periodic `status.json` heartbeat (mid-run liveness);
 volume→rustfs canonical sync once infra creds land; rotate the pasted
 S3 API key (transcript exposure).
+
+**(i) P1 tail landed + live validation in flight (2026-11-23, later).**
+* `v0.2.0-rc.2` @ sha256:67c6ab58… adds: metrics scraper fixed for
+  axolotl's ACTUAL format (repr-dict lines with single quotes — the old
+  JSON branch had never matched; plus tqdm bars now record step/total
+  even without loss on the line) and 30 s `status.json` heartbeat onto
+  the lane (volume tmp+rename / presigned `status_put`), read via
+  `qtrain progress <run_id>`. 39 tests green.
+* FULL-dataset run launched on rc.1 (`20261123-120057-cd3722`, RTX 2000
+  Ada, caps 3.5 h / $2.50) + rc.2 mini validation launched concurrently
+  (`trainer-4-6ce46f`) — expect manifest metrics + live heartbeats on
+  the mini; the full run's metrics stay recoverable from run.log.
+* CI incident: rc.2 build pushed the image (index verified: 31 amd64
+  layers + attestation) but the job HUNG post-push (infra cache-export;
+  ~15 min, steps after push are informational) — `gh run cancel` is
+  403 for the smart-trust PAT (needs owner click). Until GitHub's job
+  timeout reaps run 45092408188, the `trainer-image` concurrency group
+  is blocked — cancel it in the web UI before cutting real `v0.2.0`.
+* Next: gpuai adapter port (legacy `src/gpu/gpuai.py`, admin.gpusharing
+  .com REST — probe returned empty here, verify from cluster/correct
+  host next), volume→rustfs sync, key rotation, then `v0.2.0` cut +
+  delete legacy bash (`bin/gpuai-*`, `src/remote_axolotl_run.sh`).
+
