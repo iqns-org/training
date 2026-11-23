@@ -914,3 +914,19 @@ successful stage runs record wall minutes into `state/budget_obs.json`
 and the rolling median replaces the static `EST_MINUTES` guess once two
 samples exist (train kinds deliberately excluded — recipe-driven
 durations are not a job-class default).
+
+**(s) Attempt #12 forensics: the ladder worked, the model spoke (2026-11-24).**
+Passthrough proved itself: the CURRENT repo script ran on a right-sized
+card, logged every attempt, and named its own killer twice over —
+(1) `960 % 128 != 0`: this model has 960-column weight layers, so
+W4A16's default group_size=128 is arithmetically impossible there
+(compressed-tensors would corrupt on save/forward — the error says
+exactly that); ladder reordered to group_size 64 -> 32 -> 128 with
+dict-scheme fallbacks, which divides 960 AND every usual transformer
+dim. (2) A real bug of mine: an early `continue` in calib_texts skipped
+the samples-cap check, so 22,829 rows (not 256) went through the
+tokenizer — fixed + comment. AWQModifier path also logged its shape
+(`requires quantization fields`), feeding the dict-scheme variants.
+Meanwhile: pi00 port 30022 refused then host timed out — the network
+flap class again; push + attempts queued behind a reachability
+watchdog. 88a662 cost: $0.42 (at cap), zero pods left behind.

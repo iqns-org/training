@@ -25,24 +25,29 @@ from util import sanitize_tokenizer_config  # noqa: E402
 
 
 def calib_texts(tok, dataset, samples):
-    """Chat rows -> templated text, tolerating both corpus shapes."""
+    """Chat rows -> templated text, tolerating both corpus shapes. The
+    >=samples cap must be checked on EVERY appended row — an early
+    `continue` skipped it and calibrated the whole corpus once (88a662:
+    22,829 examples through the tokenizer for a 256-sample job)."""
     texts = []
     for line in Path(dataset).read_text().splitlines():
         if not line.strip():
             continue
         row = json.loads(line)
+        t = ""
         if "messages" in row:
             try:
-                texts.append(tok.apply_chat_template(
-                    row["messages"], tokenize=False,
-                    add_generation_prompt=False))
-                continue
+                t = tok.apply_chat_template(row["messages"], tokenize=False,
+                                            add_generation_prompt=False)
             except Exception:                          # noqa: BLE001
-                pass
-        texts.append(row.get("text") or row.get("prompt") or "")
+                t = row.get("text") or ""
+        else:
+            t = row.get("text") or row.get("prompt") or ""
+        if t:
+            texts.append(t)
         if len(texts) >= samples:
             break
-    return [t for t in texts if t]
+    return texts
 
 
 def dataset_shapes(texts):
@@ -56,9 +61,13 @@ def dataset_shapes(texts):
 
 
 def recipe_variants():
-    """(label, recipe) ladder: real AWQ first, weight-only W4A16 fallbacks.
-    W4A16 (no activation scaling) still yields the int4 compressed-tensors
-    format vLLM needs — same serving story, slightly worse perplexity."""
+    """(label, recipe) ladder, ordered by expected fit — 88a662 taught
+    the shape: this model has layers with 960 weight columns, and
+    960 % 128 != 0, so W4A16's default group_size=128 is
+    arithmetically impossible there (compressed-tensors would corrupt on
+    save/forward). group_size 64 divides 960 AND every usual transformer
+    dim, so it leads; 32 is the backstop. Real AWQ (activation-scaled)
+    rides the same group size; the bare QM path is the safety net."""
     QM = None
     try:
         from llmcompressor.modifiers.quantization import QuantizationModifier
@@ -66,20 +75,39 @@ def recipe_variants():
     except Exception:                                  # noqa: BLE001
         pass
     if QM:
+        for gs in (64, 32, 128):
+            try:
+                yield (f"W4A16/g{gs}",
+                       [QM(targets="Linear", scheme="W4A16",
+                           group_size=gs, ignore=["lm_head"])])
+            except Exception:                          # noqa: BLE001
+                continue   # group_size kwarg rejected by this version
         try:
             from llmcompressor.modifiers.awq import AWQModifier
-            yield ("AWQModifier+W4A16",
+            yield ("AWQ+W4A16/g64",
                    [AWQModifier(), QM(targets="Linear", scheme="W4A16",
-                                      ignore=["lm_head"])])
+                                      group_size=64, ignore=["lm_head"])])
         except Exception:                              # noqa: BLE001
             pass
-        for scheme in ("W4A16", "W4A16_AWQ"):
+        # dict-scheme form: what the pydantic validator ASKED for on
+        # 530b30 ("scheme must be a preset name OR a dictionary")
+        for gs in (64, 32):
             try:
-                yield (f"QuantizationModifier[{scheme}]",
-                       [QM(targets="Linear", scheme=scheme,
+                yield (f"W4A16-dict/g{gs}",
+                       [QM(targets="Linear",
+                           scheme={"W4A16": {"num_bits": 4, "type": "float",
+                                             "strategy": "group",
+                                             "group_size": gs,
+                                             "symmetric": True}},
                            ignore=["lm_head"])])
             except Exception:                          # noqa: BLE001
-                continue     # bad scheme name: try the next, don't die
+                continue
+        try:
+            yield ("legacy W4A16_AWQ",
+                   [QM(targets="Linear", scheme="W4A16_AWQ",
+                       ignore=["lm_head"])])
+        except Exception:                              # noqa: BLE001
+            pass
 
 
 def build_kwargs(oneshot, ds, recipe, out, texts):
