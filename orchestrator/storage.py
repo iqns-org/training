@@ -14,8 +14,6 @@ import os
 import urllib.parse
 from pathlib import Path
 
-from .config import load_dotenv
-
 SERVICE = "s3"
 ALGO = "AWS4-HMAC-SHA256"
 
@@ -25,7 +23,7 @@ class StorageError(RuntimeError):
 
 
 def _cfg(public: bool = False) -> dict:
-    load_dotenv()
+    # env contract: caller loads .env (cli main / tests set os.environ).
     endpoint = os.environ.get("S3_ENDPOINT", "http://pi00.lan:30900").rstrip("/")
     if public:
         endpoint = os.environ.get("S3_PUBLIC_ENDPOINT", endpoint).rstrip("/")
