@@ -94,57 +94,63 @@ def calib_texts(tok, dataset, samples):
     return texts
 
 
-def scheme_list(gsize):
-    """The shape 805ff2's `list_type` error demanded: list of schemes,
-    targets inside, explicit group size."""
-    return [{"format": "int", "targets": ["Linear"],
-             "weights": {"num_bits": 4, "type": "float",
-                         "strategy": "group", "group_size": gsize,
-                         "symmetric": True},
-             "input_activations": None}]
-
-
 def variant_builds(QM, AWQ, ignore, group_first):
     """Priority-ordered (label, recipe) ladder; construction rejections
-    LOGGED, identical recipes deduped."""
+    LOGGED, identical recipes deduped.
+
+    0.11.0 forensics (c38f58): the modifier's REAL fields are
+    scheme (preset name only) / config_groups / ignore / targets / ...
+    -- dict-schemes NEVER validate; custom group size goes through
+    config_groups built with compressed_tensors model objects (the
+    package the installed version actually ships). 'group' is recipe
+    bookkeeping, not group_size. AWQ lives in modifiers.transform.awq
+    now (import-path deprecation warning in the same log)."""
     def attempt_build(label, fn):
         try:
             return (label, fn())
         except Exception as e:                         # noqa: BLE001
             print(f"variant unavailable {label}: "
-                  f"{type(e).__name__}: {str(e)[:200]}", flush=True)
+                  f"{type(e).__name__}: {str(e)[:260]}", flush=True)
             return None
 
-    def via_config():
-        from compressed_tensors.quantization import QuantizationConfig
-        qc = QuantizationConfig(config_groups={
-            "group_0": {"targets": ["Linear"],
-                        "weights": {"num_bits": 4, "type": "float",
-                                    "strategy": "group",
-                                    "group_size": 64,
-                                    "symmetric": True},
-                        "input_activations": None,
-                        "format": "int"}})
-        return [QM(config=qc)]
+    def cfg_groups(gs):
+        """Build via the installed compressed_tensors model classes."""
+        from compressed_tensors.quantization import (QuantizationArgs,
+                                                     QuantizationScheme)
+        w = QuantizationArgs(num_bits=4, type="float", strategy="group",
+                             group_size=gs, symmetric=True)
+        return {"group_0": QuantizationScheme(targets=["Linear"],
+                                              weights=w,
+                                              input_activations=None)}
 
     cands = []
     if QM:
-        g64 = ("W4A16-g64/scheme-list",
-               lambda: [QM(scheme=scheme_list(64))])
-        fits = ("W4A16-ignore-fit",
-                lambda: [QM(targets="Linear", scheme="W4A16",
-                            ignore=ignore)])
-        first, second = (g64, fits) if group_first else (fits, g64)
-        cands += [first, second,
-                  ("W4A16-g32/scheme-list",
-                   lambda: [QM(scheme=scheme_list(32))]),
-                  ("QuantizationConfig/g64", via_config)]
+        first, second = [], []
+        if group_first:
+            first = [("g64/config-groups",
+                      lambda: [QM(config_groups=cfg_groups(64),
+                                  ignore=["lm_head"])])]
+            second = [("g32/config-groups",
+                       lambda: [QM(config_groups=cfg_groups(32),
+                                   ignore=["lm_head"])])]
+        else:
+            first = [("W4A16-ignore-fit",
+                      lambda: [QM(targets="Linear", scheme="W4A16",
+                                  ignore=ignore)])]
+            second = [("g64/config-groups",
+                       lambda: [QM(config_groups=cfg_groups(64),
+                                   ignore=["lm_head"])])]
+        cands += first + second + [
+            ("W4A16-ignore-fit",
+             lambda: [QM(targets="Linear", scheme="W4A16",
+                         ignore=ignore)]),
+            ("W4A16-preset",
+             lambda: [QM(targets="Linear", scheme="W4A16")]),
+        ]
     if AWQ and QM:
         cands.append(("AWQ+QM[g64]",
-                      lambda: [AWQ(), QM(scheme=scheme_list(64))]))
-    if QM:
-        cands.append(("legacy W4A16_AWQ",
-                      lambda: [QM(targets="Linear", scheme="W4A16_AWQ")]))
+                      lambda: [AWQ(), QM(config_groups=cfg_groups(64),
+                                         ignore=["lm_head"])]))
 
     ordered, seen = [], set()
     for label, fn in cands:
@@ -197,10 +203,14 @@ def main() -> int:
     except Exception:                                  # noqa: BLE001
         pass
     try:
-        from llmcompressor.modifiers.awq import AWQModifier
+        from llmcompressor.modifiers.transform.awq import AWQModifier
         AWQ = AWQModifier
     except Exception:                                  # noqa: BLE001
-        pass
+        try:
+            from llmcompressor.modifiers.awq import AWQModifier
+            AWQ = AWQModifier
+        except Exception:                              # noqa: BLE001
+            pass
 
     print(f"llmcompressor {getattr(llmcompressor, '__version__', '?')} | "
           f"oneshot params: "
