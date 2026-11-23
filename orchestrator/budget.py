@@ -21,7 +21,12 @@ error = MARGIN (default 1.5x estimate), nothing more.
 
 from __future__ import annotations
 
+import json
 import os
+import statistics
+from pathlib import Path
+
+from .config import ROOT
 
 MARGIN = float(os.environ.get("QTRAIN_BUDGET_MARGIN", "1.5"))
 TOTAL = float(os.environ.get("QTRAIN_BUDGET", "5.0"))       # concurrent est.
@@ -35,8 +40,41 @@ EST_MINUTES = {"merge": 12, "onnx": 20, "int8": 8, "awq": 25,
 # launched, $0 — which must not haunt the aggregate gate.
 BILLED = ("pending", "provisioning", "running", "uploading")
 
+# self-calibration: observed wall-clock per kind, kept as a rolling tail of
+# the last samples; the median replaces the static EST_MINUTES guess once
+# real data exists (observations from live runs beat folklore). Stage
+# kinds only: train duration is a property of the user's recipe, not a
+# job-class default, and must not be polluted by mini validations.
+OBS_FILE = ROOT / "state" / "budget_obs.json"
+OBS_KINDS = ("merge", "onnx", "int8", "awq")
 
-def est_minutes(kind: str) -> int:
+
+def _obs():
+    try:
+        return json.loads(OBS_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def record_observed(kind: str, minutes: float) -> None:
+    if kind not in OBS_KINDS or not (0.2 <= minutes <= 720):
+        return                                   # outliers: boot ghosts
+    data = _obs()
+    tail = (data.get(kind) or [])[-9:] + [round(minutes, 2)]
+    data[kind] = tail
+    try:
+        OBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = OBS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, OBS_FILE)
+    except OSError:
+        pass
+
+
+def est_minutes(kind: str):
+    obs = _obs().get(kind) or []
+    if len(obs) >= 2:
+        return statistics.median(obs)
     return EST_MINUTES.get(kind, 30)
 
 
@@ -56,14 +94,16 @@ def fits(offers, min_vram: int, ceiling_hr: float):
     return ok, best
 
 
-def aggregate_gate(open_count: int, est: float, total: float | None = None) -> str | None:
-    """None = allowed; else the refusal reason."""
+def aggregate_gate(open_ests, est: float, total: float | None = None) -> str | None:
+    """None = allowed; else the refusal reason. open_ests = the stored
+    est_cost of every already-BILLED run (exact sum, not a count proxy)."""
     cap = total if total is not None else TOTAL
-    projected = est * (open_count + 1)
+    projected = sum(open_ests) + est
     if projected > cap:
-        return (f"aggregate budget: {open_count} open run(s) x est "
-                f"${est:.2f} -> projected ${projected:.2f} > QTRAIN_BUDGET "
-                f"${cap:.2f}; raise the env or finish/wait out open runs")
+        return (f"aggregate budget: {len(open_ests)} open run(s) at "
+                f"${sum(open_ests):.2f} + this ${est:.2f} -> projected "
+                f"${projected:.2f} > QTRAIN_BUDGET ${cap:.2f}; raise the "
+                "env or wait out open runs")
     return None
 
 

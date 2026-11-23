@@ -194,6 +194,40 @@ def cmd_metrics(args):
                   f"-> last {losses[-1]}, min {min(losses)}")
 
 
+def cmd_budget(args):
+    from . import budget as bud
+    import statistics
+    led = Ledger()
+    bal = None
+    if args.provider == "runpod":
+        try:
+            bal = _prov(args).balance()
+        except Exception:
+            pass
+    opens = [r for r in led.list() if r["state"] in bud.BILLED]
+    obs = bud._obs()
+    out = {"balance": bal, "reserve": bud.RESERVE,
+           "budget_total": bud.TOTAL, "margin": bud.MARGIN,
+           "open_runs": [{"run_id": r["run_id"], "kind": r["kind"],
+                          "state": r["state"],
+                          "est_cost": round(r.get("est_cost") or 0, 3)}
+                         for r in opens],
+           "open_projected": round(sum(r.get("est_cost") or 0
+                                       for r in opens), 2),
+           "observed_median_minutes":
+               {k: round(statistics.median(v), 1)
+                for k, v in obs.items() if v}}
+    _print(out)
+
+
+def cmd_preflight(args):
+    res = dispatch.preflight(args.kind, provider=args.provider,
+                             max_price_hr=args.max_price,
+                             max_runtime=args.max_runtime)
+    _print(res)
+    raise SystemExit(0 if "launch" in str(res.get("decision", "")) else 1)
+
+
 def cmd_events(args):
     from . import notify
     for e in notify.recent(limit=args.limit, run_id=args.run or None):
@@ -348,6 +382,20 @@ def build_parser():
     s = sub.add_parser("progress", help="live heartbeat from the lane")
     s.add_argument("run_id")
     s.set_defaults(func=cmd_progress)
+
+    s = sub.add_parser("budget", help="spend visibility: balance, open "
+                       "projections, caps, observed medians")
+    prov_arg(s)
+    s.set_defaults(func=cmd_budget)
+
+    s = sub.add_parser("preflight", help="read-only launch decision "
+                       "report: cards, estimate, gates (writes nothing)")
+    s.add_argument("kind", nargs="?", default="train",
+                   choices=["train"] + sorted(dispatch.STAGE_SPECS))
+    prov_arg(s)
+    s.add_argument("--max-price", type=float, default=None)
+    s.add_argument("--max-runtime", type=int, default=3600)
+    s.set_defaults(func=cmd_preflight)
 
     s = sub.add_parser("watch", help="follow a run until terminal state")
     s.add_argument("run_id")

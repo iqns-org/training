@@ -58,10 +58,10 @@ def test_fits_empty_when_nothing_within_ceiling():
 
 
 def test_aggregate_gate_blocks_over_budget():
-    # 1 open run + this, est 0.375 each -> projected 0.75 well under default
-    assert budget.aggregate_gate(1, 0.375) is None
-    # many opens blow the default $5 concurrent-estimate cap
-    why = budget.aggregate_gate(20, 0.375)
+    # empty opens: this run's est alone is far under the default $5
+    assert budget.aggregate_gate([], 0.375) is None
+    # exact sum of open ests + this one crosses the cap
+    why = budget.aggregate_gate([0.375] * 20, 0.375)
     assert why and "aggregate budget" in why
 
 
@@ -70,3 +70,51 @@ def test_balance_gate_keeps_reserve():
     assert budget.balance_gate(None, 0.375) is None   # provider won't say
     why = budget.balance_gate(1.50, 0.375)            # < RESERVE(2) + est
     assert why and "balance" in why
+
+
+def test_observed_medians_replace_guesses(tmp_path, monkeypatch):
+    monkeypatch.setattr(budget, "OBS_FILE", tmp_path / "obs.json")
+    assert budget.est_minutes("awq") == 25          # static until data
+    budget.record_observed("awq", 9.0)
+    assert budget.est_minutes("awq") == 25          # needs >=2 samples
+    budget.record_observed("awq", 21.0)
+    assert budget.est_minutes("awq") == 15.0        # median of the tail
+    # train is deliberately excluded: recipe-driven, polluted by minis
+    budget.record_observed("train", 3.0)
+    assert budget.est_minutes("train") == 60
+    # outliers (boot ghosts, >12h hangs) never enter the tail
+    budget.record_observed("awq", 0.01)
+    budget.record_observed("awq", 5000)
+    assert budget.est_minutes("awq") == 15.0
+
+
+def test_preflight_reports_without_launching(tmp_path, monkeypatch):
+    from orchestrator import dispatch
+    from orchestrator.models import Offer
+
+    def offers():
+        return [Offer(provider="runpod", gpu_id="RTX B200", vram_gb=180,
+                      price_hr=7.99, secure=True),
+                Offer(provider="runpod", gpu_id="A5000", vram_gb=24,
+                      price_hr=0.69, secure=True),
+                Offer(provider="runpod", gpu_id="RTX2000", vram_gb=6,
+                      price_hr=0.24, secure=True)]
+
+    class Stub:
+        def catalog(self, gpus=None, tier=None):
+            return offers()
+        def balance(self):
+            return 9.0
+
+    monkeypatch.setattr(dispatch, "get_provider", lambda name: Stub())
+    monkeypatch.setattr(dispatch.storage, "vol_cfg", lambda: None)
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    out = dispatch.preflight("awq")
+    assert out["candidates"] == [{"gpu": "A5000", "price_hr": 0.69,
+                                  "vram_gb": 24}]     # B200 ceiling-culled
+    assert out["estimate"] == round(0.69 * 25 / 60 * budget.MARGIN, 2)
+    assert out["decision"].startswith("launch A5000")
+    assert out["balance"] == 9.0
+    # read-only: the (fresh) ledger holds nothing — no run was registered
+    from orchestrator.ledger import Ledger
+    assert Ledger(tmp_path / "state" / "ledger.db").list() == []

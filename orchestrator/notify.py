@@ -16,6 +16,7 @@ urllib in a thread is enough for best-effort fire-and-forget).
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import threading
@@ -29,6 +30,8 @@ JOURNAL = ROOT / "state" / "notifications.jsonl"
 
 _LISTENERS: list = []
 _LOCK = threading.Lock()
+_PENDING: set = set()          # live webhook threads (short-lived CLI
+                               # processes must not drop events at exit)
 
 
 def webhook_url() -> str:
@@ -70,8 +73,14 @@ def emit(kind: str, run_id: str = "", **fields) -> dict:
         pass
     url = webhook_url()
     if url:
-        threading.Thread(target=_post, args=(url, json.dumps(event).encode()),
-                         daemon=True, name="qtrain-webhook").start()
+        def _send():
+            try:
+                _post(url, json.dumps(event).encode())
+            finally:
+                _PENDING.discard(_t)
+        _t = threading.Thread(target=_send, daemon=True, name="qtrain-webhook")
+        _PENDING.add(_t)
+        _t.start()
     with _LOCK:
         fns = list(_LISTENERS)
     for fn in fns:
@@ -80,6 +89,19 @@ def emit(kind: str, run_id: str = "", **fields) -> dict:
         except Exception:                              # noqa: BLE001
             pass
     return event
+
+
+def flush(timeout: float = 5.0) -> None:
+    """Join in-flight webhook POSTs before the process dies — otherwise a
+    short-lived CLI exit (capacity refusal -> SystemExit) silently drops
+    the very failure events receivers most want. Daemon threads make this
+    a bounded wait, never a hang."""
+    deadline = time.time() + timeout
+    for t in list(_PENDING):
+        t.join(max(0.05, deadline - time.time()))
+
+
+atexit.register(flush)
 
 
 def deliver_sync(event: dict) -> tuple[bool, str]:

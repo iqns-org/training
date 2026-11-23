@@ -904,3 +904,13 @@ outright (6709e3: llmcompressor's API drifted around the frozen script
 while the repo copy was already right) and means script fixes never wait
 on an image rebuild — only dependency stacks remain in preludes.
 
+
+§14 addendum — spend visibility: `qtrain budget` (balance, reserve, open
+projections from the ledger's now-stored `est_cost`/`price_hr` columns,
+observed medians) and `qtrain preflight [kind]` (read-only decision
+report: candidates that pass the ceiling, estimate, kill threshold, gate
+verdicts — writes nothing, launches nothing). Estimates SELF-CALIBRATE:
+successful stage runs record wall minutes into `state/budget_obs.json`
+and the rolling median replaces the static `EST_MINUTES` guess once two
+samples exist (train kinds deliberately excluded — recipe-driven
+durations are not a job-class default).

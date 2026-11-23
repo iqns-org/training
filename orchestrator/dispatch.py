@@ -143,7 +143,8 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
                                      lane_state)
         if manifest_raw:
             _harvest(run_id, manifest_raw, get_run, led, result)
-            _finish_done(run_id, started, price_hr, get_run, put_run)
+            _finish_done(run_id, started, price_hr, get_run, put_run,
+                         kind=result.get("kind") or "")
             return result
         if prov and inst_id:
             try:
@@ -156,7 +157,8 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
                 manifest_raw = get_run(f"runs/{run_id}/manifest.json")
                 if manifest_raw:
                     _harvest(run_id, manifest_raw, get_run, led, result)
-                    _finish_done(run_id, started, price_hr, get_run, put_run)
+                    _finish_done(run_id, started, price_hr, get_run, put_run,
+                         kind=result.get("kind") or "")
                     return result
                 raise ProviderError(
                     f"instance {inst_id} {st} without manifest — run lost")
@@ -166,7 +168,7 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
 
 
 def _finish_done(run_id: str, started: float, price_hr, get_run=None,
-                 put_run=None) -> None:
+                 put_run=None, kind: str = "") -> None:
     """Terminal signal for the progress channel: final history row (best
     effort) + run_done event."""
     cost = (round(price_hr * (time.time() - started) / 3600, 4)
@@ -182,6 +184,8 @@ def _finish_done(run_id: str, started: float, price_hr, get_run=None,
                  "cost": cost}) + "\n").encode())
         except Exception:                              # noqa: BLE001
             pass
+    if kind:
+        budget.record_observed(kind, (time.time() - started) / 60)
     notify.emit("run_done", run_id, cost=cost,
                 seconds=round(time.time() - started))
 
@@ -426,8 +430,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 "max_price_hr")
         est = budget.estimate(within[0].price_hr or 0.0, "train")
         why = budget.aggregate_gate(
-            len([r for r in led.list() if r["state"] in budget.BILLED
-                 and r["run_id"] != run_id]), est)
+            [r.get("est_cost") or 0.0 for r in led.list()
+             if r["state"] in budget.BILLED and r["run_id"] != run_id], est)
         if not why and provider == "runpod":
             try:
                 bal = prov.balance()
@@ -459,7 +463,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         if not inst:
             raise ProviderError(f"no capacity across 8 offers: {last_err}")
         led.update(run_id, state="provisioning", instance_id=inst.id,
-                   base_url=inst.base_url)
+                   base_url=inst.base_url, est_cost=round(est, 4),
+                   price_hr=inst.price_hr or 0.0)
 
         # kill threshold: explicit wins; else the runtime cap expressed in
         # dollars (wall-clock already bounds cost at this rate)
@@ -715,8 +720,8 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         mc = max_cost if max_cost is not None else est
         result["estimate"] = round(est, 2)
         why = budget.aggregate_gate(
-            len([r for r in led.list() if r["state"] in budget.BILLED
-                 and r["run_id"] != run_id]), est)
+            [r.get("est_cost") or 0.0 for r in led.list()
+             if r["state"] in budget.BILLED and r["run_id"] != run_id], est)
         if not why and provider == "runpod":
             try:
                 bal = prov.balance()
@@ -742,7 +747,8 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         if not inst:
             raise ProviderError(f"no capacity across offers: {last_err}")
         pod_id = inst.id
-        led.update(run_id, state="provisioning", instance_id=inst.id)
+        led.update(run_id, state="provisioning", instance_id=inst.id,
+                   est_cost=round(est, 4), price_hr=o.price_hr or 0.0)
 
         _watch(run_id, get_run, result, led, poll,
                started=time.time(), max_runtime=max_runtime,
@@ -762,6 +768,69 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                 result["terminated"] = True
             except Exception as e:
                 result["terminate_error"] = str(e)
+
+
+def preflight(kind: str = "train", *, provider: str = "runpod",
+              max_price_hr: float | None = None,
+              max_runtime: int = 3600) -> dict:
+    """Read-only decision report (the plan's `--preflight`): which cards
+    pass the fit, what the estimate/kill threshold would be, gate verdicts
+    — launches NOTHING, writes NOTHING. Answers 'what would this job
+    cost, on what' before committing a cent."""
+    led = Ledger(ROOT / "state" / "ledger.db")
+    prov = get_provider(provider)
+    out: dict = {"kind": kind, "provider": provider}
+    try:
+        raw_catalog = prov.catalog()
+    except Exception as e:                             # noqa: BLE001
+        out["decision"] = f"refuse: catalog unavailable: {str(e)[:160]}"
+        return out
+    is_stage = kind in STAGE_SPECS
+    if is_stage:
+        spec = STAGE_SPECS[kind]
+        pool = [o for o in raw_catalog if o.secure]
+        for pat in spec.get("arch_exclude", []):
+            pool = [o for o in pool if pat.lower() not in o.gpu_id.lower()]
+        ceiling = (max_price_hr if max_price_hr is not None
+                   else spec.get("max_price_hr", 1.50))
+        offers, best = budget.fits(pool, spec.get("min_vram", 10), ceiling)
+    else:
+        ceiling = (max_price_hr if max_price_hr is not None
+                   else float(os.environ.get("QTRAIN_MAX_PRICE_HR", "1.50")))
+        all_ = raw_catalog
+        if storage.vol_cfg():
+            all_ = [o for o in all_ if o.secure]
+        offers = sorted((o for o in all_
+                         if (o.price_hr or 0.0) <= ceiling),
+                        key=lambda o: o.price_hr or 0.0)
+        best = min((o.price_hr for o in all_ if o.price_hr), default=None)
+    out["ceiling_hr"] = ceiling
+    out["candidates"] = [{"gpu": o.gpu_id, "price_hr": o.price_hr,
+                          "vram_gb": o.vram_gb} for o in offers[:5]]
+    if not offers:
+        cheap = f"${best:.2f}/hr" if best is not None else "none"
+        out["decision"] = (f"refuse: no in-stock offer within "
+                           f"${ceiling:.2f}/hr (cheapest fit: {cheap})")
+        return out
+    est = budget.estimate(offers[0].price_hr or 0.0,
+                          kind if is_stage else "train")
+    kill = est if is_stage else (offers[0].price_hr or 0.0) * max_runtime / 60
+    opens = [r.get("est_cost") or 0.0 for r in led.list()
+             if r["state"] in budget.BILLED]
+    why = budget.aggregate_gate(opens, est)
+    bal = None
+    if provider == "runpod":
+        try:
+            bal = prov.balance()
+        except Exception:                            # noqa: BLE001
+            pass
+    why = why or budget.balance_gate(bal, est)
+    out.update({"balance": bal, "estimate": round(est, 2),
+                "kill_threshold": round(kill, 2),
+                "open_projected": round(sum(opens), 2),
+                "decision": why or
+                f"launch {offers[0].gpu_id} @ ${offers[0].price_hr}/hr"})
+    return out
 
 
 IMAGE_PIN = ("ghcr.io/iqns-org/trainer"

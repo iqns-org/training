@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+# additive columns via ALTER (idempotent): budget model 13q/14 — est_cost
+# is the PRE-LAUNCH estimate (drives the aggregate gate + `qtrain budget`
+# report), price_hr the launched card's rate (actual spend math).
+_ADDITIVE = (("est_cost", "REAL DEFAULT 0"), ("price_hr", "REAL DEFAULT 0"))
+
 
 class Ledger:
     def __init__(self, path: Path | str = DEFAULT_DB):
@@ -43,13 +48,21 @@ class Ledger:
         self.db = sqlite3.connect(self.path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(_SCHEMA)
+        cols = {r["name"] for r in self.db.execute(
+            "PRAGMA table_info(runs)")}
+        for name, decl in _ADDITIVE:
+            if name not in cols:
+                self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {decl}")
+        self.db.commit()
 
     def create(self, kind: str, spec: dict, provider: str = "",
                run_id: str | None = None) -> str:
         run_id = run_id or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         ts = time.time()
         self.db.execute(
-            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs (run_id, kind, spec_json, state, provider,"
+            " instance_id, base_url, artifact_uri, error, created_at,"
+            " updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (run_id, kind, json.dumps(spec, default=str), "pending", provider,
              "", "", "", "", ts, ts))
         self.event(run_id, "pending", "created")
@@ -76,7 +89,8 @@ class Ledger:
         if state:
             sets.append("state=?")
             args.append(state)
-        for key in ("provider", "instance_id", "base_url", "artifact_uri", "error"):
+        for key in ("provider", "instance_id", "base_url", "artifact_uri", "error",
+                    "est_cost", "price_hr"):
             if key in fields:
                 sets.append(f"{key}=?")
                 args.append(fields[key])
