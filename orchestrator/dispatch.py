@@ -365,7 +365,8 @@ STAGE_SPECS = {
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"]},
 }
 
-POSTPROC_PIN = "ghcr.io/iqns-org/postproc:p-v0.1.0"
+POSTPROC_PIN = ("ghcr.io/iqns-org/postproc"
+                "@sha256:4e6e6e3bf709805cf45b8ae10df2f9a7d4e6b65e40f194d631a6879217d23399")
 
 
 def _postproc_image() -> str:
