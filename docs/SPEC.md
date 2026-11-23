@@ -650,3 +650,39 @@ artifacts.tar.gz/manifest.json/run.log into `/outputs/` -> orchestrator
 GETs outputs. No inbound, no credentials in-machine, no rustfs dependency.
 Adapter to port into orchestrator/providers/gpuai.py (jobs-first,
 instances API unused for now); key validity probe pending.
+
+**(l) v0.2.0 cut + v0.3.0 mcp-trainer LIVE on the fleet (2026-11-23).**
+* `v0.2.0` image = rc.2-validated agent; digest `sha256:921b545b…` pinned
+  in dispatch (IMAGE_TAG "v0.2.0"). GitHub Actions hung post-push AGAIN
+  (rc.2 + v0.2.0 both) — image integrity verified independently; treat a
+  stuck build tail as "push done", check the digest, don't block on it.
+* `m-v0.3.0` tag convention: mcp image builds ride their own tag prefix +
+  own workflow (arm64 via QEMU, pure-python, ~min) so mcp releases never
+  rebuild the 20 GB trainer.
+* mcp-trainer deployed to pi00 fleet port 3022 (hostNetwork, bearer-gated
+  /mcp, open /healthz for gatus). Verified end-to-end FROM THE CLUSTER:
+  initialize handshake, tools/list (10 tools), live `gpu_catalog` (RunPod
+  A4000/A40 secure offers), `list_runs` (empty — see ledger note).
+* k8s incident: the Service `mcp-trainer` injected `MCP_TRAINER_PORT=tcp://…`
+  (service-links) over the image ENV -> ValueError crashloop. Fixed with
+  `enableServiceLinks: false` (infra a5143eb) + defensive port parse in
+  server (next image). Lesson: fleet service names + `*_PORT` env names
+  collide silently — enableServiceLinks:false for ALL env-var MCP servers.
+* Deploy-CI lag: infra apply is queued behind pushes; SSH-on-pi00
+  `k3s kubectl` patch applied the same field immediately (CI's later
+  kubectl apply is idempotent). pi00 SSH from the workstation is a valid
+  admin lane (no kubectl/sops needed on the workstation itself; note the
+  sudo-on-/srv limitation: use kubelet DirectoryOrCreate or home paths).
+* Corpora on-cluster: rsync-seeded read-only hostPath
+  (/home/me/srv-trainer/corpora); pod-side refresh_corpora needs a
+  credential route (forgejo token) later — v1 update path is re-rsync.
+* LEDGERS ARE PER-INSTANCE: the pod's sqlite (/srv/mcps/trainer/state)
+  starts empty; workstation ledger holds history. Convergence (shared
+  store or lane-backed list_runs) = P2 item. MCP submit_training jobs
+  are recorded where they were submitted — that is consistent, just
+  non-shared yet.
+* Image registry note: mcp-trainer pulls from PUBLIC ghcr (package
+  auto-created public — no flip needed). Canonical Forgejo-registry copy
+  stays a P1.5 sync item like the trainer image.
+* User attention: quadra.yaml WIP (admin_email override) lives in infra
+  stash "autostash"; setup-secrets.sh pre-rebase copy at /tmp.
