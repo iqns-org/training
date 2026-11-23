@@ -363,15 +363,15 @@ STAGE_SPECS = {
     "merge": {"script": "merge_adapter.py", "needs_base": True,
               "required": ["config.json"]},
     # prelude/gpus: runtime bridge until p-v0.1.4+ images land via CI
-    # (mirror transport incident 2026-11-23). onnx: p-v0.1.1 image lacks
-    # exporters deps -> pip at boot on the cloud pod. awq: p-v0.1.2 image
-    # predates tokenizer-sanitize -> sed the legacy list form; gpus
-    # excludes Blackwell (sm_120) until the cu128 rebuild lands.
+    # (mirror transport incident 2026-11-23). onnx: needs the whole
+    # compatible stack at boot — torch 2.6 (newer torches dropped the
+    # symbolic_opset14 symbols optimum 1.x imports), optimum 1.x +
+    # exporters + onnx (2.x dropped both), in-image script patched for
+    # its invented kwarg, legacy tokenizer list-form sanitized. awq:
+    # cu128 torch swap for EU-RO-1's Blackwell-only stock + sanitizer.
     "onnx": {"script": "export_onnx.py", "required": ["model.onnx"],
-             # optimum 2.x DROPPED the exporters extra + moved main_export;
-             # the in-image script is v1-API, so pin v1 until p-v0.1.4
-             # (which bakes optimum[exporters]<2 at build time) takes over
-             "prelude": "pip install --no-cache-dir -q 'optimum[exporters]<2' onnx"
+             "prelude": "pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.*'"
+                        " && pip install --no-cache-dir -q 'optimum[exporters]<2' onnx"
                         " && sed -i 's/, no_patch_exporters=True//' /opt/postproc/export_onnx.py"
                         " && sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"],

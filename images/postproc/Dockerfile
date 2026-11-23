@@ -8,9 +8,10 @@ WORKDIR /work
 COPY postproc/ /opt/postproc/
 COPY agent/trainer_agent/ /opt/agent/trainer_agent/
 
-RUN pip install --no-cache-dir \
-    torch "optimum[exporters]" onnx onnxruntime \
-    "transformers>=4.51" peft accelerate \
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.*' \
+ && pip install --no-cache-dir \
+    "optimum[exporters]<2" onnx onnxruntime \
+    "transformers>=4.51,<4.56" peft accelerate \
     fastapi uvicorn httpx
 
 ENV PYTHONPATH=/opt/agent \
