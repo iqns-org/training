@@ -114,7 +114,7 @@ def cmd_submit(args):
         args.domain, Path(args.recipe), mini=args.mini, overrides=overrides,
         provider=args.provider, gpus=args.gpu or None, tier=args.tier,
         dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost,
-        force_lane=args.lane)
+        force_lane=args.lane, max_price_hr=args.max_price)
     _print(res)
     raise SystemExit(0 if res.get("status") in ("succeeded", None) and not res.get("error") else 1)
 
@@ -123,7 +123,7 @@ def cmd_stage(args):
     res = dispatch.submit_stage(
         args.kind, args.from_run, base_model=args.base,
         provider=args.provider, dry=args.dry, max_runtime=args.max_runtime,
-        max_cost=args.max_cost)
+        max_cost=args.max_cost, max_price_hr=args.max_price)
     _print(res)
     raise SystemExit(0 if res.get("status") in ("succeeded", None)
                      and not res.get("error") else 1)
@@ -249,7 +249,12 @@ def build_parser():
                    help="storage lane (default: volume when RunPod volume "
                         "is configured, else presign)")
     s.add_argument("--max-runtime", type=int, default=3600)
-    s.add_argument("--max-cost", type=float, default=0.75)
+    s.add_argument("--max-cost", type=float, default=None,
+                   help="kill threshold $ (default: runtime cap expressed "
+                        "in dollars at the chosen card's rate)")
+    s.add_argument("--max-price", type=float, default=None,
+                   help="rate ceiling $/hr for offer selection "
+                        "(default: $QTRAIN_MAX_PRICE_HR or 1.50)")
     s.set_defaults(func=cmd_submit)
 
     s = sub.add_parser("stage", help="post-process a run's artifacts "
@@ -262,7 +267,11 @@ def build_parser():
                    choices=available_providers())
     s.add_argument("--dry", action="store_true")
     s.add_argument("--max-runtime", type=int, default=5400)
-    s.add_argument("--max-cost", type=float, default=1.0)
+    s.add_argument("--max-cost", type=float, default=None,
+                   help="kill threshold $ (default: est-minutes x rate x "
+                        "margin from orchestrator/budget.py)")
+    s.add_argument("--max-price", type=float, default=None,
+                   help="rate ceiling $/hr (default: stage spec, 0.80)")
     s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("register", help="deliver a run/stage artifact to a "

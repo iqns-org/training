@@ -83,11 +83,13 @@ def list_recipes(domain: str | None = None) -> dict:
 def submit_training(domain: str, recipe: str, mini: bool = True,
                     overrides: dict | None = None,
                     gpus: list[str] | None = None, tier: str | None = None,
-                    max_runtime: int = 3600, max_cost: float = 2.50,
+                    max_runtime: int = 3600, max_cost: float | None = None,
                     dry: bool = False, provider: str = "runpod") -> dict:
     """Launch a full training cycle in the background; returns as soon as
     the run is registered (seconds). mini=True is a cheap lane-validation
     run (48 rows, 1 epoch). provider: runpod | local ($0 K8s Jobs).
+    Budget: max_cost None = derived (runtime x rate); offers above the
+    rate ceiling are never launched — waiting beats overbuying.
     Track with job_status(run_id)."""
     recipe_path = Path(recipe)
     if not recipe_path.is_absolute():
@@ -160,12 +162,14 @@ def job_status(run_id: str) -> dict:
 @mcp.tool
 def submit_stage(kind: str, from_run: str, base_model: str | None = None,
                  provider: str = "runpod", max_runtime: int = 3600,
-                 dry: bool = False) -> dict:
+                 max_cost: float | None = None, dry: bool = False) -> dict:
     """Post-process a finished run: kind merge (needs base_model) | onnx
     | int8 | awq (GPU; calibrates on the source run's dataset). Cloud
     (runpod) by default; provider=local is the opt-in $0 fallback (cpu
-    kinds only). Non-blocking; track with job_status(). Stage outputs
-    chain as the next stage's from_run."""
+    kinds only). Budget defaults are derived per stage (estimate = rate x
+    est-minutes x margin); the rate ceiling refuses oversized cards.
+    Non-blocking; track with job_status(). Stage outputs chain as the
+    next stage's from_run."""
     holder: dict = {}
     gate = threading.Event()
 
@@ -177,7 +181,8 @@ def submit_stage(kind: str, from_run: str, base_model: str | None = None,
         try:
             holder["result"] = dispatch.submit_stage(
                 kind, from_run, base_model=base_model, provider=provider,
-                max_runtime=max_runtime, dry=dry, on_run_id=_on_run_id)
+                max_runtime=max_runtime, max_cost=max_cost, dry=dry,
+                on_run_id=_on_run_id)
         except Exception as e:                          # noqa: BLE001
             holder["error"] = f"{type(e).__name__}: {e}"
         finally:

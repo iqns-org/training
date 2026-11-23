@@ -272,11 +272,28 @@ e.g. "new corpus files under `vault/training/<domain>/` → expand →
 
 ## 9. Cost & reliability guardrails
 
+- Budget — one vocabulary, three gates (`orchestrator/budget.py`, 13q):
+  * HARD floor: the provider's prepaid balance — RunPod refuses spend past
+    what the account holds. Checked pre-launch with a `QTRAIN_RESERVE`
+    (default $2) set aside; best-effort (scoped keys may not expose it).
+  * PREDICTIVE: every job class carries estimated minutes (`EST_MINUTES`);
+    `estimate = rate x est_minutes x MARGIN` (default 1.5 — "some margin of
+    error, not too much"). A launch is REFUSED before it starts if the
+    aggregate projection of concurrent open estimates would exceed
+    `QTRAIN_BUDGET` (default $5), or if balance-minus-reserve is under the
+    estimate. The kill threshold DEFAULTS to the estimate — explicit
+    `--max-cost` still overrides everywhere.
+  * SOFT kill: `_watch` terminates when wallclock x rate crosses the
+    threshold — the reactive backstop for hangs, not the plan.
+- The right GPU = cheapest offer that FITS: vram floor, SECURE when the
+  lane requires it, arch exclusions from the stage spec, then a RATE
+  CEILING (stage specs default $0.80/hr; train $QTRAIN_MAX_PRICE_HR /
+  $1.50). The ceiling is the statement *waiting is cheaper than
+  overbuying*: a 360M-param job must not burn a $7.99/hr B200 even when
+  that is the only thing in stock — capacity-retry loops wait for a
+  right-sized card instead. `--max-price` overrides when you mean it.
 - Every run records: gpu type, provider, price/hr, wall time, est. spend —
-  ledger + `manifest.json`. `max_total_cost` enforced by reconcile loop
-  (hard terminate), not just hopeful timeouts. Provider account balance is a
-  second, absolute ceiling (RunPod: prepaid top-ups are the cap — keep it small,
-  `GET /v2/billing/balance` is exposed via the adapter).
+  ledger + `manifest.json`.
 - Community tier has real inventory gaps (observed: A5000/4000-Ada sold out for
   hours, 4090 community 400s while SECURE succeeded). Fallback ladder in §4
   (`providers: [runpod, gpuai]`) is therefore joined by a *within-provider*
@@ -781,3 +798,27 @@ catch up unattended. Today's stages run regardless via preludes
 (int8 landed: 410.8MB model.int8.onnx; onnx: 1.45GB; merge: 723.7MB fp16).
 awq retry #8 in flight (command-assembly bug fixed: --dataset had been
 appended OUTSIDE the sh-c quotes; cu128 swap now guarded to sm_120).
+
+**(q) Budget normalization + the third AWQ failure class (2026-11-23).**
+Honest audit first: caps existed but were SCATTERED MAGIC NUMBERS
+($0.75 train / $1.00 stage / $2.50 MCP) that guarded runaway TIME, not
+wrong-card SPEND RATE, and nothing gated pre-launch. The only true hard
+cap was RunPod's prepaid balance. New model (§9, `orchestrator/budget.py`):
+predictive estimate (`EST_MINUTES x rate x MARGIN 1.5`) now DERIVES the
+kill threshold, drives an aggregate gate (concurrent open estimates must
+fit `QTRAIN_BUDGET` $5) and a balance gate (`QTRAIN_RESERVE` $2 below
+balance); explicit `--max-cost` still overrides. Right-sizing = RATE
+CEILING applied to the ladder BEFORE launch ($0.80/hr stage specs,
+$1.50 train): an oversized card is never the fallback — 530b30 burned
+$7.99/hr on a B200 for a 360M calibration only to crashloop; that class
+of offer is now culled and capacity-retry loops wait for right-sized
+stock ("no capacity across offers..." messages kept compatible).
+AWQ root cause #3 at last: the prelude's sed sanitize could NEVER match
+— the merged tokenizer_config.json serializes extra_special_tokens as a
+MULTI-LINE array (indent=2), so the substitution was a silent no-op and
+the same 'list has no keys' crash returned three times. Sanitize is now
+a stdlib json REWRITE (python3 -c), e2e-verified against the real file
+shape; cu128 guard broadened to compute-cap 10|11|12 (sm_100 datacenter
++ sm_120 consumer Blackwell; baked cu124 covers neither). CLI:
+--max-cost default None=derived, new --max-price; MCP submit_training
+2.50 -> None. 75 tests pass (7 new budget units).

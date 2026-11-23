@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from . import storage
+from . import budget, storage
 from .config import ROOT
 from .ledger import Ledger
 from .models import ProviderError
@@ -200,7 +200,10 @@ def resume(run_id: str | None = None, poll: int = 30,
     harvest, ALWAYS terminate the instance. Recovery path for crashed
     orchestrators / fleet restarts mid-job (2026-11-23 incident)."""
     led = Ledger(ROOT / "state" / "ledger.db")
-    rows = [r for r in led.list() if r["state"] in OPEN_STATES]
+    # 'verified' + no instance = DRY run (staged, never launched): nothing
+    # to re-attach to; polling its lane would burn max_runtime for $0 work
+    rows = [r for r in led.list() if r["state"] in OPEN_STATES
+            and not (r["state"] == "verified" and not r["instance_id"])]
     if run_id:
         rows = [r for r in rows if r["run_id"] == run_id]
     if not rows:
@@ -238,8 +241,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            overrides: dict | None = None, provider: str = "runpod",
            gpus: list[str] | None = None, tier: str | None = None,
            dry: bool = False, max_runtime: int = 3600,
-           max_cost: float = 0.75, poll: int = 20,
-           force_lane: str | None = None,
+           max_cost: float | None = None, poll: int = 20,
+           force_lane: str | None = None, max_price_hr: float | None = None,
            on_run_id: "callable | None" = None) -> dict:
     """Full cycle; returns ledger-shaped result dict. NEVER leaves a pod
     behind: every terminal path terminates. on_run_id (if given) fires the
@@ -321,10 +324,36 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             # network volumes exist only in the SECURE cloud; community
             # launches that ask for one 400 as "no instances available"
             offers = [o for o in offers if o.secure]
+        # right-sizing (SPEC 13q): a rate ceiling keeps small models off
+        # B200/H200-class hardware even when that is all that's in stock —
+        # waiting is cheaper than overbuying. Pre-launch gates: aggregate
+        # projection + account balance (hard floor) with a reserve.
+        ceiling = (max_price_hr if max_price_hr is not None
+                   else float(os.environ.get("QTRAIN_MAX_PRICE_HR", "1.50")))
+        within = [o for o in offers if (o.price_hr or 0.0) <= ceiling]
+        if not within:
+            best = min((o.price_hr for o in offers if o.price_hr), default=None)
+            raise ProviderError(
+                f"no capacity across offers within ceiling ${ceiling:.2f}/hr "
+                f"(cheapest in stock: ${best:.2f}/hr) — retry-loop or raise "
+                "max_price_hr")
+        est = budget.estimate(within[0].price_hr or 0.0, "train")
+        why = budget.aggregate_gate(
+            len([r for r in led.list() if r["state"] in budget.BILLED
+                 and r["run_id"] != run_id]), est)
+        if not why and provider == "runpod":
+            try:
+                bal = prov.balance()
+            except Exception:
+                bal = None                       # scoped key: prepaid anyway
+            why = budget.balance_gate(bal, est)
+        if why:
+            raise ProviderError(why)
+        result["estimate"] = round(est, 2)
         token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
         last_err = None
         inst = None
-        for o in offers[:8]:
+        for o in within[:8]:
             try:
                 inst = prov.launch(
                     name=f"trainer-{run_id[-8:]}", image=_image_ref(),
@@ -345,9 +374,13 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         led.update(run_id, state="provisioning", instance_id=inst.id,
                    base_url=inst.base_url)
 
+        # kill threshold: explicit wins; else the runtime cap expressed in
+        # dollars (wall-clock already bounds cost at this rate)
+        mc = (max_cost if max_cost is not None
+              else (inst.price_hr or 0.0) * max_runtime / 60)
         _watch(run_id, get_run, result, led, poll, started=time.time(),
                max_runtime=max_runtime, prov=prov, inst_id=inst.id,
-               price_hr=inst.price_hr, max_cost=max_cost,
+               price_hr=inst.price_hr, max_cost=mc,
                keepalive=(lane == "presign"))
         return result
     except Exception as e:
@@ -363,31 +396,40 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 result["terminate_error"] = str(e)
 
 
+# sanitize must be a json REWRITE, not sed: merged tokenizer_config.json
+# serializes extra_special_tokens as a MULTI-LINE array (indent=2), and a
+# line-based sed matched nothing — silent no-op, crashloop (530b30 proof).
+_SANITIZE = (
+    "python3 -c 'import json;"
+    'p="/work/inputs/model/tokenizer_config.json";'
+    "c=json.load(open(p));"
+    'c["extra_special_tokens"]={};json.dump(c,open(p,"w"),indent=2)\'')
+
 STAGE_SPECS = {
     "merge": {"script": "merge_adapter.py", "needs_base": True,
-              "required": ["config.json"]},
-    # prelude/gpus: runtime bridge until p-v0.1.4+ images land via CI
-    # (mirror transport incident 2026-11-23). onnx: needs the whole
-    # compatible stack at boot — torch 2.6 (newer torches dropped the
-    # symbolic_opset14 symbols optimum 1.x imports), optimum 1.x +
-    # exporters + onnx (2.x dropped both), in-image script patched for
-    # its invented kwarg, legacy tokenizer list-form sanitized. awq:
-    # cu128 torch swap for EU-RO-1's Blackwell-only stock + sanitizer.
+              "required": ["config.json"], "max_price_hr": 0.80},
+    # preludes: runtime bridge until p-v0.1.4+ images land via CI
+    # (mirror stall 2026-11-23). onnx needs the compatible stack at boot:
+    # torch 2.6 (newer torches dropped symbolic_opset14 symbols optimum
+    # 1.x imports), optimum[exporters]<2 (2.x dropped the extra), the
+    # invented-kwarg patched out of the in-image script.
     "onnx": {"script": "export_onnx.py", "required": ["model.onnx"],
+             "max_price_hr": 0.80,
              "prelude": "pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.*'"
                         " && pip install --no-cache-dir -q 'optimum[exporters]<2' onnx"
                         " && sed -i 's/, no_patch_exporters=True//' /opt/postproc/export_onnx.py"
-                        " && sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
+                        " && " + _SANITIZE},
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"],
+             "max_price_hr": 0.80,
              "prelude": "pip install --no-cache-dir -q onnx"},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
-            "gpu": True, "needs_dataset": True,
-            # cu128 torch swap ONLY on Blackwell (sm_120) — the baked
-            # cu124 covers Ada/Ampere fine, so the guard skips the 3.5GB
-            # download there (3df2ea wasted it on an RTX 2000 Ada).
-            # tokenizer list-form sanitized for newer transformers.
-            "prelude": "if nvidia-smi --query-gpu=compute_cap --format=csv,noheader | grep -q '^12'; then pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cu128 torch; fi"
-                       " && sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
+            "gpu": True, "needs_dataset": True, "max_price_hr": 0.80,
+            # cu128 swap on Blackwell only — datacenter sm_100 (compute
+            # 10.x) AND consumer sm_120 (12.x); baked cu124 lacks both.
+            # Guard skips the 3.5GB download on Ada/Ampere (530b30's
+            # B200 would now be rate-culled before launch anyway).
+            "prelude": "if nvidia-smi --query-gpu=compute_cap --format=csv,noheader | grep -qE '^(10|11|12)'; then pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cu128 torch; fi"
+                       " && " + _SANITIZE},
 }
 
 POSTPROC_PIN = ("ghcr.io/iqns-org/postproc"
@@ -432,7 +474,8 @@ def _trace_dataset(get_run, run_id: str, depth: int = 4) -> dict | None:
 
 def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                  provider: str = "runpod", max_runtime: int = 3600,
-                 max_cost: float = 1.0, poll: int = 15, dry: bool = False,
+                 max_cost: float | None = None, poll: int = 15,
+                 dry: bool = False, max_price_hr: float | None = None,
                  on_run_id: "callable | None" = None) -> dict:
     """Post-process a finished run's artifacts (merge|onnx|int8).
 
@@ -543,17 +586,45 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             offers = prov.catalog()
             lk = {}
         else:
-            # >=10GB-vram proxy for "real RAM + NVMe" boxes; cheapest
-            # first; volume lane needs SECURE offers (network volumes do
-            # not exist in community cloud); stage specs can also exclude
-            # archs the pinned image lacks kernels for
-            pool = prov.catalog()
-            pool = [o for o in pool if o.secure]
+            # the right GPU = cheapest that FITS (budget.fits): SECURE
+            # offers only (network volumes don't exist in community),
+            # vram >= 10 as the "real RAM + NVMe" proxy, and a RATE
+            # CEILING — an oversized card is never the fallback: when
+            # only B200-class stock exists the job WAITs (530b30 burned
+            # $7.99/hr + a crashloop proving it). arch_exclude per spec.
+            pool = [o for o in prov.catalog() if o.secure]
             for pat in spec.get("arch_exclude", []):
                 pool = [o for o in pool if pat.lower() not in o.gpu_id.lower()]
-            offers = [o for o in pool if o.vram_gb >= 10][:12]
+            ceiling = (max_price_hr if max_price_hr is not None
+                       else spec.get("max_price_hr", 1.50))
+            offers, best = budget.fits(pool, spec.get("min_vram", 10), ceiling)
+            if not offers:
+                cheap = f"${best:.2f}/hr" if best is not None else "none"
+                raise ProviderError(
+                    f"no capacity across offers within ceiling "
+                    f"${ceiling:.2f}/hr (cheapest vram-fit in stock: {cheap})")
+            offers = offers[:12]
             lk = {"volume_id": vol["bucket"], "volume_path": vol["mount"],
                   "data_center": vol["dc"]}
+        if not offers:
+            raise ProviderError("no capacity across offers: catalog empty")
+        # normalized budgeting (SPEC 13q): estimate drives BOTH the
+        # pre-launch gates and the kill threshold unless an explicit
+        # max_cost overrides the latter. No magic numbers anywhere.
+        est = budget.estimate(offers[0].price_hr or 0.0, kind)
+        mc = max_cost if max_cost is not None else est
+        result["estimate"] = round(est, 2)
+        why = budget.aggregate_gate(
+            len([r for r in led.list() if r["state"] in budget.BILLED
+                 and r["run_id"] != run_id]), est)
+        if not why and provider == "runpod":
+            try:
+                bal = prov.balance()
+            except Exception:
+                bal = None                       # scoped key; prepaid anyway
+            why = budget.balance_gate(bal, est)
+        if why:
+            raise ProviderError(why)
         for o in offers:
             try:
                 inst = prov.launch(
@@ -576,7 +647,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         _watch(run_id, get_run, result, led, poll,
                started=time.time(), max_runtime=max_runtime,
                prov=prov, inst_id=inst.id, price_hr=o.price_hr,
-               max_cost=max_cost, keepalive=False)
+               max_cost=mc, keepalive=False)
         result["output"] = f"runs/{run_id}/artifacts.tar.gz"
         return result
     except Exception as e:
