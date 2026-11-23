@@ -68,14 +68,21 @@ def materialize(payload: dict, work: Path = WORK) -> dict:
 
     for inp in payload.get("inputs", []):                # stage jobs
         name = inp.get("name", "in")
-        blob = work / "inputs" / f"{name}.tar.gz"
         if inp.get("extract"):
-            _fetch(inp, blob)
             out = work / "inputs" / name
             out.mkdir(parents=True, exist_ok=True)
-            with tarfile.open(blob) as tf:
-                tf.extractall(out, filter="data")       # no path games
-            blob.unlink()
+            if inp.get("path"):
+                # read the tar straight off the mount — copying 700MB+
+                # through a flaky NFS-style volume before unpacking
+                # doubles the I/O and the stall risk (cae537 boot hang)
+                with tarfile.open(inp["path"]) as tf:
+                    tf.extractall(out, filter="data")
+            else:
+                blob = work / "inputs" / f"{name}.tar.gz"
+                _fetch(inp, blob)
+                with tarfile.open(blob) as tf:
+                    tf.extractall(out, filter="data")
+                blob.unlink()
         else:
             _fetch(inp, out := work / "inputs" / name)
 
