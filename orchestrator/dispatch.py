@@ -374,14 +374,18 @@ def _postproc_image() -> str:
 
 
 def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
-                 provider: str = "local", max_runtime: int = 5400,
-                 poll: int = 15, dry: bool = False,
+                 provider: str = "runpod", max_runtime: int = 3600,
+                 max_cost: float = 1.0, poll: int = 15, dry: bool = False,
                  on_run_id: "callable | None" = None) -> dict:
-    """Post-process a finished run's artifacts (merge|onnx|int8) as a
-    $0 local K8s Job. Input = runs/<from_run>/artifacts.tar.gz extracted
-    to /work/inputs/model on the pod; output packed via the SAME finalize
-    contract with a stage-specific gate. Chainable: every stage's own
-    artifacts.tar.gz is a valid input for the next."""
+    """Post-process a finished run's artifacts (merge|onnx|int8).
+
+    Routing policy (2026-11-23, user call): cloud boxes are stronger in
+    every dimension (RAM/CPU/NVMe/pull speed) — stages default to the
+    RunPod volume lane; provider="local" remains as the opt-in $0
+    fallback/dev lane. Input = runs/<from_run>/artifacts.tar.gz (the
+    volume lane's own copy — every cloud run's output chains there);
+    outputs pack through the same finalize contract with a stage gate.
+    """
     if kind not in STAGE_SPECS:
         return {"status": "error",
                 "error": f"unknown stage {kind!r} (have: "
@@ -389,20 +393,35 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     spec = STAGE_SPECS[kind]
     if spec.get("needs_base") and not base_model:
         return {"status": "error", "error": "merge stage needs base_model"}
-    if provider != "local":
-        return {"status": "error",
-                "error": "stage v1 runs on the local provider only "
-                         "(runpod/gpuai stage capacity = later)"}
     led = Ledger(ROOT / "state" / "ledger.db")
     run_id = led.create("stage", {"kind": kind, "from_run": from_run,
                                   "base_model": base_model},
                         provider=provider)
     if on_run_id:
         on_run_id(run_id)
-    result = {"run_id": run_id, "kind": kind, "from_run": from_run,
-              "lane": "host"}
+    result = {"run_id": run_id, "kind": kind, "from_run": from_run}
     pod_id = ""
-    mount = os.environ.get("LOCAL_MOUNT", "/data")
+
+    if provider == "local":
+        mount = os.environ.get("LOCAL_MOUNT", "/data")
+        lane = "host"
+        get_run = storage.host_get
+        put_run = lambda k, d, ct="": storage.host_put(k, d)
+    elif provider == "runpod":
+        vol = storage.vol_cfg()
+        if not vol:
+            led.update(run_id, state="failed", error="volume lane off")
+            return {"run_id": run_id, "status": "error",
+                    "error": "RUNPOD_VOLUME_ID/RUNPOD_S3_* unset"}
+        mount = vol["mount"]
+        lane = "volume"
+        get_run = storage.vol_get
+        put_run = lambda k, d, ct="": storage.vol_put(k, d)
+    else:
+        return {"status": "error",
+                "error": f"stage provider {provider!r} not wired yet"}
+    result["lane"] = lane
+
     in_key = f"runs/{from_run}/artifacts.tar.gz"
     cmd = (f"python /opt/postproc/{spec['script']} "
            f"--in /work/inputs/model --out /work/outputs")
@@ -415,9 +434,11 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                "gate": {"required_files": spec["required"]},
                "urls": {},
                "volume": {"mount": mount, "prefix": f"runs/{run_id}"}}
+    payload_env = {"JOB_PAYLOAD_PATH":
+                   f"{mount}/runs/{run_id}/payload.json"}
     try:
-        storage.host_put(f"runs/{run_id}/payload.json",
-                         json.dumps(payload).encode())
+        put_run(f"runs/{run_id}/payload.json",
+                json.dumps(payload).encode())
         result["payload_key"] = f"runs/{run_id}/payload.json"
         if dry:
             led.update(run_id, state="verified", note=f"dry stage {kind}")
@@ -425,30 +446,38 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             return result
 
         prov = get_provider(provider)
-        offers = prov.catalog()
         token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
         inst = None
         last_err = None
+        if provider == "local":
+            offers = prov.catalog()
+            lk = {}
+        else:
+            # >=10GB-vram proxy for "real RAM + NVMe" boxes; cheapest first
+            offers = [o for o in prov.catalog() if o.vram_gb >= 10][:8]
+            lk = {"volume_id": vol["bucket"], "volume_path": vol["mount"],
+                  "data_center": vol["dc"]}
         for o in offers:
             try:
                 inst = prov.launch(
                     name=f"trainer-{run_id[-8:]}", image=_postproc_image(),
                     gpu_id=o.gpu_id,
-                    env={"JOB_PAYLOAD_PATH":
-                         f"{mount}/runs/{run_id}/payload.json",
-                         "AGENT_TOKEN": token})
+                    cloud="SECURE" if o.secure else "COMMUNITY",
+                    env={**payload_env, "AGENT_TOKEN": token}, **lk)
+                result["instance"] = {"id": inst.id, "gpu": o.gpu_id,
+                                      "price_hr": o.price_hr}
                 break
             except ProviderError as e:
                 last_err = e
         if not inst:
-            raise ProviderError(f"local launch failed: {last_err}")
+            raise ProviderError(f"no capacity across offers: {last_err}")
         pod_id = inst.id
-        result["instance"] = {"id": inst.id, "gpu": inst.gpu_type}
         led.update(run_id, state="provisioning", instance_id=inst.id)
 
-        _watch(run_id, storage.host_get, result, led, poll,
+        _watch(run_id, get_run, result, led, poll,
                started=time.time(), max_runtime=max_runtime,
-               prov=prov, inst_id=inst.id)
+               prov=prov, inst_id=inst.id, price_hr=inst.price_hr,
+               max_cost=max_cost, keepalive=False)
         result["output"] = f"runs/{run_id}/artifacts.tar.gz"
         return result
     except Exception as e:

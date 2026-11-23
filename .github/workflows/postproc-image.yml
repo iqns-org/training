@@ -1,8 +1,9 @@
 name: postproc-image
 
-# Cost policy: builds fire on p-v* release tags ONLY. arm64 (local
-# cluster jobs). No gha cache: torch layers make mode=max exports slow,
-# and postproc builds are rare enough to start cold.
+# Cost policy: builds fire on p-v* release tags ONLY. Multi-arch:
+# arm64 for the local lane (pi00/nano0), amd64 for cloud stage pods
+# (RunPod). No cache: torch layers poison gha cache exports (see the
+# trainer-image zombie tails) and postproc builds are rare.
 
 on:
   push:
@@ -19,7 +20,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -33,13 +34,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push (arm64)
+      - name: Build & push (arm64 + amd64)
         uses: docker/build-push-action@v6
         id: build
         with:
           context: .
           file: images/postproc/Dockerfile
-          platforms: linux/arm64
+          platforms: linux/arm64,linux/amd64
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/postproc:${{ github.ref_name }}

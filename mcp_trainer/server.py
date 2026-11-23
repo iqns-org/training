@@ -159,11 +159,12 @@ def job_status(run_id: str) -> dict:
 
 @mcp.tool
 def submit_stage(kind: str, from_run: str, base_model: str | None = None,
-                 provider: str = "local", max_runtime: int = 5400,
+                 provider: str = "runpod", max_runtime: int = 3600,
                  dry: bool = False) -> dict:
-    """Post-process a finished run on the $0 local lane: kind merge
-    (needs base_model) | onnx | int8. Non-blocking; track with
-    job_status(). Stage outputs chain as the next stage's from_run."""
+    """Post-process a finished run: kind merge (needs base_model) | onnx
+    | int8. Cloud (runpod volume lane) by default; provider=local is the
+    opt-in $0 fallback. Non-blocking; track with job_status(). Stage
+    outputs chain as the next stage's from_run."""
     holder: dict = {}
     gate = threading.Event()
 

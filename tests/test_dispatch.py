@@ -92,7 +92,7 @@ def test_submit_stage_dry_local(tmp_path, monkeypatch):
                         lambda k, d: puts.__setitem__(k, d))
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
     res = dispatch.submit_stage("merge", "from-1", base_model="A/B",
-                                dry=True)
+                                dry=True, provider="local")
     assert res["lane"] == "host" and res.get("dry")
     payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
     assert payload["inputs"][0]["path"] == "/data/runs/from-1/artifacts.tar.gz"
@@ -101,12 +101,29 @@ def test_submit_stage_dry_local(tmp_path, monkeypatch):
     assert payload["config_yaml"] == ""
 
 
+def test_submit_stage_dry_runpod(tmp_path, monkeypatch):
+    puts = {}
+    monkeypatch.setattr(dispatch.storage, "vol_cfg",
+                        lambda: {"bucket": "v1", "mount": "/data",
+                                 "dc": "EU-RO-1", "key": "k", "secret": "s",
+                                 "endpoint": "e", "region": "EU-RO-1"})
+    monkeypatch.setattr(dispatch.storage, "vol_put",
+                        lambda k, d: puts.__setitem__(k, d))
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    res = dispatch.submit_stage("onnx", "from-2", dry=True,
+                                provider="runpod")
+    assert res["lane"] == "volume" and res.get("dry")
+    payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
+    assert payload["inputs"][0]["path"] == "/data/runs/from-2/artifacts.tar.gz"
+    assert payload["gate"] == {"required_files": ["model.onnx"]}
+
+
 def test_submit_stage_validation(monkeypatch):
     monkeypatch.setattr(dispatch, "ROOT", Path("/nonexistent"))
     assert "unknown stage" in dispatch.submit_stage("bogus", "r")["error"]
     assert "base_model" in dispatch.submit_stage("merge", "r")["error"]
-    assert "local provider" in dispatch.submit_stage("onnx", "r",
-                                                     provider="runpod")["error"]
+    assert "not wired" in dispatch.submit_stage("onnx", "r",
+                                                provider="gpuai")["error"]
 
 
 def test_submit_lane_force_presign(tmp_path, monkeypatch, recipe, fake_s3):

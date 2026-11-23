@@ -248,7 +248,7 @@ def build_parser():
     s.add_argument("--from-run", required=True, help="run id whose "
                     "artifacts.tar.gz is the input")
     s.add_argument("--base", help="HF base model id (merge)")
-    s.add_argument("--provider", default="local",
+    s.add_argument("--provider", default="runpod",
                    choices=available_providers())
     s.add_argument("--dry", action="store_true")
     s.add_argument("--max-runtime", type=int, default=5400)
