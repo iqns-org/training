@@ -19,7 +19,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-from orchestrator import dispatch, storage
+from orchestrator import dispatch, notify, progress, storage
 from orchestrator.config import ROOT, load_dotenv
 from orchestrator.ledger import Ledger
 from orchestrator.providers import get_provider
@@ -309,6 +309,42 @@ def resume_open_runs() -> int:
     return len(rows)
 
 
+@mcp.tool
+def run_progress(run_id: str) -> dict:
+    """wandb-lite view (SPEC 14): ledger state + live heartbeat + durable
+    progress history + recent lifecycle events. Cheap to poll; the
+    heartbeat (status.json) is in-pod truth, progress.jsonl is the trail."""
+    snap = progress.snapshot(run_id)
+    snap["events"] = notify.recent(limit=12, run_id=run_id)
+    return snap
+
+
+@mcp.tool
+def wait_for_events(since: float = 0.0, timeout: int = 300,
+                   run_id: str | None = None) -> dict:
+    """Long-poll the lifecycle feed: blocks until events newer than `since`
+    (a prior response's cursor) appear, or timeout. MCP clients get
+    notification semantics without busy-polling job_status; webhooks
+    (QTRAIN_WEBHOOK_URL) carry the same events across hosts."""
+    deadline = time.time() + min(max(timeout, 0), 600)
+    while True:
+        fresh = [e for e in notify.recent(limit=100, run_id=run_id)
+                 if e["ts"] > since]
+        if fresh or time.time() >= deadline:
+            return {"events": fresh,
+                    "cursor": fresh[-1]["ts"] if fresh else since,
+                    "timed_out": not fresh}
+        time.sleep(2)
+
+
+@mcp.resource("trainer://runs/{run_id}/progress")
+def progress_resource(run_id: str) -> str:
+    """Progress snapshot as a subscribable resource: clients may
+    resources/subscribe and receive updated notifications when this
+    server's watch loop emits them."""
+    return json.dumps(progress.snapshot(run_id), default=str)
+
+
 # ------------------------------------------------------------------ serve
 
 def build_app():
@@ -329,6 +365,11 @@ def _port() -> int:
 def main(argv=None) -> int:
     import uvicorn
     load_dotenv()
+    # events -> container log as machine-parseable lines: `kubectl logs -f
+    # mcp-trainer` becomes a live feed for humans and cluster tooling
+    notify.register_listener(
+        lambda e: print("qtrain-event "
+                        + json.dumps(e, default=str), flush=True))
     if not os.environ.get("MCP_TRAINER_TOKEN"):
         print("WARNING: MCP_TRAINER_TOKEN unset — REFUSING all tool traffic "
               "except /healthz (set MCP_TRAINER_ALLOW_OPEN=1 for local dev)",

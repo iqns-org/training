@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from . import budget, storage
+from . import budget, notify, storage
 from .config import ROOT
 from .ledger import Ledger
 from .models import ProviderError
@@ -50,6 +50,54 @@ def _tolerant_get(get_run, key: str, state: dict, limit: int = 5):
         return None
 
 
+def _progress_tick(run_id: str, get_run, put_run, price_hr, started: float,
+                   memo: dict) -> None:
+    """wandb-lite (SPEC 14): join the live heartbeat into a durable history
+    row (progress.jsonl — S3 has no append, so read-modify-write a file
+    that stays KB-small), and emit progress events on state change or a
+    >=10% step jump. Everything here is best-effort BY DESIGN: a broken
+    history sink must never affect the run; the heartbeat + manifest
+    remain the authoritative signals."""
+    sstate = memo.setdefault("status", {})
+    raw = _tolerant_get(get_run, f"runs/{run_id}/status.json", sstate)
+    if raw is None:
+        return
+    try:
+        st = json.loads(raw.decode() if isinstance(raw, (bytes, bytearray))
+                        else raw)
+    except (ValueError, UnicodeDecodeError):
+        return
+    if not isinstance(st, dict):
+        return
+    row = {"ts": round(time.time(), 3)}
+    for k in ("state", "step", "total", "loss", "epoch"):
+        if st.get(k) is not None:
+            row[k] = st[k]
+    if price_hr and started:
+        row["cost"] = round(price_hr * (time.time() - started) / 3600, 4)
+    sig = (row.get("state"), row.get("step"), row.get("cost"))
+    if sig == memo.get("sig"):
+        return
+    memo["sig"] = sig
+    if put_run:
+        try:
+            key = f"runs/{run_id}/progress.jsonl"
+            prev = get_run(key) or b""
+            if isinstance(prev, str):
+                prev = prev.encode()
+            put_run(key, prev + (json.dumps(row) + "\n").encode())
+        except Exception:                              # noqa: BLE001
+            pass
+    pct = (100.0 * row["step"] / row["total"]) if row.get("total") else None
+    prev_pct = memo.get("pct")
+    jumped = pct is not None and (prev_pct is None or abs(pct - prev_pct) >= 10)
+    if row.get("state") != memo.get("state") or jumped:
+        memo["pct"], memo["state"] = pct, row.get("state")
+        notify.emit("progress", run_id,
+                    pct=round(pct, 1) if pct is not None else None,
+                    **{k: v for k, v in row.items() if k != "ts"})
+
+
 def _keepalive_public_lane() -> None:
     """Quick tunnels idle-expire; during training the pod sends no traffic,
     so the orchestrator pings the public endpoint each poll cycle (presign
@@ -68,13 +116,22 @@ def _keepalive_public_lane() -> None:
 def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
            started: float, max_runtime: int, prov=None, inst_id: str = "",
            price_hr: float | None = None, max_cost: float = 0.0,
-           keepalive: bool = False) -> dict:
+           keepalive: bool = False, put_run=None) -> dict:
     """Shared watch loop (submit + resume): poll the lane for the manifest,
     tolerate transient blips, fail fast when the instance died without one,
     respect budget + wall-clock ceilings. Returns `result` after harvest;
-    raises ProviderError on budget/timeout/run-lost."""
+    raises ProviderError on budget/timeout/run-lost. Side channel (SPEC 14):
+    heartbeat -> progress.jsonl history + events; failures are emitted by
+    the CALLER's except (single choke point — no double events)."""
     lane_state: dict = {}
+    memo: dict = {}
     deadline = started + max_runtime
+    inst = result.get("instance")
+    inst_fields = dict(inst) if isinstance(inst, dict) else (
+        {"instance": inst} if inst else {})
+    notify.emit("launched", run_id, job=result.get("kind") or "train",
+                lane=result.get("lane", ""), **inst_fields,
+                max_cost=round(max_cost, 4) if max_cost else None)
     while time.time() < deadline:
         if max_cost and price_hr:
             hours = (time.time() - started) / 3600
@@ -86,6 +143,7 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
                                      lane_state)
         if manifest_raw:
             _harvest(run_id, manifest_raw, get_run, led, result)
+            _finish_done(run_id, started, price_hr, get_run, put_run)
             return result
         if prov and inst_id:
             try:
@@ -98,11 +156,34 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
                 manifest_raw = get_run(f"runs/{run_id}/manifest.json")
                 if manifest_raw:
                     _harvest(run_id, manifest_raw, get_run, led, result)
+                    _finish_done(run_id, started, price_hr, get_run, put_run)
                     return result
                 raise ProviderError(
                     f"instance {inst_id} {st} without manifest — run lost")
+        _progress_tick(run_id, get_run, put_run, price_hr, started, memo)
         time.sleep(poll)
     raise ProviderError("max runtime exceeded without manifest")
+
+
+def _finish_done(run_id: str, started: float, price_hr, get_run=None,
+                 put_run=None) -> None:
+    """Terminal signal for the progress channel: final history row (best
+    effort) + run_done event."""
+    cost = (round(price_hr * (time.time() - started) / 3600, 4)
+            if price_hr else None)
+    if get_run and put_run:
+        try:
+            key = f"runs/{run_id}/progress.jsonl"
+            prev = get_run(key) or b""
+            if isinstance(prev, str):
+                prev = prev.encode()
+            put_run(key, prev + (json.dumps(
+                {"ts": round(time.time(), 3), "state": "done",
+                 "cost": cost}) + "\n").encode())
+        except Exception:                              # noqa: BLE001
+            pass
+    notify.emit("run_done", run_id, cost=cost,
+                seconds=round(time.time() - started))
 
 
 def _sha(path: Path) -> str:
@@ -213,20 +294,26 @@ def resume(run_id: str | None = None, poll: int = 30,
     provider = row["provider"] or "runpod"
     inst_id = row["instance_id"]
     result = {"run_id": run_id, "resumed_from": row["state"],
-              "instance": inst_id}
+              "kind": row["kind"], "instance": inst_id}
     if provider == "local":
         get_run = storage.host_get
+        put_run = lambda k, d, ct="": storage.host_put(k, d)
     else:
         vol = storage.vol_cfg() if provider == "runpod" else None
         get_run = (lambda k: storage.vol_get(k)) if vol else storage.get_object
+        put_run = ((lambda k, d, ct="": storage.vol_put(k, d)) if vol
+                   else (lambda k, d, ct="": storage.put_object(k, d, ct)))
+    result["lane"] = "volume" if (provider == "runpod" and vol) else provider
     try:
         prov = get_provider(provider) if inst_id else None
         _watch(run_id, get_run, result, led, poll, started=time.time(),
-               max_runtime=max_runtime, prov=prov, inst_id=inst_id)
+               max_runtime=max_runtime, prov=prov, inst_id=inst_id,
+               put_run=put_run)
         return result
     except Exception as e:
         led.update(run_id, state="failed", error=str(e)[:400])
         result.update({"status": "error", "error": str(e)})
+        notify.emit("run_failed", run_id, error=str(e)[:300])
         return result
     finally:
         if inst_id:
@@ -381,11 +468,12 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         _watch(run_id, get_run, result, led, poll, started=time.time(),
                max_runtime=max_runtime, prov=prov, inst_id=inst.id,
                price_hr=inst.price_hr, max_cost=mc,
-               keepalive=(lane == "presign"))
+               keepalive=(lane == "presign"), put_run=put_run)
         return result
     except Exception as e:
         led.update(run_id, state="failed", error=str(e)[:400])
         result.update({"status": "error", "error": str(e)})
+        notify.emit("run_failed", run_id, error=str(e)[:300])
         return result
     finally:
         if pod_id:
@@ -396,29 +484,20 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 result["terminate_error"] = str(e)
 
 
-# sanitize must be a json REWRITE, not sed: merged tokenizer_config.json
-# serializes extra_special_tokens as a MULTI-LINE array (indent=2), and a
-# line-based sed matched nothing — silent no-op, crashloop (530b30 proof).
-_SANITIZE = (
-    "python3 -c 'import json;"
-    'p="/work/inputs/model/tokenizer_config.json";'
-    "c=json.load(open(p));"
-    'c["extra_special_tokens"]={};json.dump(c,open(p,"w"),indent=2)\'')
-
 STAGE_SPECS = {
     "merge": {"script": "merge_adapter.py", "needs_base": True,
               "required": ["config.json"], "max_price_hr": 0.80},
-    # preludes: runtime bridge until p-v0.1.4+ images land via CI
-    # (mirror stall 2026-11-23). onnx needs the compatible stack at boot:
-    # torch 2.6 (newer torches dropped symbolic_opset14 symbols optimum
-    # 1.x imports), optimum[exporters]<2 (2.x dropped the extra), the
-    # invented-kwarg patched out of the in-image script.
+    # preludes now carry ONLY the dependency stack (pip drift-fixes until
+    # p-v0.1.4+ images land via CI); the stage scripts + util.py ride along
+    # as sha-verified file inputs (see submit_stage), so script fixes NEVER
+    # wait on an image rebuild.
     "onnx": {"script": "export_onnx.py", "required": ["model.onnx"],
              "max_price_hr": 0.80,
+             # torch 2.6: newer torches dropped the symbolic_opset14
+             # symbols optimum 1.x imports; optimum 2.x dropped the
+             # exporters extra entirely.
              "prelude": "pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.*'"
-                        " && pip install --no-cache-dir -q 'optimum[exporters]<2' onnx"
-                        " && sed -i 's/, no_patch_exporters=True//' /opt/postproc/export_onnx.py"
-                        " && " + _SANITIZE},
+                        " && pip install --no-cache-dir -q 'optimum[exporters]<2' onnx"},
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"],
              "max_price_hr": 0.80,
              "prelude": "pip install --no-cache-dir -q onnx"},
@@ -428,8 +507,7 @@ STAGE_SPECS = {
             # 10.x) AND consumer sm_120 (12.x); baked cu124 lacks both.
             # Guard skips the 3.5GB download on Ada/Ampere (530b30's
             # B200 would now be rate-culled before launch anyway).
-            "prelude": "if nvidia-smi --query-gpu=compute_cap --format=csv,noheader | grep -qE '^(10|11|12)'; then pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cu128 torch; fi"
-                       " && " + _SANITIZE},
+            "prelude": "if nvidia-smi --query-gpu=compute_cap --format=csv,noheader | grep -qE '^(10|11|12)'; then pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cu128 torch; fi"},
 }
 
 POSTPROC_PIN = ("ghcr.io/iqns-org/postproc"
@@ -526,7 +604,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     result["lane"] = lane
 
     in_key = f"runs/{from_run}/artifacts.tar.gz"
-    cmd = (f"python /opt/postproc/{spec['script']} "
+    cmd = (f"python /work/inputs/{spec['script']} "
            f"--in /work/inputs/model --out /work/outputs")
     if spec.get("needs_base"):
         cmd += f" --base {shlex.quote(base_model)}"
@@ -542,6 +620,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         except Exception as e:                       # noqa: BLE001
             err = f"lineage read failed: {e}"
             led.update(run_id, state="failed", error=err[:400])
+            notify.emit("run_failed", run_id, error=err[:300])
             return {"status": "error", "run_id": run_id, "error": err}
         ds = ds or {}
         ds_ref = {"name": "data"}
@@ -557,6 +636,25 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             ds_ref["sha256"] = ds["sha256"]
         inputs.append(ds_ref)
         cmd += " --dataset /work/inputs/data"
+    # Run CURRENT repo scripts, not the frozen /opt copies baked into the
+    # p-v images: those are stranded at pre-fix builds (mirror stall), and
+    # 6709e3 proved the failure class — llmcompressor's API drifted around
+    # the baked script while the repo one was already fixed. Plain file
+    # inputs materialize at /work/inputs/<name> (agent _fetch + sha check);
+    # util.py rides along so the script's `from util import ...` resolves.
+    scripts: dict[str, bytes] = {}
+    for fname in (spec["script"], "util.py"):
+        fpath = ROOT / "postproc" / fname
+        if not fpath.is_file():
+            err = f"stage script missing in repo: postproc/{fname}"
+            led.update(run_id, state="failed", error=err)
+            notify.emit("run_failed", run_id, error=err)
+            return {"status": "error", "run_id": run_id, "error": err}
+        data = fpath.read_bytes()
+        scripts[fname] = data
+        inputs.append({"name": fname,
+                       "path": f"{mount}/runs/{run_id}/script/{fname}",
+                       "sha256": hashlib.sha256(data).hexdigest()})
     if spec.get("prelude"):
         # wrap LAST: the runner execs shlex.split(command) — no shell — so
         # the whole chain must arrive as ONE quoted `sh -c` invocation
@@ -570,6 +668,8 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     payload_env = {"JOB_PAYLOAD_PATH":
                    f"{mount}/runs/{run_id}/payload.json"}
     try:
+        for fname, data in scripts.items():
+            put_run(f"runs/{run_id}/script/{fname}", data)
         put_run(f"runs/{run_id}/payload.json",
                 json.dumps(payload).encode())
         result["payload_key"] = f"runs/{run_id}/payload.json"
@@ -647,12 +747,13 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         _watch(run_id, get_run, result, led, poll,
                started=time.time(), max_runtime=max_runtime,
                prov=prov, inst_id=inst.id, price_hr=o.price_hr,
-               max_cost=mc, keepalive=False)
+               max_cost=mc, keepalive=False, put_run=put_run)
         result["output"] = f"runs/{run_id}/artifacts.tar.gz"
         return result
     except Exception as e:
         led.update(run_id, state="failed", error=str(e)[:400])
         result.update({"status": "error", "error": str(e)})
+        notify.emit("run_failed", run_id, error=str(e)[:300])
         return result
     finally:
         if pod_id:

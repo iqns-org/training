@@ -91,6 +91,10 @@ def test_submit_stage_dry_local(tmp_path, monkeypatch):
     monkeypatch.setattr(dispatch.storage, "host_put",
                         lambda k, d: puts.__setitem__(k, d))
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    pp = tmp_path / "postproc"
+    pp.mkdir()
+    (pp / "merge_adapter.py").write_text("# stub\n")
+    (pp / "util.py").write_text("# stub\n")
     res = dispatch.submit_stage("merge", "from-1", base_model="A/B",
                                 dry=True, provider="local")
     assert res["lane"] == "host" and res.get("dry")
@@ -99,6 +103,11 @@ def test_submit_stage_dry_local(tmp_path, monkeypatch):
     assert payload["gate"] == {"required_files": ["config.json"]}
     assert "merge_adapter.py" in payload["command"] and "--base A/B" in payload["command"]
     assert payload["config_yaml"] == ""
+    # scripts ride along, sha-verified, from the repo (not the frozen image)
+    assert puts[f"runs/{res['run_id']}/script/merge_adapter.py"] == b"# stub\n"
+    assert payload["command"].count("/work/inputs/merge_adapter.py") == 1
+    names = [i["name"] for i in payload["inputs"]]
+    assert names == ["model", "merge_adapter.py", "util.py"]
 
 
 def test_submit_stage_dry_runpod(tmp_path, monkeypatch):
@@ -110,6 +119,10 @@ def test_submit_stage_dry_runpod(tmp_path, monkeypatch):
     monkeypatch.setattr(dispatch.storage, "vol_put",
                         lambda k, d: puts.__setitem__(k, d))
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    pp = tmp_path / "postproc"
+    pp.mkdir()
+    (pp / "export_onnx.py").write_text("# stub\n")
+    (pp / "util.py").write_text("# stub\n")
     res = dispatch.submit_stage("onnx", "from-2", dry=True,
                                 provider="runpod")
     assert res["lane"] == "volume" and res.get("dry")
@@ -134,13 +147,19 @@ def test_submit_stage_awq_dataset_injection(tmp_path, monkeypatch):
         return json.dumps(src).encode() if k.endswith("payload.json") else None
     monkeypatch.setattr(dispatch.storage, "vol_get", vget)
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    pp = tmp_path / "postproc"
+    pp.mkdir()
+    (pp / "quantize_awq.py").write_text("# stub\n")
+    (pp / "util.py").write_text("# stub\n")
     res = dispatch.submit_stage("awq", "from-3", dry=True, provider="runpod")
     payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
-    assert len(payload["inputs"]) == 2
+    # model + data + the two riding scripts
+    assert len(payload["inputs"]) == 4
     assert payload["inputs"][1]["path"].endswith("queer.jsonl")
     assert payload["inputs"][1]["sha256"] == "0" * 64
     assert "--dataset /work/inputs/data" in payload["command"]
     assert payload["gate"] == {"required_files": ["config.json"]}
+    assert puts[f"runs/{res['run_id']}/script/quantize_awq.py"] == b"# stub\n"
 
 
 def test_submit_stage_awq_missing_source(tmp_path, monkeypatch):
@@ -178,9 +197,13 @@ def test_submit_stage_awq_traces_two_hops(tmp_path, monkeypatch):
         return None
     monkeypatch.setattr(dispatch.storage, "vol_get", vget)
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    pp = tmp_path / "postproc"
+    pp.mkdir()
+    (pp / "quantize_awq.py").write_text("# stub\n")
+    (pp / "util.py").write_text("# stub\n")
     res = dispatch.submit_stage("awq", "merge-1", dry=True, provider="runpod")
     payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
-    assert len(payload["inputs"]) == 2
+    assert len(payload["inputs"]) == 4       # model + data + 2 scripts
     assert payload["inputs"][1]["path"] == "/data/datasets/queer/x/queer.jsonl"
     assert payload["inputs"][1]["sha256"] == "a" * 64
     assert "--dataset /work/inputs/data" in payload["command"]

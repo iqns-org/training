@@ -156,6 +156,62 @@ def cmd_progress(args):
     _print(json.loads(raw))
 
 
+def cmd_watch(args):
+    from . import progress as prog
+    while True:
+        snap = prog.snapshot(args.run_id)
+        if "error" in snap:
+            _print(snap)
+            raise SystemExit(1)
+        print(prog.fmt_line(snap), flush=True)
+        if snap.get("state") in ("done", "failed", "cancelled"):
+            raise SystemExit(0 if snap.get("state") == "done" else 1)
+        time.sleep(args.interval)
+
+
+def cmd_metrics(args):
+    from . import progress as prog
+    led = Ledger()
+    row = led.get(args.run_id)
+    if not row:
+        _print({"error": f"no such run: {args.run_id}"})
+        raise SystemExit(1)
+    prov = row["provider"] or "runpod"
+    hist = prog.history(args.run_id, provider=prov)
+    print(f"{args.run_id}  kind={row['kind']}  state={row['state']}  "
+          f"provider={prov}")
+    for h in hist:
+        step = f"{h.get('step')}/{h.get('total')}" if h.get("step") is not None else "-"
+        print(f"  {time.strftime('%H:%M:%S', time.localtime(h.get('ts', 0)))}"
+              f"  {str(h.get('state') or '-'):<12} step {step:<10} "
+              f"loss {h.get('loss', '-'):<8} cost ${h.get('cost', 0)}")
+    log = prog.runlog_local(args.run_id)
+    if log:
+        curve = prog.parse_runlog(log)
+        losses = [c["loss"] for c in curve if c.get("loss") is not None]
+        if losses:
+            print(f"  loss curve: {len(losses)} pts, first {losses[0]} "
+                  f"-> last {losses[-1]}, min {min(losses)}")
+
+
+def cmd_events(args):
+    from . import notify
+    for e in notify.recent(limit=args.limit, run_id=args.run or None):
+        ts = time.strftime("%m-%d %H:%M:%S", time.localtime(e["ts"]))
+        extra = " ".join(f"{k}={v}" for k, v in e.items()
+                         if k not in ("ts", "kind", "run_id"))
+        print(f"{ts}  {e['kind']:<12} {e.get('run_id', ''):<26} {extra}")
+
+
+def cmd_notify_test(args):
+    from . import notify
+    ev = notify.emit("notify_test", note="qtrain notify-test")
+    ok, msg = notify.deliver_sync(ev)
+    _print({"journal": str(notify.JOURNAL), "webhook": notify.webhook_url()
+            or None, "delivered": ok, "detail": msg})
+    raise SystemExit(0 if ok else 1)
+
+
 def cmd_doctor(args):
     prov = _prov(args)
     led = Ledger()
@@ -292,6 +348,25 @@ def build_parser():
     s = sub.add_parser("progress", help="live heartbeat from the lane")
     s.add_argument("run_id")
     s.set_defaults(func=cmd_progress)
+
+    s = sub.add_parser("watch", help="follow a run until terminal state")
+    s.add_argument("run_id")
+    s.add_argument("--interval", type=int, default=30)
+    s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("metrics", help="progress history + loss curve "
+                        "(the wandb-lite view)")
+    s.add_argument("run_id")
+    s.set_defaults(func=cmd_metrics)
+
+    s = sub.add_parser("events", help="tail the notification journal")
+    s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--run", help="filter by run id")
+    s.set_defaults(func=cmd_events)
+
+    s = sub.add_parser("notify-test",
+                       help="emit + probe QTRAIN_WEBHOOK_URL delivery")
+    s.set_defaults(func=cmd_notify_test)
 
     s = sub.add_parser("doctor", help="orphan sweep: live pods vs ledger")
     prov_arg(s)

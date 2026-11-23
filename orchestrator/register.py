@@ -18,7 +18,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from . import storage
+from . import notify, storage
 from .config import ROOT
 from .ledger import Ledger
 
@@ -68,6 +68,8 @@ def register(run_id: str, *, name: str | None = None,
         return {**result, "status": "error",
                 "error": f"ssh unpack failed: {r.stderr.decode()[:200]}"}
     result["status"] = "registered"
+    notify.emit("delivered", run_id, name=result.get("name", ""),
+                host=result.get("host", ""))
     result["serve_hint"] = (
         f"on {host.split('@')[-1]}: MODEL={target} "
         "./scripts/serve-vllm.sh  (infra repo)")

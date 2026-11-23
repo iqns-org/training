@@ -198,6 +198,12 @@ qtrain sweep --grid grids/queer-models.yaml       # matrix: domains × models ×
 qtrain serve --domain construction --merge ...    # (P4) register adapter to nano0 vLLM
 ```
 
+Landed surface (13r, §14): `qtrain stage <merge|onnx|int8|awq> --from-run <id>`
+· `progress|watch|metrics <run-id>` · `events [--run]` · `notify-test` ·
+`register <run-id>` · `reconcile` · `doctor`. Budget vocabulary
+`--max-cost` (default: derived estimate) + `--max-price` (rate ceiling) on
+`submit` and `stage`.
+
 Internals:
 - **Ledger**: SQLite `state/ledger.db` — runs, events, states, costs, artifact
   URIs + sha256. Single writer (the server process); CLI talks to it directly
@@ -245,6 +251,12 @@ status/artifacts). FastMCP streamable-HTTP; thin wrappers over orchestrator:
 `train.submit` `train.status` `train.logs` `train.cancel` `train.list`
 `recipes.list` `datasets.list` `datasets.stats` `adapters.list` `adapters.get`
 `capacity.price` (live offers from provider catalog) `sweep.submit` `sweep.grid`
+
+Implemented surface v0.3.x+ (13q/13r): gpu_catalog · list_recipes ·
+submit_training · submit_stage · job_status · run_progress ·
+wait_for_events · run_events · list_runs · list_pods · terminate_pod ·
+doctor · reconcile · refresh_corpora · resource
+`trainer://runs/{run_id}/progress`.
 
 Manifests live in `infra/deploy/app/mcps/manifests/mcp-trainer.yaml`
 (+ `update-rules.sh` port table, + gatus check, + SOPS secret
@@ -822,3 +834,73 @@ shape; cu128 guard broadened to compute-cap 10|11|12 (sm_100 datacenter
 + sm_120 consumer Blackwell; baked cu124 covers neither). CLI:
 --max-cost default None=derived, new --max-price; MCP submit_training
 2.50 -> None. 75 tests pass (7 new budget units).
+
+**(r) wandb-lite + event bus + script passthrough (2026-11-24).**
+New §14 surfaces: `qtrain progress/watch/metrics/events/notify-test`,
+`notify.py` (journal + webhook + listeners), `_watch` heartbeat->
+progress.jsonl + event emits, mcp-trainer `run_progress`/
+`wait_for_events` tools + progress resource + log bridge. AWQ attempt 2
+(6709e3, ~$0.10, right-sized card) proved the sanitize fix landed
+(tokenizer loads!) and exposed failure class #4: llmcompressor API
+drift INSIDE the frozen image (scheme validation + Dataset shape).
+Architectural answer: stage scripts now ride the job as sha-verified
+inputs (repo-current, never image-frozen); quantize_awq rewritten as a
+version-probing ladder (recipe variants x dataset shapes, signature-
+filtered kwargs); preludes slimmed to pip stacks only. 83 tests (+8).
+
+## 14. Progress & notifications (wandb-lite)
+
+No external tracker, no new data plane. The in-pod agent already parses
+the command's stdout live (axolotl dict lines + tqdm) and heartbeats
+`status.json` onto the lane every 30s; `finalize` uploads the full
+`run.log`. Everything else is orchestrator-side joins of what already
+exists:
+
+- **LIVE view** — `qtrain progress <run>`: raw heartbeat (state, step,
+  total, loss, epoch, lr). Zero inbound connections to the pod; the lane
+  is the only channel (same trust model as the manifest).
+- **HISTORY** — `runs/<id>/progress.jsonl` on the lane. The heartbeat is
+  last-writer-wins, so `_watch` appends a durable row whenever the
+  (state, step, cost) signature moves, enriched with the one thing the
+  pod cannot know: dollars (`price_hr x wallclock`). Read side:
+  `qtrain metrics <run>` (history table + loss curve from run.log) and
+  `qtrain watch <run>` (single-line follow until terminal).
+- **EVENTS** — one funnel, `orchestrator/notify.py::emit(kind, run_id,
+  **fields)`. Event kinds: `launched`, `progress` (>=10% step jump or
+  state change), `run_done`, `run_failed` (every failure path, including
+  pre-launch capacity/ceiling refusals), `delivered` (register), and
+  `notify_test`. Sinks, fan-out order fixed:
+  1. `state/notifications.jsonl` — always. Journal is the source of
+     truth for offline inspection; `qtrain events` tails it.
+  2. Webhook POST to `QTRAIN_WEBHOOK_URL` — best-effort on a daemon
+     thread; a dead receiver can never stall or kill a run. This is the
+     "and others" channel (gatus, ntfy, anything speaking POST).
+     `qtrain notify-test` probes delivery synchronously.
+  3. In-process listeners — mcp-trainer registers one that mirrors every
+     event onto the container log (`qtrain-event {json}` lines, so
+     `kubectl logs -f` is a live feed).
+- **MCP surface** — `run_progress(run_id)` (ledger truth + heartbeat +
+  history tail + recent events), `wait_for_events(since, timeout)`
+  server-side long-poll (notification semantics for agents without
+  busy-poll), and the resource template
+  `trainer://runs/{run_id}/progress` for client-initiated
+  subscribe/`resources/updated`. Cross-host push rides the webhook;
+  per-session `resources/updated` fan-out is limited by the fastmcp SDK
+ 's server-push API — long-poll + webhook cover the requirement today.
+
+Design rules: the progress channel is strictly best-effort (every lane
+write is wrapped; a broken sink must never affect a run — the heartbeat
++ manifest remain authoritative); events never duplicate (failures emit
+at exactly one choke point per path); and the whole surface is stdlib,
+because the orchestrator venv stays deliberately lean.
+
+**Script passthrough (the enabler, 13r).** Stage jobs now run the
+CURRENT repo scripts, not the frozen `/opt/postproc` copies:
+`submit_stage` uploads `postproc/<script>` + `util.py` to the lane and
+attaches them as sha-verified plain file inputs (the agent's `_fetch`
+materializes them at `/work/inputs/<name>` — a contract the DEPLOYED
+agents already honor). This kills the "image built before the fix" class
+outright (6709e3: llmcompressor's API drifted around the frozen script
+while the repo copy was already right) and means script fixes never wait
+on an image rebuild — only dependency stacks remain in preludes.
+
