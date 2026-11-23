@@ -24,6 +24,24 @@ from .providers import get_provider
 MINI_LINES = 48
 
 
+def _keepalive_public_lane() -> None:
+    """Quick tunnels idle-expire; during the training phase the pod sends no
+    traffic, so the orchestrator pings the public endpoint each poll cycle to
+    keep it alive for the artifact PUTs at the end. No-op when the public
+    endpoint IS the LAN endpoint (permanent infra route)."""
+    import os
+
+    import httpx
+    pub = os.environ.get("S3_PUBLIC_ENDPOINT", "").rstrip("/")
+    lan = os.environ.get("S3_ENDPOINT", "").rstrip("/")
+    if not pub or pub == lan:
+        return
+    try:
+        httpx.get(f"{pub}/minio/health/live", timeout=10)
+    except Exception:
+        pass  # keepalive only — the presigned calls will surface real errors
+
+
 def _sha(path: Path) -> str:
     return storage.sha256_file(path)
 
@@ -138,6 +156,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             mins = (time.time() - deadline + max_runtime) / 3600
             if inst.price_hr and mins * inst.price_hr > spent_ceiling:
                 raise ProviderError(f"budget cap ${spent_ceiling} crossed")
+            _keepalive_public_lane()
             manifest_raw = storage.get_object(f"runs/{run_id}/manifest.json")
             if manifest_raw:
                 manifest = json.loads(manifest_raw)
