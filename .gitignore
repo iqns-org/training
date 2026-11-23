@@ -15,3 +15,4 @@ dist/
 # corpus data lives in quadra/corpora (SPEC §4b) — do not track here
 datasets/
 generate/
+runs/

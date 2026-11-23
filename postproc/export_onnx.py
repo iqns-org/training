@@ -14,5 +14,5 @@ a = ap.parse_args()
 
 Path(a.out).mkdir(parents=True, exist_ok=True)
 main_export(a.input, output=a.out, task="text-generation-with-past",
-            opset=a.opset, fp16=False, no_patch_exporters=True)
+            opset=a.opset, fp16=False)
 print(f"onnx -> {a.out}", flush=True)

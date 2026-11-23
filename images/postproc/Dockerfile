@@ -9,7 +9,8 @@ COPY postproc/ /opt/postproc/
 COPY agent/trainer_agent/ /opt/agent/trainer_agent/
 
 RUN pip install --no-cache-dir \
-    torch transformers peft accelerate optimum onnxruntime \
+    torch "optimum[exporters]" onnx onnxruntime \
+    transformers peft accelerate \
     fastapi uvicorn httpx
 
 ENV PYTHONPATH=/opt/agent \
