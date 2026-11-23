@@ -770,3 +770,14 @@ https, 75 MB/28 s ssh-over-443 from pi00 over WiFi). Fix applied: mirror
 (same key, same automation, port-443 ingress), forgejo restarted to
 clear the hung task, re-triggered via commit push. LESSON: CI trigger
 latency is now bounded by Actions, never by our uplink's port-22 mood.
+
+**(p) Mirror stall — environmental root cause closed.** Bulk HTTPS upload
+to GitHub from pi00 (30MB, 5MB probes) stalls while downloads fly:
+pi00's WiFi uplink (wlP1p1s0) is saturated by the user's quadra/rmcp
+rust build (8x rustc, load ~20). Mirror/keys/ports/queue were all exonerated
+(ssh handshakes instant both ports; HTTPS small ops fine). The 15-min
+mirror retry self-heals the backlog when the build ends; watchers + CI
+catch up unattended. Today's stages run regardless via preludes
+(int8 landed: 410.8MB model.int8.onnx; onnx: 1.45GB; merge: 723.7MB fp16).
+awq retry #8 in flight (command-assembly bug fixed: --dataset had been
+appended OUTSIDE the sh-c quotes; cu128 swap now guarded to sm_120).
