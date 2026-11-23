@@ -26,6 +26,43 @@ def test_normalize_pod_unknown_status_and_no_ports():
     assert inst.base_url == "" and not inst.ready
 
 
+def test_normalize_ports_spec_echo_strings():
+    # live RunPod v2 shape: ports is a list of strings, no mapping info
+    inst = normalize_pod({"id": "w", "status": "RUNNING",
+                          "ports": ["8000/http", "22/tcp"], "cost": 0.13})
+    assert inst.status == "running"
+    assert inst.base_url == ""
+    assert inst.price_hr == 0.13
+
+
+def test_normalize_ports_dict_mapping():
+    inst = normalize_pod({"id": "w", "status": "RUNNING",
+                          "ports": {"8000/http": {"ip": "1.2.3.4", "port": 42}}})
+    assert inst.base_url == "http://1.2.3.4:42"
+
+
+def test_launch_mounts_and_dc(monkeypatch):
+    captured = {}
+
+    def fake_req(self, method, path, **kw):
+        captured[method + path] = kw.get("json")
+        return {"id": "p1", "status": "RUNNING"}
+
+    monkeypatch.setattr(RunpodProvider, "_req", fake_req)
+    p = RunpodProvider(api_key="x")
+    inst = p.launch("n", "img", "NVIDIA A40",
+                    env={"JOB_PAYLOAD_PATH": "/data/runs/r/payload.json"},
+                    volume_id="vol1", volume_path="/data",
+                    data_center="EU-RO-1")
+    body = captured["POST/v2/pods"]
+    assert body["mounts"] == {"network": [{"volumeId": "vol1", "path": "/data"}]}
+    assert body["dataCenterIds"] == ["EU-RO-1"]
+    assert inst.id == "p1"
+    p.launch("n", "img", "NVIDIA A40")
+    assert "mounts" not in captured["POST/v2/pods"]
+    assert "dataCenterIds" not in captured["POST/v2/pods"]
+
+
 @pytest.mark.skipif(not os.environ.get("RUNPOD_LIVE_TESTS"),
                     reason="set RUNPOD_LIVE_TESTS=1 to hit the live API")
 def test_live_catalog_and_pods():

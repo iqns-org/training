@@ -1,4 +1,6 @@
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -50,9 +52,38 @@ def test_finalize_uploads(monkeypatch, good_outputs):
     assert m["status"] == "succeeded"
     assert "adapter_config.json" in m["artifacts"]
     uploaded = [u for _, u in calls]
-    assert uploaded == ["u1", "u2", "u3"]
+    assert uploaded == ["u1", "u3", "u2"]  # manifest LAST = completion signal
     done = json.loads((good_outputs.parent / "done.json").read_text())
     assert done["status"] == "succeeded"
+
+
+def test_finalize_volume_writes_manifest_last(monkeypatch, good_outputs, tmp_path):
+    """Volume lane: files land under mount/prefix, manifest strictly last,
+    and its own dir-listing right before it must not contain manifest.json."""
+    mount = tmp_path / "data"
+    vol = {"mount": str(mount), "prefix": "runs/r9"}
+    seen = []
+
+    real_replace = os.replace
+
+    def spy_replace(src, dst):
+        d = Path(dst).parent
+        seen.append(sorted(p.name for p in d.iterdir()))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(fz.os, "replace", spy_replace)
+    monkeypatch.setattr(fz, "gpu_info", lambda: {"gpus": []})
+    (log := good_outputs.parent.parent / "run.log").write_text("vol log\n")
+    m = fz.finalize("r9", good_outputs, {"state": "succeeded"}, log, {}, vol)
+    assert m["status"] == "succeeded"
+    out = mount / "runs" / "r9"
+    assert (out / "artifacts.tar.gz").is_file()
+    assert (out / "run.log").read_text() == "vol log\n"
+    assert seen[-1] and "manifest.json" not in seen[-1]  # only *.part existed
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["artifacts_tar_sha256"].startswith("sha256:") or \
+        len(manifest["artifacts_tar_sha256"]) == 64
+    assert not list(out.glob("*.part"))
 
 
 def test_finalize_failed_status(monkeypatch, tmp_path):

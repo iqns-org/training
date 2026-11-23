@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tarfile
 import time
@@ -87,25 +88,45 @@ def build_manifest(run_id: str, outputs_dir: Path, state: dict,
     }
 
 
+def _vol_write(src: Path, volume: dict, name: str) -> None:
+    """Volume lane: copy src into <mount>/<prefix>/name atomically
+    (tmp+rename) so a concurrent S3-API reader never sees a partial file."""
+    dest_dir = Path(volume["mount"]) / volume["prefix"]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    tmp = dest_dir / (name + ".part")
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dest_dir / name)
+
+
 def finalize(run_id: str, outputs_dir: Path, state: dict, log_path: Path,
-             urls: dict[str, str]) -> dict:
-    """Gate → pack → PUT artifacts/manifest/log. Returns the manifest."""
+             urls: dict[str, str], volume: dict | None = None) -> dict:
+    """Gate → pack → publish artifacts/manifest/log via the payload's lane
+    (presigned URLs and/or mounted volume). Manifest LAST = completion
+    signal. Returns the manifest."""
     ok, problems = gate(outputs_dir)
     manifest = build_manifest(run_id, outputs_dir, state,
                               "succeeded" if ok else "failed", problems)
     mpath = Path(outputs_dir).parent / "manifest.json"
     mpath.write_text(json.dumps(manifest, indent=1))
 
+    tar = None
     if ok:
         tar = pack(outputs_dir, mpath.parent / "artifacts.tar.gz")
         manifest["artifacts_tar_sha256"] = sha256_file(tar)
         mpath.write_text(json.dumps(manifest, indent=1))
         if urls.get("artifacts_put"):
             upload(tar, urls["artifacts_put"])
-    if urls.get("manifest_put"):
-        upload(mpath, urls["manifest_put"])
+        if volume:
+            _vol_write(tar, volume, "artifacts.tar.gz")
+    if volume:                                        # log before manifest
+        if log_path.is_file():
+            _vol_write(log_path, volume, "run.log")
     if urls.get("log_put") and log_path.is_file():
         upload(log_path, urls["log_put"])
+    if urls.get("manifest_put"):                      # last = completion signal
+        upload(mpath, urls["manifest_put"])
+    if volume:
+        _vol_write(mpath, volume, "manifest.json")
     (Path(outputs_dir).parent / "done.json").write_text(
         json.dumps({"run_id": run_id, "status": manifest["status"]}))
     return manifest

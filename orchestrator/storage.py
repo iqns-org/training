@@ -59,7 +59,7 @@ def presign(method: str, object_key: str, expires: int = 48 * 3600,
     now = dt.datetime.now(dt.UTC)
     date = now.strftime("%Y%m%dT%H%M%SZ")
     day = now.strftime("%Y%m%d")
-    scope = f"{c['region']}/{SERVICE}/aws4_request"
+    scope = f"{day}/{c['region']}/{SERVICE}/aws4_request"
     host = urllib.parse.urlsplit(c["endpoint"]).netloc
     path = f"/{c['bucket']}/{object_key.lstrip('/')}"
 
@@ -132,30 +132,78 @@ def get_object(key: str) -> bytes | None:
     return r.content
 
 
-def ensure_bucket() -> None:
-    """Create the bucket if missing (header-signed PUT to bucket root)."""
-    c = _cfg()
+def s3_request(method: str, endpoint: str, region: str, access_key: str,
+               secret_key: str, path: str, body: bytes = b"",
+               timeout: float = 300.0) -> httpx.Response:
+    """Header-signed SigV4 request (path begins with '/'; RunPod's S3 API
+    supports NO presign, so the orchestrator side signs headers)."""
     now = dt.datetime.now(dt.UTC)
     date, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
-    scope = f"{c['region']}/{SERVICE}/aws4_request"
-    host = urllib.parse.urlsplit(c["endpoint"]).netloc
-    path = f"/{c['bucket']}/"
-    payload_hash = hashlib.sha256(b"").hexdigest()
-    canon_headers = f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{date}\n"
-    canon_req = "\n".join(["PUT", path, "", canon_headers,
-                           "host;x-amz-content-sha256;x-amz-date", payload_hash])
+    scope = f"{day}/{region}/{SERVICE}/aws4_request"   # 5-part credential
+    host = urllib.parse.urlsplit(endpoint).netloc
+    payload_hash = hashlib.sha256(body).hexdigest()
+    canon_uri = urllib.parse.quote(path, safe="/")
+    signed = "host;x-amz-content-sha256;x-amz-date"
+    canon_headers = (f"host:{host}\nx-amz-content-sha256:{payload_hash}\n"
+                     f"x-amz-date:{date}\n")
+    canon_req = "\n".join([method.upper(), canon_uri, "", canon_headers,
+                           signed, payload_hash])
     to_sign = "\n".join([ALGO, date, scope,
                          hashlib.sha256(canon_req.encode()).hexdigest()])
-    k = _sign(_sign(_sign(_sign(b"AWS4" + c["secret"].encode(), day),
-                          c["region"]), SERVICE), "aws4_request")
+    k = _sign(_sign(_sign(_sign(b"AWS4" + secret_key.encode(), day), region),
+                    SERVICE), "aws4_request")
     sig = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
-    r = httpx.put(f"{c['endpoint']}{path}", content=b"", timeout=30,
-                  headers={
-                      "Host": host,
-                      "x-amz-date": date,
-                      "x-amz-content-sha256": payload_hash,
-                      "Authorization": (f"{ALGO} Credential={c['key']}/{scope}, "
-                                        f"SignedHeaders=host;x-amz-content-sha256;"
-                                        f"x-amz-date, Signature={sig}")})
+    return httpx.request(method, f"{endpoint}{canon_uri}", content=body,
+                         timeout=timeout,
+                         headers={"Host": host, "x-amz-date": date,
+                                  "x-amz-content-sha256": payload_hash,
+                                  "Authorization":
+                                  f"{ALGO} Credential={access_key}/{scope}, "
+                                  f"SignedHeaders={signed}, Signature={sig}"})
+
+
+def ensure_bucket() -> None:
+    c = _cfg()
+    r = s3_request("PUT", c["endpoint"], c["region"], c["key"], c["secret"],
+                   f"/{c['bucket']}/")
     if r.status_code not in (200, 409):
         raise StorageError(f"ensure_bucket: HTTP {r.status_code} {r.text[:200]}")
+
+
+# -- RunPod network-volume lane ----------------------------------------------
+# Pods mount the volume (zero credentials in-pod, no public route needed);
+# the orchestrator reads/writes the same bytes through the per-DC S3 API.
+
+def vol_cfg() -> dict | None:
+    """RunPod S3-API config from RUNPOD_S3_* / RUNPOD_VOLUME_ID; None when
+    unset = volume lane off (presign lane stays the portable default)."""
+    vid = os.environ.get("RUNPOD_VOLUME_ID", "")
+    ak = os.environ.get("RUNPOD_S3_ACCESS_KEY", "")
+    if not (vid and ak):
+        return None
+    return {"bucket": vid, "key": ak,
+            "secret": os.environ.get("RUNPOD_S3_SECRET_KEY", ""),
+            "endpoint": os.environ.get("RUNPOD_S3_ENDPOINT", "").rstrip("/"),
+            "region": os.environ.get("RUNPOD_S3_REGION", "EU-RO-1"),
+            "dc": os.environ.get("RUNPOD_VOLUME_DC",
+                                 os.environ.get("RUNPOD_S3_REGION", "EU-RO-1")),
+            "mount": os.environ.get("RUNPOD_VOLUME_MOUNT", "/data")}
+
+
+def vol_put(key: str, data: bytes) -> None:
+    c = vol_cfg()
+    r = s3_request("PUT", c["endpoint"], c["region"], c["key"], c["secret"],
+                   f"/{c['bucket']}/{key}", data)
+    if r.status_code != 200:
+        raise StorageError(f"vol_put {key}: HTTP {r.status_code} {r.text[:200]}")
+
+
+def vol_get(key: str) -> bytes | None:
+    c = vol_cfg()
+    r = s3_request("GET", c["endpoint"], c["region"], c["key"], c["secret"],
+                   f"/{c['bucket']}/{key}")
+    if r.status_code == 404:
+        return None
+    if r.status_code != 200:
+        raise StorageError(f"vol_get {key}: HTTP {r.status_code} {r.text[:200]}")
+    return r.content

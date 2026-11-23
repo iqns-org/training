@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -57,3 +58,41 @@ def test_submit_dry_stages_objects(tmp_path, monkeypatch, fake_s3, recipe):
     assert res.get("dry")
     assert any(k.startswith("datasets/queer/") for k in fake_s3["put"])
     assert any(k.endswith("payload.json") for k in fake_s3["put"])
+
+
+def test_submit_volume_lane_dry(tmp_path, monkeypatch, recipe):
+    """Volume lane selected automatically when RunPod volume env is set;
+    payload carries volume mount + pod dataset path, no presigned urls."""
+    monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "user_x")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "rps_y")
+    monkeypatch.setenv("RUNPOD_S3_ENDPOINT", "https://s3api-eu-ro-1.runpod.io")
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join(['{"m":1}'] * 60))
+    monkeypatch.setattr(dispatch.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.storage, "sha256_file", lambda p: "0" * 64)
+    puts = []
+    monkeypatch.setattr(dispatch.storage, "vol_put",
+                        lambda k, d: puts.append((k, d)))
+    res = dispatch.submit("queer", recipe, mini=True, dry=True)
+    assert res["lane"] == "volume" and res.get("dry")
+    keys = [k for k, _ in puts]
+    assert any(k.startswith("datasets/queer/") for k in keys)
+    payload = json.loads(dict(puts)[f"runs/{res['run_id']}/payload.json"])
+    assert payload["volume"] == {"mount": "/data",
+                                 "prefix": f"runs/{res['run_id']}"}
+    assert payload["dataset"]["path"].startswith("/data/datasets/queer/")
+    assert payload["urls"] == {}
+
+
+def test_submit_lane_force_presign(tmp_path, monkeypatch, recipe, fake_s3):
+    monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "user_x")
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join(['{"m":1}'] * 60))
+    monkeypatch.setattr(dispatch.subprocess, "run", lambda *a, **k: None)
+    res = dispatch.submit("queer", recipe, mini=True, dry=True,
+                          force_lane="presign")
+    assert res["lane"] == "presign"

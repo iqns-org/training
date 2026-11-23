@@ -37,14 +37,27 @@ _STATUS = {
 
 
 def normalize_pod(pod: dict) -> Instance:
-    """Defensive mapping of a Pod object (schema is loosely documented)."""
+    """Defensive mapping of a Pod object. `ports` shapes observed in the wild:
+    - spec-echo list of strings: ["8000/http", "22/tcp"]  (RunPod REST v2 —
+      no mapping data: base_url stays empty, ssh_direct is the access lane)
+    - list of dicts with ip/port (legacy/GraphQL-ish)
+    - dict mapping "port/protocol" -> {ip, port}
+    """
     status = _STATUS.get(str(pod.get("status", "")).upper(),
                          str(pod.get("status", "unknown")).lower())
     gpu = pod.get("gpu") or {}
     base_url = ""
-    for port in pod.get("ports") or []:
-        if str(port.get("type", "")).lower() in {"http", "tcp"} and port.get("ip"):
-            # http mapping is what our agent speaks on; take the first.
+    ports = pod.get("ports") or []
+    candidates: list[tuple[str, dict]] = []
+    if isinstance(ports, dict):
+        candidates = [(str(k), v if isinstance(v, dict) else {})
+                      for k, v in ports.items()]
+    elif isinstance(ports, list):
+        candidates = [(str(p.get("type", "")), p) for p in ports
+                      if isinstance(p, dict)]
+    for kind, port in candidates:
+        k = kind.lower()
+        if ("http" in k or k == "tcp") and port.get("ip"):
             base_url = f"http://{port['ip']}:{port.get('port')}"
             break
     price = gpu.get("secondPrice") or gpu.get("price") or pod.get("cost")
@@ -123,7 +136,9 @@ class RunpodProvider:
     def launch(self, name: str, image: str, gpu_id: str, *, gpu_count: int = 1,
                cloud: str = "COMMUNITY", env: dict[str, str] | None = None,
                ports: tuple[str, ...] = ("8000/http",), disk_gb: int = 30,
-               args: str | None = None) -> Instance:
+               args: str | None = None, ssh: bool = False,
+               volume_id: str | None = None, volume_path: str = "/data",
+               data_center: str | None = None) -> Instance:
         body: dict = {
             "name": name,
             "image": image,
@@ -132,6 +147,19 @@ class RunpodProvider:
             "ports": list(ports),
             "disk": disk_gb,
         }
+        if volume_id:
+            # Network volume REPLACES the volume disk; mount at a custom path
+            # (/workspace would shadow the base image's axolotl venv!).
+            body["mounts"] = {"network": [{"volumeId": volume_id,
+                                           "path": volume_path}]}
+        if data_center:
+            # volume must live in the pod's DC -> pin placement (SPEC §13 g).
+            body["dataCenterIds"] = [data_center]
+        if ssh:  # debug/exec lane: RunPod v2 exposes NO port mappings for pods,
+                  # so pod-side HTTP is reachable via ssh.direct (22/tcp) only
+            body["startSsh"] = True
+            if not any(p.startswith("22/") for p in body["ports"]):
+                body["ports"] = list(body["ports"]) + ["22/tcp"]
         if env:
             body["env"] = dict(env)
         if args:
@@ -173,6 +201,13 @@ class RunpodProvider:
         items = data if isinstance(data, list) else next(
             (v for v in data.values() if isinstance(v, list)), [])
         return map_offers(items, gpu_ids, tier)
+
+    def ssh_direct(self, instance_id: str) -> dict:
+        """{'user','host','port'} for the published 22/tcp, or {} if absent."""
+        pod = self._req("GET", f"/v2/pods/{instance_id}")
+        direct = (pod.get("ssh") or {}).get("direct") or {}
+        return {"user": direct.get("username", ""), "host": direct.get("host", ""),
+                "port": str(direct.get("port", ""))} if direct else {}
 
     def logs(self, instance_id: str, tail: int = 100) -> list[str]:
         try:

@@ -112,7 +112,8 @@ def cmd_submit(args):
     res = dispatch.submit(
         args.domain, Path(args.recipe), mini=args.mini, overrides=overrides,
         provider=args.provider, gpus=args.gpu or None, tier=args.tier,
-        dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost)
+        dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost,
+        force_lane=args.lane)
     _print(res)
     raise SystemExit(0 if res.get("status") in ("succeeded", None) and not res.get("error") else 1)
 
@@ -205,7 +206,10 @@ def build_parser():
     s.add_argument("--gpu", action="append", help="GPU id filter, repeatable")
     s.add_argument("--tier", choices=["community", "secure"], default=None)
     s.add_argument("--dry", action="store_true",
-                   help="stage dataset+payload to S3, do not launch a pod")
+                   help="stage dataset+payload to the lane, do not launch a pod")
+    s.add_argument("--lane", choices=["volume", "presign"], default=None,
+                   help="storage lane (default: volume when RunPod volume "
+                        "is configured, else presign)")
     s.add_argument("--max-runtime", type=int, default=3600)
     s.add_argument("--max-cost", type=float, default=0.75)
     s.set_defaults(func=cmd_submit)

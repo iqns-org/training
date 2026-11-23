@@ -38,6 +38,22 @@ def test_missing_creds_raises(monkeypatch):
         storage.presign("GET", "x")
 
 
+def test_vol_cfg_off_without_env(monkeypatch):
+    for k in ("RUNPOD_VOLUME_ID", "RUNPOD_S3_ACCESS_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    assert storage.vol_cfg() is None
+
+
+def test_vol_cfg_reads_runpod_env(monkeypatch):
+    monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "user_x")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "rps_y")
+    monkeypatch.setenv("RUNPOD_S3_ENDPOINT", "https://s3api-eu-ro-1.runpod.io/")
+    c = storage.vol_cfg()
+    assert c["bucket"] == "vol1" and c["endpoint"] == "https://s3api-eu-ro-1.runpod.io"
+    assert c["dc"] == "EU-RO-1" and c["mount"] == "/data"
+
+
 def test_sha256_file(tmp_path):
     import hashlib
 

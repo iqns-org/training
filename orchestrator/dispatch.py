@@ -1,14 +1,22 @@
 """Job dispatch loop (SPEC §4/§6, P1): expand -> upload -> launch -> watch.
 
-Zero-inbound design: the pod receives only a presigned payload_get URL; the
-orchestrator learns of completion by polling runs/<id>/manifest.json. The
-return lane IS the ledger: verified artifacts land under runs/<id>/ locally.
+Two storage lanes, chosen per submit (SPEC §13 g):
+  volume   — RunPod network volume mounted into the pod at RUNPOD_VOLUME_MOUNT
+             (/data). Pod writes files, orchestrator reads them via the
+             per-DC S3 API. Zero pod credentials, zero public cluster route,
+             zero presigning. Manifest appearing == job finished.
+  presign  — rustfs + presigned URLs: the portable lane for providers
+             without volumes (gpuai, local). Same push semantics.
+
+In both lanes the orchestrator learns completion by polling
+runs/<id>/manifest.json; the return lane IS the ledger.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -25,12 +33,9 @@ MINI_LINES = 48
 
 
 def _keepalive_public_lane() -> None:
-    """Quick tunnels idle-expire; during the training phase the pod sends no
-    traffic, so the orchestrator pings the public endpoint each poll cycle to
-    keep it alive for the artifact PUTs at the end. No-op when the public
-    endpoint IS the LAN endpoint (permanent infra route)."""
-    import os
-
+    """Quick tunnels idle-expire; during training the pod sends no traffic,
+    so the orchestrator pings the public endpoint each poll cycle (presign
+    lane only; no-op when public == LAN or volume lane)."""
     import httpx
     pub = os.environ.get("S3_PUBLIC_ENDPOINT", "").rstrip("/")
     lan = os.environ.get("S3_ENDPOINT", "").rstrip("/")
@@ -39,15 +44,17 @@ def _keepalive_public_lane() -> None:
     try:
         httpx.get(f"{pub}/minio/health/live", timeout=10)
     except Exception:
-        pass  # keepalive only — the presigned calls will surface real errors
+        pass  # keepalive only — the presigned calls surface real errors
 
 
 def _sha(path: Path) -> str:
     return storage.sha256_file(path)
 
 
-def prepare_dataset(domain: str, mini: bool = False) -> tuple[str, Path, str]:
-    """Run corpus expansion (via prepare-domain), return (key, path, sha256)."""
+def prepare_dataset(domain: str, mini: bool = False,
+                    vol: dict | None = None) -> tuple[str, Path, str]:
+    """Run corpus expansion (via prepare-domain), upload to the lane, return
+    (key, pod_local_path, sha256)."""
     subprocess.run([str(ROOT / ".venv/bin/python"), str(ROOT / "bin/prepare-domain"),
                     domain], check=True, capture_output=True, text=True)
     src = ROOT / "tmp" / f"{domain}.jsonl"
@@ -60,7 +67,12 @@ def prepare_dataset(domain: str, mini: bool = False) -> tuple[str, Path, str]:
         src = mini_path
     sha = _sha(src)
     key = f"datasets/{domain}/{sha[:16]}/{src.name}"
-    storage.put_object(key, src.read_bytes(), "application/x-ndjson")
+    data = src.read_bytes()
+    if vol:
+        storage.vol_put(key, data)
+    else:
+        storage.ensure_bucket()
+        storage.put_object(key, data, "application/x-ndjson")
     return key, src, sha
 
 
@@ -90,7 +102,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            overrides: dict | None = None, provider: str = "runpod",
            gpus: list[str] | None = None, tier: str | None = None,
            dry: bool = False, max_runtime: int = 3600,
-           max_cost: float = 0.75, poll: int = 20) -> dict:
+           max_cost: float = 0.75, poll: int = 20,
+           force_lane: str | None = None) -> dict:
     """Full cycle; returns ledger-shaped result dict. NEVER leaves a pod
     behind: every terminal path terminates."""
     led = Ledger()
@@ -99,9 +112,20 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                         provider=provider)
     result = {"run_id": run_id}
     pod_id = ""
+    vol = storage.vol_cfg() if provider == "runpod" else None
+    if force_lane == "presign":
+        vol = None
+    elif force_lane == "volume" and not vol:
+        led.update(run_id, state="failed", error="volume lane not configured")
+        return {"run_id": run_id, "status": "error",
+                "error": "RUNPOD_VOLUME_ID/RUNPOD_S3_* unset — volume lane off"}
+    lane = "volume" if vol else "presign"
+    result["lane"] = lane
+    get_run = (lambda k: storage.vol_get(k)) if vol else storage.get_object
+    put_run = ((lambda k, d, ct="": storage.vol_put(k, d)) if vol
+               else (lambda k, d, ct="": storage.put_object(k, d, ct)))
     try:
-        storage.ensure_bucket()
-        dataset_key, dataset_path, dataset_sha = prepare_dataset(domain, mini)
+        dataset_key, dataset_path, dataset_sha = prepare_dataset(domain, mini, vol)
         ov = dict(overrides or {})
         if mini:
             ov.update({"sequence_len": 256, "num_epochs": 1,
@@ -109,21 +133,37 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                        "saves_per_epoch": 1})
         config_yaml = render_config(recipe, ov, dataset_path.name)
 
-        urls = storage.mint_job_urls(run_id, dataset_key)
-        payload = {"run_id": run_id,
-                   "command": "axolotl train /work/job/train.yaml",
-                   "config_yaml": config_yaml,
-                   "dataset": {"name": dataset_path.name,
-                               "url": urls["dataset_get"],
-                               "sha256": dataset_sha},
-                   "outputs_dir": "/work/outputs",
-                   "urls": urls}
-        storage.put_object(f"runs/{run_id}/payload.json",
-                           json.dumps(payload).encode(), "application/json")
+        if vol:  # pod sees the dataset THROUGH the mount
+            pod_ds_path = f"{vol['mount']}/{dataset_key}"
+            payload = {"run_id": run_id,
+                       "command": "axolotl train /work/job/train.yaml",
+                       "config_yaml": config_yaml,
+                       "dataset": {"name": dataset_path.name,
+                                   "path": pod_ds_path, "sha256": dataset_sha},
+                       "outputs_dir": "/work/outputs",
+                       "urls": {},
+                       "volume": {"mount": vol["mount"],
+                                  "prefix": f"runs/{run_id}"}}
+            payload_url = ""
+            payload_env = {"JOB_PAYLOAD_PATH": f"{vol['mount']}/runs/{run_id}/payload.json"}
+        else:
+            urls = storage.mint_job_urls(run_id, dataset_key)
+            payload = {"run_id": run_id,
+                       "command": "axolotl train /work/job/train.yaml",
+                       "config_yaml": config_yaml,
+                       "dataset": {"name": dataset_path.name,
+                                   "url": urls["dataset_get"],
+                                   "sha256": dataset_sha},
+                       "outputs_dir": "/work/outputs",
+                       "urls": urls}
+            payload_url = urls["payload_get"]
+            payload_env = {"JOB_PAYLOAD_URL": payload_url}
+        put_run(f"runs/{run_id}/payload.json", json.dumps(payload).encode(),
+                "application/json")
         result.update({"dataset_key": dataset_key, "dataset_sha256": dataset_sha,
                        "payload_key": f"runs/{run_id}/payload.json"})
         if dry:
-            led.update(run_id, state="verified", note="dry-run: staged only")
+            led.update(run_id, state="verified", note=f"dry-run: {lane} lane staged")
             result["dry"] = True
             return result
 
@@ -137,8 +177,10 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 inst = prov.launch(
                     name=f"trainer-{run_id[-8:]}", image=_image_ref(),
                     gpu_id=o.gpu_id, cloud="SECURE" if o.secure else "COMMUNITY",
-                    env={"JOB_PAYLOAD_URL": urls["payload_get"],
-                         "AGENT_TOKEN": token, "IMAGE_TAG": _image_tag()})
+                    env={**payload_env, "AGENT_TOKEN": token,
+                         "IMAGE_TAG": _image_tag()},
+                    **({"volume_id": vol["bucket"], "volume_path": vol["mount"],
+                        "data_center": vol["dc"]} if vol else {}))
                 pod_id = inst.id
                 result["instance"] = {"id": inst.id, "gpu": o.gpu_id,
                                       "price_hr": o.price_hr}
@@ -151,23 +193,23 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                    base_url=inst.base_url)
 
         deadline = time.time() + max_runtime
-        spent_ceiling = max_cost
         while time.time() < deadline:
             mins = (time.time() - deadline + max_runtime) / 3600
-            if inst.price_hr and mins * inst.price_hr > spent_ceiling:
-                raise ProviderError(f"budget cap ${spent_ceiling} crossed")
-            _keepalive_public_lane()
-            manifest_raw = storage.get_object(f"runs/{run_id}/manifest.json")
+            if inst.price_hr and mins * inst.price_hr > max_cost:
+                raise ProviderError(f"budget cap ${max_cost} crossed")
+            if lane == "presign":
+                _keepalive_public_lane()
+            manifest_raw = get_run(f"runs/{run_id}/manifest.json")
             if manifest_raw:
                 manifest = json.loads(manifest_raw)
                 ok = manifest.get("status") == "succeeded"
+                local = ROOT / "runs" / run_id
+                local.mkdir(parents=True, exist_ok=True)
+                (local / "manifest.json").write_bytes(manifest_raw)
                 if ok:
-                    tar = storage.get_object(f"runs/{run_id}/artifacts.tar.gz")
+                    tar = get_run(f"runs/{run_id}/artifacts.tar.gz")
                     assert tar is not None
-                    local = ROOT / "runs" / run_id
-                    local.mkdir(parents=True, exist_ok=True)
                     (local / "artifacts.tar.gz").write_bytes(tar)
-                    (local / "manifest.json").write_bytes(manifest_raw)
                     got = "sha256:" + hashlib.sha256(tar).hexdigest()
                     want = manifest.get("artifacts_tar_sha256", "")
                     if want and got != want:
@@ -175,13 +217,11 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                             f"artifact sha mismatch: {got} != {want}")
                     led.update(run_id, state="done",
                                artifact_uri=f"runs/{run_id}/artifacts.tar.gz")
-                    result.update({"status": "succeeded",
-                                   "local": str(local),
+                    result.update({"status": "succeeded", "local": str(local),
                                    "artifacts": len(manifest.get("artifacts", {}))})
                 else:
-                    log = storage.get_object(f"runs/{run_id}/run.log") or b""
-                    (ROOT / "runs" / run_id).mkdir(parents=True, exist_ok=True)
-                    (ROOT / "runs" / run_id / "run.log").write_bytes(log[-20000:])
+                    log = get_run(f"runs/{run_id}/run.log") or b""
+                    (local / "run.log").write_bytes(log[-20000:])
                     led.update(run_id, state="failed",
                                error=str(manifest.get("problems"))[:400])
                     result.update({"status": "failed",
@@ -208,9 +248,8 @@ IMAGE_TAG = "sha-a27a4f8"
 
 
 def _image_ref() -> str:
-    import os
     return os.environ.get("TRAINER_IMAGE", IMAGE_PIN)
 
 
 def _image_tag() -> str:
-    return IMAGE_TAG
+    return os.environ.get("TRAINER_IMAGE_TAG", IMAGE_TAG)

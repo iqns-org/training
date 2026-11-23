@@ -524,3 +524,41 @@ Retagging (`git push --force v0.1.0`) is the deliberate rebuild lever.
   under churn, create-400s are the ground truth). Remaining P0 sub-item:
   `scripts/sync-image.sh` into the Forgejo registry (skopeo + registry creds
   — needed for the nano0/local lane, P1).
+
+**(g) RunPod network-volume lane — P1 data plane switched (2026-11-23).**
+The keys initially assumed to be rustfs creds turned out to be **RunPod S3
+API keys** (`user_…`/`rps_…` from Credentials → S3 API keys). That reframed
+the return lane for the RunPod leg, and RunPod's own docs settled it: their
+S3 facade serves **network volumes** only (no presigned URLs, per-DC
+endpoints, volume-id = bucket). So the volume lane replaced rustfs as the
+P1 default for RunPod:
+
+* one 10 GB `STANDARD` volume `quadra-ml` (`2v2m8y72i0`) @ `EU-RO-1`
+  ($0.07/GB/mo ≈ negligible); created via `POST /v2/network-volumes` — the
+  scoped `rpa_` key has `volumes:write`.
+* pods mount it at **`/data`** (NOT `/workspace`: a network mount there
+  would shadow the base image's axolotl venv), `dataCenterIds=[EU-RO-1]`
+  pins placement (volume must share the pod's DC).
+* pod holds **zero credentials of any kind**: payload + dataset arrive as
+  files on the mount (`JOB_PAYLOAD_PATH` env names it); finalize copies
+  `artifacts.tar.gz` → `run.log` → `manifest.json` into
+  `/data/runs/<id>/` via atomic tmp+rename, manifest strictly LAST =
+  completion signal; orchestrator polls the same objects over
+  `https://s3api-eu-ro-1.runpod.io` (stdlib header-signed SigV4; RunPod
+  rejects presigning outright).
+* rustfs + presigned lane stays the **portable** design (gpuai/local have
+  no volumes) — both lanes emit the identical `runs/<id>/` layout;
+  `qtrain submit --lane` selects, auto by default (volume iff
+  `RUNPOD_VOLUME_ID` set). rustfs creds (infra `s3.enc.yaml`) are no
+  longer blocking; they're needed when the portable lane or the cluster
+  canonical mirror ships.
+* signer bugs this validated (both paths had never touched a live server):
+  Credential scope was missing the DATE component (5 parts required), and
+  `pkill -f cloudflared` self-kills the caller shell — don't pattern-kill
+  inside compound commands.
+* CI rc-build `v0.2.0-rc.1` carries the new agent into `ghcr.io/iqns-org/trainer`.
+
+**Open question — canonical return:** artifacts now live on a cloud volume,
+not the cluster. P1.5: `qtrain submit` gain a final sync step
+volume→rustfs once the SOPS creds land (digest-preserved copy over LAN),
+making the cluster store canonical as §4 promises.
