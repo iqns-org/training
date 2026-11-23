@@ -636,3 +636,17 @@ my unpainted 2-3 h estimate was ~10x pessimistic). Recipe doesn't set
 `pack` explicitly — behavior is pinned by image digest, but future recipes
 should state it. dispatch now always harvests run.log (success path too).
 rc.2 mini validation still in flight (scraper metrics + heartbeat).
+
+**(k) GPU.ai = first-class via /v1 JOBS API — port design locked (2026-11-23).**
+Spec: `https://api.gpu.ai/v1/openapi.json` (public). The admin.gpusharing-era
+SSH plumbing is obsolete. `POST /jobs` gives everything the portable lane
+needed rustfs for: custom `image` (our trainer digest), `command` + `env`,
+`input_file` (upload via `POST /jobs/inputs`), `GET /jobs/{id}/outputs`
+(download whatever the job wrote to `/outputs`), `max_price_per_hour`,
+auto-boot + auto-shutdown (no terminate leaks by construction), OOM/evicted/
+timeout outcomes per attempt. Job schema also exposes `repo {url, ref}` +
+`secrets`. Contract fit: payload+dataset as inputs; finalize writes
+artifacts.tar.gz/manifest.json/run.log into `/outputs/` -> orchestrator
+GETs outputs. No inbound, no credentials in-machine, no rustfs dependency.
+Adapter to port into orchestrator/providers/gpuai.py (jobs-first,
+instances API unused for now); key validity probe pending.
