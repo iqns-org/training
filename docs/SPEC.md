@@ -562,3 +562,14 @@ P1 default for RunPod:
 not the cluster. P1.5: `qtrain submit` gain a final sync step
 volume→rustfs once the SOPS creds land (digest-preserved copy over LAN),
 making the cluster store canonical as §4 promises.
+
+**Volume topology decision (2026-11-23, resolved):** SHARED network volume
+`quadra-ml` (10 GB, $0.07/mo) with jobs namespaced by `runs/<id>/` prefix —
+NOT per-job volumes, NOT global volumes. Evidence: probe global volume
+`quadra-probe-delete-me` (created + deleted) is **invisible to the S3 API**
+(`ListBuckets` → network volume only), and docs confirm "doesn't work with
+global volumes… attach it to a Pod". Global/per-job variants would require
+a sync-pod per job — breaking the zero-inbound completion-poll design that
+is the entire point of the lane. Dataset cache across jobs (content-
+addressed `datasets/`) rides on the shared choice. Leaks are bounded ($0.07
+flat) vs per-job deletion-drift risk.
