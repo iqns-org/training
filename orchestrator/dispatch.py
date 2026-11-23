@@ -106,7 +106,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            force_lane: str | None = None) -> dict:
     """Full cycle; returns ledger-shaped result dict. NEVER leaves a pod
     behind: every terminal path terminates."""
-    led = Ledger()
+    led = Ledger(ROOT / "state" / "ledger.db")  # ROOT-scoped: tests redirect
     run_id = led.create("train", {"domain": domain, "recipe": str(recipe),
                                   "mini": mini, "overrides": overrides or {}},
                         provider=provider)

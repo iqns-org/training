@@ -573,3 +573,31 @@ a sync-pod per job — breaking the zero-inbound completion-poll design that
 is the entire point of the lane. Dataset cache across jobs (content-
 addressed `datasets/`) rides on the shared choice. Leaks are bounded ($0.07
 flat) vs per-job deletion-drift risk.
+
+**(h) P1 MILESTONE — first hands-off training cycle (2026-11-23).**
+`qtrain submit queer --recipe axolotl/queer/SmolLM2-360M-qlora.yaml --mini`
+ran end-to-end with zero inbound lanes and zero manual steps:
+`20261123-114604-8607e4` — expand 48-row mini (sha `d76fa630…`) → volume
+payload → ladder hit 4th offer (RTX 2000 Ada 16 GB @ $0.24/hr, EU-RO-1,
+pinned for the mount) → 4-bit QLoRA 16/16 steps, final `train/loss 0.67`,
+"Training completed!" → gate → 64.5 MB `artifacts.tar.gz` (adapter
+safetensors 69.5 MB + tokenizer set) + manifest + log written to
+`runs/<id>/` on the volume → orchestrator sha-verified → stored under
+`runs/…` locally → pod terminated. Cost ≈ $0.05. Ledger: done.
+Learnings:
+* verifier/manifest hex-dialect mismatch (bare vs `sha256:`-prefixed) gave
+  a false failure *after* a successful training — fixed dialect-agnostic
+  (commit b47fb18). The pod had already exited; recovery was
+  collect-from-volume, no retrain.
+* metrics scraper misses axolotl's tqdm + `'loss': '0.67'` log-dict
+  format: manifest `training.step/loss = None` though the data is in
+  run.log. P1.5 polish.
+* tests were writing rows into the real ledger; dispatch now builds
+  `Ledger(ROOT/"state"/"ledger.db")` so monkeypatched-ROOT tests redirect.
+* image: `v0.2.0-rc.1` @ sha256:0c1aa0ae… pinned in dispatch; cut the
+  real `v0.2.0` after the first FULL-dataset run.
+
+Remaining P1 tail: full-dataset submit (~22.8k rows, 2 epochs, expect
+$0.5–1.5); agent periodic `status.json` heartbeat (mid-run liveness);
+volume→rustfs canonical sync once infra creds land; rotate the pasted
+S3 API key (transcript exposure).
