@@ -366,7 +366,7 @@ STAGE_SPECS = {
 }
 
 POSTPROC_PIN = ("ghcr.io/iqns-org/postproc"
-                "@sha256:4e6e6e3bf709805cf45b8ae10df2f9a7d4e6b65e40f194d631a6879217d23399")
+                "@sha256:e61e6254628793f5003b3a5aeb61b37d913065f11c474380e871fcfda5d361ac")
 
 
 def _postproc_image() -> str:
