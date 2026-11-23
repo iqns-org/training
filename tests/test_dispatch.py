@@ -151,7 +151,39 @@ def test_submit_stage_awq_missing_source(tmp_path, monkeypatch):
     monkeypatch.setattr(dispatch.storage, "vol_get", lambda k: None)
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
     res = dispatch.submit_stage("awq", "ghost", provider="runpod")
-    assert "source payload missing" in res["error"]
+    assert "no dataset in lineage" in res["error"]
+
+
+def test_submit_stage_awq_traces_two_hops(tmp_path, monkeypatch):
+    """awq --from-run <merge>: merge payload has no dataset, its model
+    input points at the TRAIN run — calibration pointer is inherited."""
+    monkeypatch.setattr(dispatch.storage, "vol_cfg",
+                        lambda: {"bucket": "v1", "mount": "/data",
+                                 "dc": "EU-RO-1", "key": "k", "secret": "s",
+                                 "endpoint": "e", "region": "EU-RO-1"})
+    puts = {}
+    monkeypatch.setattr(dispatch.storage, "vol_put",
+                        lambda k, d: puts.__setitem__(k, d))
+    train_payload = {"dataset": {"name": "queer.jsonl",
+                                 "path": "/data/datasets/queer/x/queer.jsonl",
+                                 "sha256": "a" * 64}}
+    merge_payload = {"inputs": [{"name": "model",
+                                 "path": "/data/runs/train-1/artifacts.tar.gz"}]}
+
+    def vget(k):
+        if k == "runs/merge-1/payload.json":
+            return json.dumps(merge_payload).encode()
+        if k == "runs/train-1/payload.json":
+            return json.dumps(train_payload).encode()
+        return None
+    monkeypatch.setattr(dispatch.storage, "vol_get", vget)
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    res = dispatch.submit_stage("awq", "merge-1", dry=True, provider="runpod")
+    payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
+    assert len(payload["inputs"]) == 2
+    assert payload["inputs"][1]["path"] == "/data/datasets/queer/x/queer.jsonl"
+    assert payload["inputs"][1]["sha256"] == "a" * 64
+    assert "--dataset /work/inputs/data" in payload["command"]
 
 
 def test_submit_stage_validation(monkeypatch):

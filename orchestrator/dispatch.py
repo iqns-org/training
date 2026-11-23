@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -369,7 +370,8 @@ STAGE_SPECS = {
 
 POSTPROC_PIN = ("ghcr.io/iqns-org/postproc"
                 "@sha256:e61e6254628793f5003b3a5aeb61b37d913065f11c474380e871fcfda5d361ac")
-POSTPROC_GPU_PIN = "ghcr.io/iqns-org/postproc-gpu:p-v0.1.2"
+POSTPROC_GPU_PIN = ("ghcr.io/iqns-org/postproc-gpu"
+                    "@sha256:905f4fe0bc64cd6eaca90f87f8d9a418b8b84e2dd17b0862eedf2bd0bec12b2d")
 
 
 def _postproc_image() -> str:
@@ -378,6 +380,32 @@ def _postproc_image() -> str:
 
 def _postproc_gpu_image() -> str:
     return os.environ.get("POSTPROC_GPU_IMAGE", POSTPROC_GPU_PIN)
+
+
+def _trace_dataset(get_run, run_id: str, depth: int = 4) -> dict | None:
+    """Walk the artifact lineage upstream (stage -> stage -> train) until a
+    payload carries a dataset reference — calibration provenance is
+    inherited, never guessed."""
+    rid = run_id
+    for _ in range(depth):
+        raw = get_run(f"runs/{rid}/payload.json")
+        if not raw:
+            return None
+        p = json.loads(raw)
+        ds = p.get("dataset") or {}
+        if ds.get("path") or ds.get("url"):
+            return ds
+        nxt = None
+        for inp in p.get("inputs", []):
+            if inp.get("name") == "model":
+                src = inp.get("path") or inp.get("url") or ""
+                m = re.search(r"runs/([^/]+)/artifacts", src)
+                if m:
+                    nxt = m.group(1)
+        if nxt is None:
+            return None
+        rid = nxt
+    return None
 
 
 def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
@@ -440,21 +468,26 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     inputs: list[dict] = [{"name": "model", "path": f"{mount}/{in_key}",
                            "extract": True}]
     if spec.get("needs_dataset"):
-        # calibration must match what the model was TRAINED on: borrow the
-        # source run's own dataset pointer (lane-relative, same tree)
-        src_raw = get_run(f"runs/{from_run}/payload.json")
-        if src_raw is None:
-            return {"status": "error",
-                    "error": f"source payload missing: {from_run}"}
-        ds = (json.loads(src_raw) or {}).get("dataset") or {}
+        # calibration must match what the model was TRAINED on: the dataset
+        # is INHERITED from the artifact lineage (merge -> train), never
+        # guessed or re-supplied
+        ds = None
+        try:
+            ds = _trace_dataset(get_run, from_run)
+        except Exception as e:                       # noqa: BLE001
+            err = f"lineage read failed: {e}"
+            led.update(run_id, state="failed", error=err[:400])
+            return {"status": "error", "run_id": run_id, "error": err}
+        ds = ds or {}
         ds_ref = {"name": "data"}
         if ds.get("path"):
             ds_ref["path"] = ds["path"]
         elif ds.get("url"):
             ds_ref["url"] = ds["url"]
         else:
-            return {"status": "error",
-                    "error": "source run has no dataset reference"}
+            err = f"no dataset in lineage of {from_run}"
+            led.update(run_id, state="failed", error=err)
+            return {"status": "error", "run_id": run_id, "error": err}
         if ds.get("sha256"):
             ds_ref["sha256"] = ds["sha256"]
         inputs.append(ds_ref)
