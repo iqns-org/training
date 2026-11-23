@@ -210,6 +210,9 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                     tar = get_run(f"runs/{run_id}/artifacts.tar.gz")
                     assert tar is not None
                     (local / "artifacts.tar.gz").write_bytes(tar)
+                    log = get_run(f"runs/{run_id}/run.log")   # forensic trail
+                    if log:
+                        (local / "run.log").write_bytes(log)
                     got = hashlib.sha256(tar).hexdigest()
                     want = str(manifest.get("artifacts_tar_sha256", ""))
                     want = want.removeprefix("sha256:")   # dialect-agnostic

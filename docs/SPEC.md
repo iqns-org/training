@@ -624,3 +624,15 @@ S3 API key (transcript exposure).
   host next), volume→rustfs sync, key rotation, then `v0.2.0` cut +
   delete legacy bash (`bin/gpuai-*`, `src/remote_axolotl_run.sh`).
 
+
+**(j) FIRST FULL TRAINING RUN — succeeded (2026-11-23).**
+`20261123-120057-cd3722`: queer full corpus (22,829 rows, sha `ff01d73f…`),
+SmolLM2-360M 4-bit QLoRA, seq 1024, 2 epochs, on RTX 2000 Ada (EU-RO-1):
+**14 min wall, $0.057**, gate passed, artifacts sha-verified into `runs/`,
+pod terminated, ledger done. Loss 4.699 -> 1.935 (86 points, final epoch 2).
+Surprise learning: axolotl main-2.13 defaults to SAMPLE PACKING when
+`pad_to_sequence_len: true` (pack eff 0.987, 430 optimizer steps/2 epochs;
+my unpainted 2-3 h estimate was ~10x pessimistic). Recipe doesn't set
+`pack` explicitly — behavior is pinned by image digest, but future recipes
+should state it. dispatch now always harvests run.log (success path too).
+rc.2 mini validation still in flight (scraper metrics + heartbeat).
