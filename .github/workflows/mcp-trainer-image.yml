@@ -1,0 +1,52 @@
+name: mcp-trainer-image
+
+# Cost policy (SPEC §8): builds fire on m-v* release tags ONLY. arm64-only
+# (fleet is the pi node; QEMU emulation is fine for this pure-python image).
+
+on:
+  push:
+    tags: ["m-v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: mcp-trainer-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push (arm64)
+        uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: images/mcp-trainer/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/mcp-trainer:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/mcp-trainer:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Pin string
+        run: |
+          echo "Deploy with:" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "    ghcr.io/${GITHUB_REPOSITORY_OWNER}/mcp-trainer@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -55,7 +56,7 @@ def prepare_dataset(domain: str, mini: bool = False,
                     vol: dict | None = None) -> tuple[str, Path, str]:
     """Run corpus expansion (via prepare-domain), upload to the lane, return
     (key, pod_local_path, sha256)."""
-    subprocess.run([str(ROOT / ".venv/bin/python"), str(ROOT / "bin/prepare-domain"),
+    subprocess.run([sys.executable, str(ROOT / "bin/prepare-domain"),
                     domain], check=True, capture_output=True, text=True)
     src = ROOT / "tmp" / f"{domain}.jsonl"
     if not src.is_file():
@@ -103,13 +104,18 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            gpus: list[str] | None = None, tier: str | None = None,
            dry: bool = False, max_runtime: int = 3600,
            max_cost: float = 0.75, poll: int = 20,
-           force_lane: str | None = None) -> dict:
+           force_lane: str | None = None,
+           on_run_id: "callable | None" = None) -> dict:
     """Full cycle; returns ledger-shaped result dict. NEVER leaves a pod
-    behind: every terminal path terminates."""
+    behind: every terminal path terminates. on_run_id (if given) fires the
+    instant the ledger registers the run — lets async callers (mcp-trainer)
+    return before staging finishes."""
     led = Ledger(ROOT / "state" / "ledger.db")  # ROOT-scoped: tests redirect
     run_id = led.create("train", {"domain": domain, "recipe": str(recipe),
                                   "mini": mini, "overrides": overrides or {}},
                         provider=provider)
+    if on_run_id:
+        on_run_id(run_id)
     result = {"run_id": run_id}
     pod_id = ""
     vol = storage.vol_cfg() if provider == "runpod" else None
@@ -247,8 +253,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
 
 
 IMAGE_PIN = ("ghcr.io/iqns-org/trainer"
-             "@sha256:0c1aa0aec2ff5cd68f3077529cda62cffd60d2d20037e350e4d92f05d6f0a31a")
-IMAGE_TAG = "v0.2.0-rc.1"
+             "@sha256:921b545b1b77bca81c4b53602aa1121101e7cc00ad745938d7b69e9c1e0f3c43")
+IMAGE_TAG = "v0.2.0"
 
 
 def _image_ref() -> str:
