@@ -559,7 +559,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
 
         _watch(run_id, get_run, result, led, poll,
                started=time.time(), max_runtime=max_runtime,
-               prov=prov, inst_id=inst.id, price_hr=inst.price_hr,
+               prov=prov, inst_id=inst.id, price_hr=o.price_hr,
                max_cost=max_cost, keepalive=False)
         result["output"] = f"runs/{run_id}/artifacts.tar.gz"
         return result
