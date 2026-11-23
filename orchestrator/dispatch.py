@@ -393,6 +393,9 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     spec = STAGE_SPECS[kind]
     if spec.get("needs_base") and not base_model:
         return {"status": "error", "error": "merge stage needs base_model"}
+    if provider not in ("local", "runpod"):
+        return {"status": "error",
+                "error": f"stage provider {provider!r} not wired yet"}
     led = Ledger(ROOT / "state" / "ledger.db")
     run_id = led.create("stage", {"kind": kind, "from_run": from_run,
                                   "base_model": base_model},
