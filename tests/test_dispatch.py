@@ -106,6 +106,43 @@ def _open_row(tmp_path, monkeypatch):
     return led, rid
 
 
+def test_resume_tolerates_lane_blips(tmp_path, monkeypatch):
+    """Transient lane errors (network blip) must NOT kill a healthy run:
+    _watch tolerates a streak, then harvests normally."""
+    import hashlib
+    from orchestrator.models import Instance
+    led, rid = _open_row(tmp_path, monkeypatch)
+    tar = b"fake-tar"
+    manifest = {"status": "succeeded", "artifacts": {"a": {"size": 1}},
+                "artifacts_tar_sha256": hashlib.sha256(tar).hexdigest()}
+    monkeypatch.setattr(dispatch.storage, "vol_cfg", lambda: {"bucket": "v"})
+    calls = {"n": 0}
+
+    def flaky(k):
+        calls["n"] += 1
+        if calls["n"] <= 2:               # two blips up front
+            raise ConnectionError("transient")
+        if k.endswith("manifest.json"):
+            return json.dumps(manifest).encode()
+        if k.endswith("artifacts.tar.gz"):
+            return tar
+        return b""
+    monkeypatch.setattr(dispatch.storage, "vol_get", flaky)
+    term = []
+
+    class Stub:
+        def poll(self, i):
+            return Instance(provider="runpod", id=i, status="running")
+
+        def terminate(self, i):
+            term.append(i)
+            return True
+    monkeypatch.setattr(dispatch, "get_provider", lambda name: Stub())
+    res = dispatch.resume(rid, poll=1)
+    assert res["status"] == "succeeded" and term == ["i1"]
+    assert calls["n"] > 2                  # blips happened, loop survived
+
+
 def test_resume_harvests_and_terminates(tmp_path, monkeypatch):
     import hashlib
     from orchestrator.models import Instance

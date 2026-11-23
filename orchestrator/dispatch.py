@@ -33,6 +33,21 @@ from .providers import get_provider
 MINI_LINES = 48
 
 
+def _tolerant_get(get_run, key: str, state: dict, limit: int = 5):
+    """Lane reads during the watch loop can blip (network, provider API);
+    tolerate a few consecutive failures before declaring the lane dead.
+    `state` tracks the streak across loop iterations."""
+    try:
+        data = get_run(key)
+        state["errors"] = 0
+        return data
+    except Exception:
+        state["errors"] = state.get("errors", 0) + 1
+        if state["errors"] >= limit:
+            raise
+        return None
+
+
 def _keepalive_public_lane() -> None:
     """Quick tunnels idle-expire; during training the pod sends no traffic,
     so the orchestrator pings the public endpoint each poll cycle (presign
@@ -46,6 +61,46 @@ def _keepalive_public_lane() -> None:
         httpx.get(f"{pub}/minio/health/live", timeout=10)
     except Exception:
         pass  # keepalive only — the presigned calls surface real errors
+
+
+def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
+           started: float, max_runtime: int, prov=None, inst_id: str = "",
+           price_hr: float | None = None, max_cost: float = 0.0,
+           keepalive: bool = False) -> dict:
+    """Shared watch loop (submit + resume): poll the lane for the manifest,
+    tolerate transient blips, fail fast when the instance died without one,
+    respect budget + wall-clock ceilings. Returns `result` after harvest;
+    raises ProviderError on budget/timeout/run-lost."""
+    lane_state: dict = {}
+    deadline = started + max_runtime
+    while time.time() < deadline:
+        if max_cost and price_hr:
+            hours = (time.time() - started) / 3600
+            if hours * price_hr > max_cost:
+                raise ProviderError(f"budget cap ${max_cost} crossed")
+        if keepalive:
+            _keepalive_public_lane()
+        manifest_raw = _tolerant_get(get_run, f"runs/{run_id}/manifest.json",
+                                     lane_state)
+        if manifest_raw:
+            _harvest(run_id, manifest_raw, get_run, led, result)
+            return result
+        if prov and inst_id:
+            try:
+                st = prov.poll(inst_id).status
+            except Exception:
+                st = ""          # provider API blip: re-check next cycle
+            if st in {"terminated", "deleted", "failed", "error", "stopped",
+                      "exited"}:
+                time.sleep(poll)  # grace: agent may still be flushing
+                manifest_raw = get_run(f"runs/{run_id}/manifest.json")
+                if manifest_raw:
+                    _harvest(run_id, manifest_raw, get_run, led, result)
+                    return result
+                raise ProviderError(
+                    f"instance {inst_id} {st} without manifest — run lost")
+        time.sleep(poll)
+    raise ProviderError("max runtime exceeded without manifest")
 
 
 def _sha(path: Path) -> str:
@@ -155,22 +210,9 @@ def resume(run_id: str | None = None, poll: int = 30,
     get_run = (lambda k: storage.vol_get(k)) if vol else storage.get_object
     try:
         prov = get_provider(provider) if inst_id else None
-        deadline = time.time() + max_runtime
-        while time.time() < deadline:
-            manifest_raw = get_run(f"runs/{run_id}/manifest.json")
-            if manifest_raw:
-                _harvest(run_id, manifest_raw, get_run, led, result)
-                return result
-            if prov and inst_id:
-                try:
-                    st = prov.poll(inst_id).status
-                except ProviderError:
-                    st = "gone"
-                if st in {"terminated", "deleted", "failed", "error", "gone"}:
-                    raise ProviderError(
-                        f"instance {inst_id} {st} without manifest — run lost")
-            time.sleep(poll)
-        raise ProviderError("resume: max runtime exceeded without manifest")
+        _watch(run_id, get_run, result, led, poll, started=time.time(),
+               max_runtime=max_runtime, prov=prov, inst_id=inst_id)
+        return result
     except Exception as e:
         led.update(run_id, state="failed", error=str(e)[:400])
         result.update({"status": "error", "error": str(e)})
@@ -283,19 +325,11 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         led.update(run_id, state="provisioning", instance_id=inst.id,
                    base_url=inst.base_url)
 
-        deadline = time.time() + max_runtime
-        while time.time() < deadline:
-            mins = (time.time() - deadline + max_runtime) / 3600
-            if inst.price_hr and mins * inst.price_hr > max_cost:
-                raise ProviderError(f"budget cap ${max_cost} crossed")
-            if lane == "presign":
-                _keepalive_public_lane()
-            manifest_raw = get_run(f"runs/{run_id}/manifest.json")
-            if manifest_raw:
-                _harvest(run_id, manifest_raw, get_run, led, result)
-                return result
-            time.sleep(poll)
-        raise ProviderError("max runtime exceeded without manifest")
+        _watch(run_id, get_run, result, led, poll, started=time.time(),
+               max_runtime=max_runtime, prov=prov, inst_id=inst.id,
+               price_hr=inst.price_hr, max_cost=max_cost,
+               keepalive=(lane == "presign"))
+        return result
     except Exception as e:
         led.update(run_id, state="failed", error=str(e)[:400])
         result.update({"status": "error", "error": str(e)})
