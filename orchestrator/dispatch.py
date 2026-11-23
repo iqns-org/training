@@ -362,10 +362,18 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
 STAGE_SPECS = {
     "merge": {"script": "merge_adapter.py", "needs_base": True,
               "required": ["config.json"]},
-    "onnx": {"script": "export_onnx.py", "required": ["model.onnx"]},
+    # prelude/gpus: runtime bridge until p-v0.1.4+ images land via CI
+    # (mirror transport incident 2026-11-23). onnx: p-v0.1.1 image lacks
+    # exporters deps -> pip at boot on the cloud pod. awq: p-v0.1.2 image
+    # predates tokenizer-sanitize -> sed the legacy list form; gpus
+    # excludes Blackwell (sm_120) until the cu128 rebuild lands.
+    "onnx": {"script": "export_onnx.py", "required": ["model.onnx"],
+             "prelude": "pip install --no-cache-dir -q 'optimum[exporters]' onnx"},
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"]},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
-            "gpu": True, "needs_dataset": True},
+            "gpu": True, "needs_dataset": True,
+            "gpus": ["A40", "A5000", "4090", "A100"],
+            "prelude": "sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
 }
 
 POSTPROC_PIN = ("ghcr.io/iqns-org/postproc"
@@ -465,6 +473,8 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
            f"--in /work/inputs/model --out /work/outputs")
     if spec.get("needs_base"):
         cmd += f" --base {shlex.quote(base_model)}"
+    if spec.get("prelude"):
+        cmd = f"{spec['prelude']} && {cmd}"
     inputs: list[dict] = [{"name": "model", "path": f"{mount}/{in_key}",
                            "extract": True}]
     if spec.get("needs_dataset"):
@@ -518,7 +528,9 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             lk = {}
         else:
             # >=10GB-vram proxy for "real RAM + NVMe" boxes; cheapest first
-            offers = [o for o in prov.catalog() if o.vram_gb >= 10][:8]
+            want = spec.get("gpus")
+            pool = prov.catalog(want) if want else prov.catalog()
+            offers = [o for o in pool if o.vram_gb >= 10][:8]
             lk = {"volume_id": vol["bucket"], "volume_path": vol["mount"],
                   "data_center": vol["dc"]}
         for o in offers:
