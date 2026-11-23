@@ -45,7 +45,21 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/postproc:${{ github.ref_name }}
 
+      - name: Build & push GPU variant (amd64)
+        uses: docker/build-push-action@v6
+        id: build-gpu
+        with:
+          context: .
+          file: images/postproc-gpu/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/postproc-gpu:${{ github.ref_name }}
+
       - name: Pin string
         run: |
-          echo "Stage jobs launch with:" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "    ghcr.io/${GITHUB_REPOSITORY_OWNER}/postproc@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Stage jobs launch with:"
+            echo "    ghcr.io/${GITHUB_REPOSITORY_OWNER}/postproc@${{ steps.build.outputs.digest }}"
+            echo "    ghcr.io/${GITHUB_REPOSITORY_OWNER}/postproc-gpu@${{ steps.build-gpu.outputs.digest }}"
+          } >> "$GITHUB_STEP_SUMMARY"

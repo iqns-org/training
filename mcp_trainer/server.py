@@ -162,9 +162,10 @@ def submit_stage(kind: str, from_run: str, base_model: str | None = None,
                  provider: str = "runpod", max_runtime: int = 3600,
                  dry: bool = False) -> dict:
     """Post-process a finished run: kind merge (needs base_model) | onnx
-    | int8. Cloud (runpod volume lane) by default; provider=local is the
-    opt-in $0 fallback. Non-blocking; track with job_status(). Stage
-    outputs chain as the next stage's from_run."""
+    | int8 | awq (GPU; calibrates on the source run's dataset). Cloud
+    (runpod) by default; provider=local is the opt-in $0 fallback (cpu
+    kinds only). Non-blocking; track with job_status(). Stage outputs
+    chain as the next stage's from_run."""
     holder: dict = {}
     gate = threading.Event()
 

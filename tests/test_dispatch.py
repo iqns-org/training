@@ -118,6 +118,42 @@ def test_submit_stage_dry_runpod(tmp_path, monkeypatch):
     assert payload["gate"] == {"required_files": ["model.onnx"]}
 
 
+def test_submit_stage_awq_dataset_injection(tmp_path, monkeypatch):
+    puts = {}
+    monkeypatch.setattr(dispatch.storage, "vol_cfg",
+                        lambda: {"bucket": "v1", "mount": "/data",
+                                 "dc": "EU-RO-1", "key": "k", "secret": "s",
+                                 "endpoint": "e", "region": "EU-RO-1"})
+    monkeypatch.setattr(dispatch.storage, "vol_put",
+                        lambda k, d: puts.__setitem__(k, d))
+    src = {"dataset": {"name": "queer.jsonl",
+                       "path": "/data/datasets/queer/abc/queer.jsonl",
+                       "sha256": "0" * 64}}
+
+    def vget(k):
+        return json.dumps(src).encode() if k.endswith("payload.json") else None
+    monkeypatch.setattr(dispatch.storage, "vol_get", vget)
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    res = dispatch.submit_stage("awq", "from-3", dry=True, provider="runpod")
+    payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
+    assert len(payload["inputs"]) == 2
+    assert payload["inputs"][1]["path"].endswith("queer.jsonl")
+    assert payload["inputs"][1]["sha256"] == "0" * 64
+    assert "--dataset /work/inputs/data" in payload["command"]
+    assert payload["gate"] == {"required_files": ["config.json"]}
+
+
+def test_submit_stage_awq_missing_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatch.storage, "vol_cfg",
+                        lambda: {"bucket": "v1", "mount": "/data",
+                                 "dc": "EU-RO-1", "key": "k", "secret": "s",
+                                 "endpoint": "e", "region": "EU-RO-1"})
+    monkeypatch.setattr(dispatch.storage, "vol_get", lambda k: None)
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    res = dispatch.submit_stage("awq", "ghost", provider="runpod")
+    assert "source payload missing" in res["error"]
+
+
 def test_submit_stage_validation(monkeypatch):
     monkeypatch.setattr(dispatch, "ROOT", Path("/nonexistent"))
     assert "unknown stage" in dispatch.submit_stage("bogus", "r")["error"]

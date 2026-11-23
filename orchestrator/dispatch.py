@@ -363,14 +363,21 @@ STAGE_SPECS = {
               "required": ["config.json"]},
     "onnx": {"script": "export_onnx.py", "required": ["model.onnx"]},
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"]},
+    "awq": {"script": "quantize_awq.py", "required": ["config.json"],
+            "gpu": True, "needs_dataset": True},
 }
 
 POSTPROC_PIN = ("ghcr.io/iqns-org/postproc"
                 "@sha256:e61e6254628793f5003b3a5aeb61b37d913065f11c474380e871fcfda5d361ac")
+POSTPROC_GPU_PIN = "ghcr.io/iqns-org/postproc-gpu:p-v0.1.2"
 
 
 def _postproc_image() -> str:
     return os.environ.get("POSTPROC_IMAGE", POSTPROC_PIN)
+
+
+def _postproc_gpu_image() -> str:
+    return os.environ.get("POSTPROC_GPU_IMAGE", POSTPROC_GPU_PIN)
 
 
 def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
@@ -430,9 +437,30 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
            f"--in /work/inputs/model --out /work/outputs")
     if spec.get("needs_base"):
         cmd += f" --base {shlex.quote(base_model)}"
+    inputs: list[dict] = [{"name": "model", "path": f"{mount}/{in_key}",
+                           "extract": True}]
+    if spec.get("needs_dataset"):
+        # calibration must match what the model was TRAINED on: borrow the
+        # source run's own dataset pointer (lane-relative, same tree)
+        src_raw = get_run(f"runs/{from_run}/payload.json")
+        if src_raw is None:
+            return {"status": "error",
+                    "error": f"source payload missing: {from_run}"}
+        ds = (json.loads(src_raw) or {}).get("dataset") or {}
+        ds_ref = {"name": "data"}
+        if ds.get("path"):
+            ds_ref["path"] = ds["path"]
+        elif ds.get("url"):
+            ds_ref["url"] = ds["url"]
+        else:
+            return {"status": "error",
+                    "error": "source run has no dataset reference"}
+        if ds.get("sha256"):
+            ds_ref["sha256"] = ds["sha256"]
+        inputs.append(ds_ref)
+        cmd += " --dataset /work/inputs/data"
     payload = {"run_id": run_id, "command": cmd, "config_yaml": "",
-               "inputs": [{"name": "model", "path": f"{mount}/{in_key}",
-                           "extract": True}],
+               "inputs": inputs,
                "outputs_dir": "/work/outputs",
                "gate": {"required_files": spec["required"]},
                "urls": {},
@@ -463,7 +491,9 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         for o in offers:
             try:
                 inst = prov.launch(
-                    name=f"trainer-{run_id[-8:]}", image=_postproc_image(),
+                    name=f"trainer-{run_id[-8:]}",
+                    image=(_postproc_gpu_image() if spec.get("gpu")
+                           else _postproc_image()),
                     gpu_id=o.gpu_id,
                     cloud="SECURE" if o.secure else "COMMUNITY",
                     env={**payload_env, "AGENT_TOKEN": token}, **lk)
