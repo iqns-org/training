@@ -128,6 +128,15 @@ def cmd_stage(args):
                      and not res.get("error") else 1)
 
 
+def cmd_register(args):
+    from . import register
+    res = register.register(args.run_id, name=args.name, host=args.host,
+                            dest_dir=args.dest, dry=args.dry)
+    _print(res)
+    raise SystemExit(0 if res.get("status") in ("registered", None)
+                     and not res.get("error") else 1)
+
+
 def cmd_reconcile(args):
     res = dispatch.resume(run_id=args.run_id, poll=args.poll)
     _print(res)
@@ -253,6 +262,15 @@ def build_parser():
     s.add_argument("--dry", action="store_true")
     s.add_argument("--max-runtime", type=int, default=5400)
     s.set_defaults(func=cmd_stage)
+
+    s = sub.add_parser("register", help="deliver a run/stage artifact to a "
+                        "serving host (nano0 vLLM)")
+    s.add_argument("run_id")
+    s.add_argument("--name", help="model dir name (default kind-runid)")
+    s.add_argument("--host", default="me@nano0.lan")
+    s.add_argument("--dest", default="/home/me/models")
+    s.add_argument("--dry", action="store_true")
+    s.set_defaults(func=cmd_register)
 
     s = sub.add_parser("reconcile", help="re-attach to an open run "
                         "(post-crash harvest + terminate)")
