@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 
 from .config import load_dotenv
 from . import dispatch
@@ -221,6 +222,7 @@ def build_parser():
 
 
 def main(argv=None):
+    load_dotenv()
     args = build_parser().parse_args(argv)
     try:
         args.func(args)

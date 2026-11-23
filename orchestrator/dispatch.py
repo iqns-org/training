@@ -243,8 +243,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
 
 
 IMAGE_PIN = ("ghcr.io/iqns-org/trainer"
-             "@sha256:d1f766d24d62274e770fd8913c3ffe612b87c115d0cd59c318ca60d5c5d8bd36")
-IMAGE_TAG = "sha-a27a4f8"
+             "@sha256:0c1aa0aec2ff5cd68f3077529cda62cffd60d2d20037e350e4d92f05d6f0a31a")
+IMAGE_TAG = "v0.2.0-rc.1"
 
 
 def _image_ref() -> str:
