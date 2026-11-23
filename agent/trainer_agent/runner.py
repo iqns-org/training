@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -37,6 +38,7 @@ class Runner:
         self.state_path = self.dir / "state.json"
         self._proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
+        self._heartbeat: threading.Thread | None = None
 
     # -- state -------------------------------------------------------------
     def _write_state(self, **fields):
@@ -96,24 +98,40 @@ class Runner:
 
     def _scrape(self, line: str):
         """Best-effort progress extraction from axolotl/tqdm output."""
-        if "{" in line and '"loss"' in line:      # transformers json log line
+        if "{" in line and "loss" in line:          # log dict line
+            body = line[line.index("{"):line.rindex("}") + 1]
             try:
-                payload = json.loads(line[line.index("{"):])
-            except (ValueError, json.JSONDecodeError):
-                return
-            if "loss" in payload:
-                self._write_state(step=payload.get("current_steps"),
-                                  total=payload.get("total_steps"),
-                                  loss=payload.get("loss"),
-                                  epoch=payload.get("epoch"),
-                                  lr=payload.get("learning_rate"))
+                payload = ast.literal_eval(body)    # repr-dict, single quotes
+            except (ValueError, SyntaxError):
+                try:
+                    payload = json.loads(body)
+                except json.JSONDecodeError:
+                    return
+            if isinstance(payload, dict) and "loss" in payload:
+                def num(v):
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        return None
+                self._write_state(
+                    **{k: v for k, v in
+                       {"step": num(payload.get("current_steps")),
+                        "total": num(payload.get("total_steps")),
+                        "loss": num(payload.get("loss")),
+                        "epoch": num(payload.get("epoch")),
+                        "lr": num(payload.get("learning_rate"))}.items()
+                       if v is not None})
             return
         m = PROGRESS_RE.search(line)
-        if m and m.group("loss"):
-            self._write_state(step=m.group("step"), total=m.group("total"),
-                              loss=float(m.group("loss")),
-                              **({"epoch": float(e)}
-                                 if (e := EPOCH_RE.search(line)) else {}))
+        if m and m.group("step"):                   # tqdm bar: step/total even
+            fields = {"step": int(m.group("step"))}  # without loss on the same
+            if m.group("total"):                     # line (loss arrives on the
+                fields["total"] = int(m.group("total"))
+            if m.group("loss"):
+                fields["loss"] = float(m.group("loss"))
+            if e := EPOCH_RE.search(line):
+                fields["epoch"] = float(e.group("epoch"))
+            self._write_state(**fields)
 
     def logs(self, tail: int = 100) -> list[str]:
         if not self.log_path.is_file():
@@ -130,6 +148,38 @@ class Runner:
         except ProcessLookupError:
             pass
         return True
+
+    # -- heartbeat -----------------------------------------------------------
+    def start_heartbeat(self, volume: dict | None = None,
+                        urls: dict | None = None, interval: float = 30.0):
+        """Mirror state.json onto the lane every `interval`s so the
+        orchestrator can watch live progress with zero inbound connections.
+        Best-effort: terminal manifest is the authoritative signal."""
+        import shutil
+
+        def publish():
+            self._write_state(updated_at=time.time())          # refresh mtime
+            if volume:
+                dest_dir = Path(volume["mount"]) / volume["prefix"]
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                tmp = dest_dir / "status.json.part"
+                shutil.copyfile(self.state_path, tmp)
+                os.replace(tmp, dest_dir / "status.json")
+            elif (urls or {}).get("status_put"):
+                from .transfer import upload
+                upload(self.state_path, urls["status_put"])
+
+        def loop():
+            while True:
+                try:
+                    publish()
+                except Exception:                               # noqa: BLE001
+                    pass
+                time.sleep(interval)
+
+        t = threading.Thread(target=loop, daemon=True)
+        t.start()
+        self._heartbeat = t
 
     @property
     def active(self) -> bool:

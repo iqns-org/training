@@ -106,6 +106,8 @@ def mint_job_urls(run_id: str, dataset_key: str | None = None,
                                  hours * 3600, public=True),
         "manifest_put": presign("PUT", f"{base}/manifest.json", hours * 3600,
                                 public=True),
+        "status_put": presign("PUT", f"{base}/status.json", hours * 3600,
+                             public=True),
         "log_put": presign("PUT", f"{base}/run.log", hours * 3600, public=True),
     }
 

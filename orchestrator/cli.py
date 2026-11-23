@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from .config import load_dotenv
-from . import dispatch
+from . import dispatch, storage
 from .ledger import Ledger
 from .models import ProviderError
 from .providers import available_providers, get_provider
@@ -119,6 +119,17 @@ def cmd_submit(args):
     raise SystemExit(0 if res.get("status") in ("succeeded", None) and not res.get("error") else 1)
 
 
+def cmd_progress(args):
+    vol = storage.vol_cfg()
+    key = f"runs/{args.run_id}/status.json"
+    raw = storage.vol_get(key) if vol else storage.get_object(key)
+    if raw is None:
+        _print({"run_id": args.run_id, "heartbeat": None,
+                "note": "no status.json on lane yet (pre-boot or old image)"})
+        return
+    _print(json.loads(raw))
+
+
 def cmd_doctor(args):
     prov = _prov(args)
     led = Ledger()
@@ -214,6 +225,10 @@ def build_parser():
     s.add_argument("--max-runtime", type=int, default=3600)
     s.add_argument("--max-cost", type=float, default=0.75)
     s.set_defaults(func=cmd_submit)
+
+    s = sub.add_parser("progress", help="live heartbeat from the lane")
+    s.add_argument("run_id")
+    s.set_defaults(func=cmd_progress)
 
     s = sub.add_parser("doctor", help="orphan sweep: live pods vs ledger")
     prov_arg(s)

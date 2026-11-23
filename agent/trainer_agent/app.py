@@ -121,6 +121,7 @@ def start_boot_job() -> None:
                         run["run_id"], run["outputs_dir"], state,
                         runner.log_path, run["urls"], run.get("volume")))
     runner.start()
+    runner.start_heartbeat(volume=run.get("volume"), urls=run["urls"])
     _active = runner
 
 
