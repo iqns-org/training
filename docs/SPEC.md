@@ -956,3 +956,34 @@ leaves the ladder's full decision trace in run.log. Cost of 805ff2:
 $0.02-ish; the loop broke on run_gated (by design — a non-capacity
 failure stops retries and demands forensics, which is exactly what the
 lane log delivered in one read).
+
+**(u) CHAIN COMPLETE (2026-11-24, 08:1x).** awq attempt #20 landed a
+TRUE W4A16: run 20261124-080936-51d18f, RTX A4500 @ $0.25/hr, estimate
+self-calibrated to $0.09 (from the median of the 4-6 min probes — no
+more folklore), and the header-scan-ordered ladder's FIRST variant
+(`g64/config-groups`, preset-clone + group_size override) won outright
+— no fallback. config.json verifies it: `format=pack-quantized | type=int
+| num_bits=4 | strategy=group | group_size=64 | targets=[Linear]`,
+ignore-list collapsed to just [lm_head] (was 193 in the ignore-fit
+fallback runs c38f58/54c2f6). Artifact: 356 MB packed
+safetensors / 296 MB tar (vs the 724 MB fp16 merge — a 2x weight win;
+for scale, the int8 ONNX lane is 410.8 MB, the fp16 ONNX 1.45 GB).
+Registered to `nano0:/home/me/models/queer-360m-awq` (sha re-checked
+across the ssh stream, all 10 files on disk ✓) and **format-validated
+offline** in a matching stack (torch-cpu + transformers 5.24 +
+compressed-tensors 0.20.1 — the pod's family): AutoModelForCausalLM
+decompressed the pack-quantized checkpoint (739 tensors loaded, 224
+unpacked) and generated coherent chat output. ONTO nano0 itself: the
+Orin's 8 GiB is currently held by a live Qwen3.5-0.8B vLLM container
+(the user's — serve-vllm.sh's path is ready; drop that container or
+wait for a slot). The full ladder train→merge→onnx→int8→awq→register
+is green; nano0 serve is one `docker stop` + `serve-vllm.sh` away.
+Total session spend ~$1 (RunPod prepaid); balance ~$8.5.
+
+**Failure-class ledger (this is the architecture working, not failing):**
+every stage probe that died printed its own root cause into run.log via
+the passthrough+gate (530b30 tokenizer; 88a662/805ff2 llmcompressor
+drift; c38f58 float-args; 632689 optimum stack), and the loop broke on
+the first non-capacity error (run_gated) demanding forensics rather than
+burning money retrying a bug that needed a one-line fix. Five ladder
+iterations (v1→v5) closed the class; the final v5 wins on variant #1.
