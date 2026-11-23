@@ -368,7 +368,10 @@ STAGE_SPECS = {
     # predates tokenizer-sanitize -> sed the legacy list form; gpus
     # excludes Blackwell (sm_120) until the cu128 rebuild lands.
     "onnx": {"script": "export_onnx.py", "required": ["model.onnx"],
-             "prelude": "pip install --no-cache-dir -q 'optimum[exporters]' onnx"
+             # optimum 2.x DROPPED the exporters extra + moved main_export;
+             # the in-image script is v1-API, so pin v1 until p-v0.1.4
+             # (which bakes optimum[exporters]<2 at build time) takes over
+             "prelude": "pip install --no-cache-dir -q 'optimum[exporters]<2' onnx"
                         " && sed -i 's/, no_patch_exporters=True//' /opt/postproc/export_onnx.py"
                         " && sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"],
