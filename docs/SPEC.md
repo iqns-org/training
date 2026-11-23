@@ -759,3 +759,14 @@ measured 200/0.7s. Recovery: forgejo rollout restart (clears queue
 state) + any new push re-triggers the mirror. NOTE: GitHub is only the
 BUILD HOST (tag->Actions); Forgejo main remains the repo of record.
 Do not push to GitHub directly.
+
+**(o) Mirror transport incident — root cause + durable fix (2026-11-23).**
+Push mirror stalled ~5h: `github.com:22` bulk SSH degraded site-wide that
+window (auth fine, transfer hangs; reproduced from BOTH workstation and
+pi00; four failed attempts incl. forgejo's own). HTTPS bulk and — the
+escape hatch — `ssh.github.com:443` were healthy (measured: 75 MB/13 s
+https, 75 MB/28 s ssh-over-443 from pi00 over WiFi). Fix applied: mirror
+`remote_address` -> `ssh://git@ssh.github.com:443/iqns-org/training.git`
+(same key, same automation, port-443 ingress), forgejo restarted to
+clear the hung task, re-triggered via commit push. LESSON: CI trigger
+latency is now bounded by Actions, never by our uplink's port-22 mood.
