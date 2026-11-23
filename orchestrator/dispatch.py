@@ -144,7 +144,8 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
         if manifest_raw:
             _harvest(run_id, manifest_raw, get_run, led, result)
             _finish_done(run_id, started, price_hr, get_run, put_run,
-                         kind=result.get("kind") or "")
+                         kind=result.get("kind") or "",
+                         status=result.get("status") or "succeeded")
             return result
         if prov and inst_id:
             try:
@@ -158,7 +159,8 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
                 if manifest_raw:
                     _harvest(run_id, manifest_raw, get_run, led, result)
                     _finish_done(run_id, started, price_hr, get_run, put_run,
-                         kind=result.get("kind") or "")
+                         kind=result.get("kind") or "",
+                         status=result.get("status") or "succeeded")
                     return result
                 raise ProviderError(
                     f"instance {inst_id} {st} without manifest — run lost")
@@ -168,9 +170,12 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
 
 
 def _finish_done(run_id: str, started: float, price_hr, get_run=None,
-                 put_run=None, kind: str = "") -> None:
+                 put_run=None, kind: str = "", status: str = "succeeded") -> None:
     """Terminal signal for the progress channel: final history row (best
-    effort) + run_done event."""
+    effort) + a run_done or run_gated event. Gate-FAILED harvests are NOT
+    'done' — they delivered a manifest whose artifact gate refused, so
+    they must not train the self-calibration stats either (a failed run's
+    duration is not the duration of success)."""
     cost = (round(price_hr * (time.time() - started) / 3600, 4)
             if price_hr else None)
     if get_run and put_run:
@@ -180,14 +185,18 @@ def _finish_done(run_id: str, started: float, price_hr, get_run=None,
             if isinstance(prev, str):
                 prev = prev.encode()
             put_run(key, prev + (json.dumps(
-                {"ts": round(time.time(), 3), "state": "done",
+                {"ts": round(time.time(), 3), "state": status,
                  "cost": cost}) + "\n").encode())
         except Exception:                              # noqa: BLE001
             pass
-    if kind:
-        budget.record_observed(kind, (time.time() - started) / 60)
-    notify.emit("run_done", run_id, cost=cost,
-                seconds=round(time.time() - started))
+    if status == "succeeded":
+        if kind:
+            budget.record_observed(kind, (time.time() - started) / 60)
+        notify.emit("run_done", run_id, cost=cost,
+                    seconds=round(time.time() - started))
+    else:
+        notify.emit("run_gated", run_id, status=status, cost=cost,
+                    seconds=round(time.time() - started))
 
 
 def _sha(path: Path) -> str:

@@ -929,4 +929,8 @@ tokenizer — fixed + comment. AWQModifier path also logged its shape
 (`requires quantization fields`), feeding the dict-scheme variants.
 Meanwhile: pi00 port 30022 refused then host timed out — the network
 flap class again; push + attempts queued behind a reachability
-watchdog. 88a662 cost: $0.42 (at cap), zero pods left behind.
+watchdog. 88a662 cost: $0.02 (a $0.24/hr card beat the estimate —
+the ladder finding a cheap-fit offer is the system working), zero pods left
+behind. Event-semantics fix surfaced by the same log: a gate-FAILED
+harvest must emit run_gated, not run_done (and must not train the
+self-calibration stats).
