@@ -84,10 +84,11 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                     overrides: dict | None = None,
                     gpus: list[str] | None = None, tier: str | None = None,
                     max_runtime: int = 3600, max_cost: float = 2.50,
-                    dry: bool = False) -> dict:
+                    dry: bool = False, provider: str = "runpod") -> dict:
     """Launch a full training cycle in the background; returns as soon as
     the run is registered (seconds). mini=True is a cheap lane-validation
-    run (48 rows, 1 epoch). Track with job_status(run_id)."""
+    run (48 rows, 1 epoch). provider: runpod | local ($0 K8s Jobs).
+    Track with job_status(run_id)."""
     recipe_path = Path(recipe)
     if not recipe_path.is_absolute():
         recipe_path = ROOT / recipe_path
@@ -105,7 +106,8 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
             holder["result"] = dispatch.submit(
                 domain, recipe_path, mini=mini, overrides=overrides or {},
                 gpus=gpus, tier=tier, max_runtime=max_runtime,
-                max_cost=max_cost, dry=dry, on_run_id=_on_run_id)
+                max_cost=max_cost, dry=dry, provider=provider,
+                on_run_id=_on_run_id)
         except Exception as e:                          # noqa: BLE001
             holder["error"] = f"{type(e).__name__}: {e}"
         finally:

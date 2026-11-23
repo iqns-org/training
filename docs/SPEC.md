@@ -686,3 +686,32 @@ instances API unused for now); key validity probe pending.
   stays a P1.5 sync item like the trainer image.
 * User attention: quadra.yaml WIP (admin_email override) lives in infra
   stash "autostash"; setup-secrets.sh pre-rebase copy at /tmp.
+
+**(m) Failure-mode audit + local provider live (2026-11-23).**
+The MCP-restart orphan (2b7eff) was the crash drill that anchored this
+audit. Harvested manually (sha ok, 64.5 MB, ledger done, pod terminated —
+the POD COMPLETED THE ENTIRE TRAINING UNATTENDED: zero-inbound design
+proven under orchestrator death). Coverage matrix:
+
+| Failure | Behavior | Mechanism |
+|---|---|---|
+| orchestrator crash mid-run | pod finishes+pushes; `qtrain reconcile` / MCP `reconcile` / boot-hook `resume_open_runs()` harvest + terminate | ledger OPEN states + lane truth |
+| cluster restart | same resume path (pod-side ledger survives on hostPath) | |
+| pod/GPU crash, eviction, image-pull fail | watch loop provider-polls: terminal instance + no manifest after one grace cycle = "run lost" fast (was: silent until max_runtime) | `_watch()` shared by submit+resume |
+| training crashes (exit != 0) | gate fails -> failed manifest + log on lane -> ledger failed, pod terminated | finalize contract |
+| transient lane/API blips | tolerated (5-streak budget; poll errors re-checked, never 'gone') | `_tolerant_get` |
+| artifact corruption | dialect-agnostic sha verify at harvest | `_harvest` |
+| launch response lost (duplicate billing) | leaked pod not in ledger -> `qtrain doctor` flags; ladder never retries create | launch no-retry rule |
+| budget overrun | wall-clock x price per cycle + RunPod prepay hard-stop | submit caps |
+| volume full / finalize write fail | manifest never lands -> run-lost/timeout -> failed (loud, never silent-success) | manifest-last |
+
+UNCOVERED (honest): in-run CANCEL (agent reads no control object —
+v0.4 item); ledger-per-instance split (workstation vs pod rows — the
+orphan adoption UPDATE above is manual glue, real fix = reconcile
+derives truth from lane, not ledger, when adopting foreign runs).
+
+local provider: K8s Jobs via `ssh k3s kubectl` on pi00 (no docker there;
+hostPath lane = the exact tree mcp-trainer mounts). LIVE-VERIFIED:
+alpine Job -> /data/runs/smoke-1/manifest.json -> ssh host_get -> delete.
+GPU/nano0 offer gated by LOCAL_GPU_OFFER. postproc (arm64 quantize/
+export) image + stage jobs = next (p-v* workflow).
