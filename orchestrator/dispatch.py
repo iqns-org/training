@@ -375,7 +375,7 @@ STAGE_SPECS = {
              "prelude": "pip install --no-cache-dir -q onnx"},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
             "gpu": True, "needs_dataset": True,
-            "gpus": ["A40", "A5000", "4090", "A100"],
+            "arch_exclude": ["Blackwell"],
             "prelude": "sed -i 's/\"extra_special_tokens\": \\[.*\\]/\"extra_special_tokens\": {}/' /work/inputs/model/tokenizer_config.json"},
 }
 
@@ -532,10 +532,13 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             offers = prov.catalog()
             lk = {}
         else:
-            # >=10GB-vram proxy for "real RAM + NVMe" boxes; cheapest first
-            want = spec.get("gpus")
-            pool = prov.catalog(want) if want else prov.catalog()
-            offers = [o for o in pool if o.vram_gb >= 10][:8]
+            # >=10GB-vram proxy for "real RAM + NVMe" boxes; cheapest
+            # first; stage specs can exclude archs the pinned image
+            # lacks kernels for (cu124 image + Blackwell = no)
+            pool = prov.catalog()
+            for pat in spec.get("arch_exclude", []):
+                pool = [o for o in pool if pat.lower() not in o.gpu_id.lower()]
+            offers = [o for o in pool if o.vram_gb >= 10][:12]
             lk = {"volume_id": vol["bucket"], "volume_path": vol["mount"],
                   "data_center": vol["dc"]}
         for o in offers:
