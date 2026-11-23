@@ -210,8 +210,9 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                     tar = get_run(f"runs/{run_id}/artifacts.tar.gz")
                     assert tar is not None
                     (local / "artifacts.tar.gz").write_bytes(tar)
-                    got = "sha256:" + hashlib.sha256(tar).hexdigest()
-                    want = manifest.get("artifacts_tar_sha256", "")
+                    got = hashlib.sha256(tar).hexdigest()
+                    want = str(manifest.get("artifacts_tar_sha256", ""))
+                    want = want.removeprefix("sha256:")   # dialect-agnostic
                     if want and got != want:
                         raise ProviderError(
                             f"artifact sha mismatch: {got} != {want}")
