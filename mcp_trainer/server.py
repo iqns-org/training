@@ -217,20 +217,28 @@ def refresh_corpora() -> dict:
 # ------------------------------------------------------------------ serve
 
 def build_app():
-    from fastmcp.server.http import StarletteWithLifespan
-    app: StarletteWithLifespan = mcp.http_app(path="/mcp")
-    if os.environ.get("MCP_TRAINER_TOKEN"):
-        app.add_middleware(BearerGate)
+    app = mcp.http_app(path="/mcp")
+    # gate ALWAYS wraps: refuse-all is the safe default without a token
+    app.add_middleware(BearerGate)
     return app
+
+
+def _port() -> int:
+    raw = os.environ.get("MCP_TRAINER_PORT", "3022")
+    try:
+        return int(raw)
+    except ValueError:      # e.g. k8s service-link tcp://... if re-enabled
+        return 3022
 
 
 def main(argv=None) -> int:
     import uvicorn
     load_dotenv()
     if not os.environ.get("MCP_TRAINER_TOKEN"):
-        print("WARNING: MCP_TRAINER_TOKEN unset — server is UNAUTHENTICATED "
-              "(dev mode only)", flush=True)
-    port = int(os.environ.get("MCP_TRAINER_PORT", "3022"))
+        print("WARNING: MCP_TRAINER_TOKEN unset — REFUSING all tool traffic "
+              "except /healthz (set MCP_TRAINER_ALLOW_OPEN=1 for local dev)",
+              flush=True)
+    port = _port()
     print(f"mcp-trainer {__version__} listening :{port} (/mcp, /healthz)",
           flush=True)
     uvicorn.run(build_app(), host="0.0.0.0", port=port, log_level="info")
