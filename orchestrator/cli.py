@@ -235,8 +235,10 @@ def cmd_events(args):
     for e in notify.recent(limit=args.limit, run_id=args.run or None):
         ts = time.strftime("%m-%d %H:%M:%S", time.localtime(e["ts"]))
         extra = " ".join(f"{k}={v}" for k, v in e.items()
-                         if k not in ("ts", "kind", "run_id"))
-        print(f"{ts}  {e['kind']:<12} {e.get('run_id', ''):<26} {extra}")
+                         if k not in ("ts", "event", "kind", "run_id"))
+        print(f"{ts}  {e.get('event', e.get('kind', '?')):<13} "
+              f"{(e.get('kind') or '-'):<12} {e.get('run_id', ''):<24} "
+              f"{extra}")
 
 
 def cmd_reap(args):

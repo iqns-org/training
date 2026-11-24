@@ -42,7 +42,7 @@ def test_progress_tick_appends_history_and_emits(tmp_path, monkeypatch):
     assert lane["runs/r1/progress.jsonl"].decode().count("\n") == 2
 
     events = [json.loads(x) for x in journal.read_text().splitlines()]
-    kinds = [(e["kind"], e.get("pct")) for e in events]
+    kinds = [(e["event"], e.get("pct")) for e in events]
     assert ("progress", 10.0) in kinds        # first tick always emits
     assert ("progress", 55.0) in kinds        # >=10% jump emits
     cost = [e for e in events if e.get("pct") == 55.0][0]["cost"]

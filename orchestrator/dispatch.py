@@ -279,7 +279,7 @@ def _wave_launch(prov, offers_fn, *, name, image, env, lk, run_id, kind,
             raise ProviderError(
                 f"no capacity across offers: {last_err} "
                 f"(waited {max_wait}s / {wave} wave(s))")
-        notify.emit("capacity-wait", run_id, kind=kind, wave=wave,
+        notify.emit("capacity-wait", run_id, job=kind, wave=wave,
                     retry_in=int(delay), err=str(last_err)[:160])
         sleep(delay)
         delay = min(delay * 2, backoff_cap)

@@ -61,21 +61,36 @@ def _post(url: str, body: bytes) -> None:
         pass        # best-effort by contract: receivers are never critical
 
 
-def emit(kind: str, run_id: str = "", **fields) -> dict:
-    """Fan out one event. NEVER raises — a broken sink cannot break a run."""
-    event = {"ts": round(time.time(), 3), "kind": kind, "run_id": run_id,
-             **fields}
+def emit(event: str, run_id: str = "", kind: str = "",
+         **fields) -> dict:
+    """Fan out one event. NEVER raises — a broken sink cannot break a run.
+
+    Journal schema (§14): "event" is the LIFECYCLE transition (launched,
+    progress, capacity-wait, run_done, run_failed, reaped, delivered,
+    notify_test...); "kind" is the RESOURCE it touches — the job class
+    (train/merge/awq...), the infra object (pod/deployment/configmap),
+    or the verb (reap/notify-test). Callers pass kind= as a field; it
+    can never collide with the event type because they are separate
+    parameters. Fixed keys are written LAST, so no field can forge ts/
+    event/run_id."""
+    event_dict = {"ts": round(time.time(), 3), "event": event,
+                  "run_id": run_id, "kind": kind or fields.pop(
+                      "job", "") or _infer_kind(run_id), **fields}
+    return _fanout(event_dict)
+
+
+def _fanout(event_dict: dict) -> dict:
     try:
         JOURNAL.parent.mkdir(parents=True, exist_ok=True)
         with open(JOURNAL, "a") as f:
-            f.write(json.dumps(event) + "\n")
+            f.write(json.dumps(event_dict) + "\n")
     except OSError:
         pass
     url = webhook_url()
     if url:
         def _send():
             try:
-                _post(url, json.dumps(event).encode())
+                _post(url, json.dumps(event_dict).encode())
             finally:
                 _PENDING.discard(_t)
         _t = threading.Thread(target=_send, daemon=True, name="qtrain-webhook")
@@ -85,10 +100,24 @@ def emit(kind: str, run_id: str = "", **fields) -> dict:
         fns = list(_LISTENERS)
     for fn in fns:
         try:
-            fn(event)
+            fn(event_dict)
         except Exception:                              # noqa: BLE001
             pass
-    return event
+    return event_dict
+
+
+def _infer_kind(run_id: str) -> str:
+    """Best-effort backfill from the ledger for callers that omit kind
+    (keeps the journal useful without forcing every emit site)."""
+    try:
+        from .ledger import Ledger
+        from .config import ROOT
+        row = Ledger(ROOT / "state" / "ledger.db").get(run_id)
+        if row:
+            return row["kind"] if row["kind"] != "stage" else                 (json.loads(row["spec_json"] or "{}").get("kind", "stage"))
+    except Exception:                                  # noqa: BLE001
+        pass
+    return ""
 
 
 def flush(timeout: float = 5.0) -> None:
