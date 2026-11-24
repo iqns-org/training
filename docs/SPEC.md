@@ -1125,3 +1125,37 @@ running GPU either has an active task or dies.* Three new primitives
 Tests +12 (97 green): claim classification, grace vs stale-suffix vs
 unclaimed opt-in, backoff progression + deadline, relaunch happy path
 through the real _watch/_harvest, and refusal shapes.
+
+**(z) serving the small model right: fp16 + LoRA + server-side persona
+(2026-11-24).** User observations decoded, all three true and related:
+* 'reports as SmolLM' — the artifact's OWN chat_template.jinja carries
+  a hardcoded DEFAULT SYSTEM PROMPT ("You are a helpful AI assistant
+  named SmolLM, trained by Hugging Face") injected whenever the client
+  omits a system message. Earlier Kandi answers came from MY curls that
+  DID send the system prompt; UIs that don't, inherit SmolLM identity —
+  the model honestly role-plays its prompt. Fix: templates/kandi.jinja
+  rewrites only the default slot to the persona, served via
+  --chat-template => identity guaranteed server-side, zero client
+  cooperation. (Data-side hardening — unconditional identity rows —
+  remains the belt-and-braces next round.)
+* 'slower than 0.8B' — W4A16 pack-quantized has no fast kernels for
+  Orin's iGPU (sm_87/aarch64: no Marlin), so int4 decode runs a
+  dequant fallback path that at 360M is SLOWER than plain fp16 —
+  quantization is a SIZE win that only beats fp16 on bandwidth-bound
+  big models. For SmolLM-360M on Orin: fp16 (or bf16) weights is the
+  right dtype; fp8 is unsupported hardware (sm_89+); int8 W8A16 is the
+  middle option if a future model needs it; int4 (AWQ/W4A16) = keep
+  for 1.7B+ where 8 GiB forces it.
+* 'serve multiple variants' — vLLM LoRA serving is the native answer:
+  ONE fp16 engine (backend queer360-lora: base SmolLM2-360M-Instruct +
+  --enable-lora --lora-modules kandi=<registered adapter r=32>) exposes
+  TWO model ids (smollm2-360m, kandi) — base-vs-finetune A/B directly
+  in the UI dropdown, same persona prompt for both, so the delta is
+  pure adapter value. The AWQ merge stays a switchable backend (now on
+  port 8001 for deliberate side-by-side; Orin's unified memory still
+  says one engine at a time in practice). No KV quant on these
+  backends — fp16 KV at 4k ctx is a rounding error; the int4-KV flags
+  in the qwen backend were a 128k-context accommodation.
+Serving changes live in infra (catalog + renderer port/mount rules);
+the chain itself (train->...->register) unchanged — this is what the
+merge/awq artifacts were always for: EVALUATION DATA, not forced fate.
