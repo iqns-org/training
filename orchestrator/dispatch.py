@@ -27,7 +27,7 @@ from pathlib import Path
 import yaml
 
 from . import budget, notify, progress, storage
-from .config import ROOT, corpora_git_sha
+from .config import ROOT, corpora_dir, corpora_git_sha
 from .ledger import Ledger
 from .models import ProviderError
 from .providers import get_provider
@@ -756,7 +756,13 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
     instant the ledger registers the run — lets async callers (mcp-trainer)
     return before staging finishes."""
     led = Ledger(ROOT / "state" / "ledger.db")  # ROOT-scoped: tests redirect
-    run_id = led.create("train", {"domain": domain, "recipe": str(recipe),
+    cdir = corpora_dir()
+    rp = Path(recipe)
+    try:
+        rrecipe = str(rp.relative_to(cdir))      # portable provenance
+    except ValueError:
+        rrecipe = str(rp)
+    run_id = led.create("train", {"domain": domain, "recipe": rrecipe,
                                   "mini": mini, "overrides": overrides or {},
                                   "corpora": corpora_git_sha(),
                                   "recipe_sha": _sha(recipe)[:12]},
@@ -867,9 +873,11 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         result["instance"] = {"id": inst.id, "gpu": offer.gpu_id,
                               "price_hr": offer.price_hr}
         # kill threshold: explicit wins; else the runtime cap expressed in
-        # dollars (wall-clock already bounds cost at this rate)
+        # dollars (wall-clock already bounds cost at this rate). NOTE:
+        # max_runtime is SECONDS — 425e6c exposed a /60-vs-/3600 units bug
+        # that made the derived cap 60x too high ($33 for a $0.50 job).
         mc = (max_cost if max_cost is not None
-              else (offer.price_hr or 0.0) * max_runtime / 60)
+              else (offer.price_hr or 0.0) * max_runtime / 3600)
         led.update(run_id, state="provisioning", instance_id=inst.id,
                    base_url=inst.base_url, est_cost=round(mc, 4),
                    price_hr=offer.price_hr or 0.0)
