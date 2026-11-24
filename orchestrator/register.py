@@ -24,6 +24,11 @@ from . import notify, storage
 from .config import ROOT
 from .ledger import Ledger
 
+# tars above this go via resumable rsync + staged unpack (slow-link
+# survival, 2026-11-24: wifi-Orin leg streams ~0.5 MB/s — a 1.2 GB
+# single-shot ssh pipe times out and restarts from zero every retry)
+RESUME_THRESHOLD = 64 * 1024 * 1024
+
 
 def register(run_id: str, *, name: str | None = None,
              host: str | None = None,
@@ -46,34 +51,69 @@ def register(run_id: str, *, name: str | None = None,
 
     key = f"runs/{run_id}/artifacts.tar.gz"
     local = ROOT / "runs" / run_id / "artifacts.tar.gz"
-    tar = local.read_bytes() if local.is_file() else None
-    if tar is None:                       # fall back to the lane
+    if not local.is_file():                   # fall back to the lane
         provider = row["provider"] or "runpod"
-        tar = (storage.host_get(key) if provider == "local"
-               else storage.vol_get(key))
-    if tar is None:
-        return {"status": "error", "error": "no artifacts.tar.gz (run not done?)"}
+        blob = (storage.host_get(key) if provider == "local"
+                else storage.vol_get(key))
+        if blob is None:
+            return {"status": "error",
+                    "error": "no artifacts.tar.gz (run not done?)"}
+        local.parent.mkdir(parents=True, exist_ok=True)
+        # cache it: a rerun/resume of register must not re-pull the lane,
+        # and 1.2 GB should never live as one in-memory blob
+        local.write_bytes(blob)
+    size = local.stat().st_size
 
     # integrity: trust the manifest, not the bytes alone
     man_raw = (ROOT / "runs" / run_id / "manifest.json").read_bytes() \
         if (ROOT / "runs" / run_id / "manifest.json").is_file() else None
+    want = ""
     if man_raw:
         want = str(json.loads(man_raw).get("artifacts_tar_sha256", "")) \
             .removeprefix("sha256:")
-        if want and hashlib.sha256(tar).hexdigest() != want:
-            return {"status": "error", "error": "artifact tar corrupted "
-                    "vs manifest — re-harvest from lane or rerun stage"}
+    h = hashlib.sha256()
+    with local.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    if want and h.hexdigest() != want:
+        return {"status": "error", "error": "artifact tar corrupted "
+                "vs manifest — re-harvest from lane or rerun stage"}
 
     target = f"{dest_dir.rstrip('/')}/{name}"
-    result.update({"target": f"{host}:{target}", "bytes": len(tar),
-                   "sha256": hashlib.sha256(tar).hexdigest()[:16]})
+    result.update({"target": f"{host}:{target}", "bytes": size,
+                   "sha256": h.hexdigest()[:16]})
     if dry:
         result["dry"] = True
         return result
 
-    remote = f"mkdir -p {shlex.quote(target)} && tar -xzf - -C {shlex.quote(target)}"
-    r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", host, remote],
-                       input=tar, capture_output=True, timeout=900)
+    q = shlex.quote
+    if size > RESUME_THRESHOLD:
+        # big tars rsync to a staging path: --partial --append-verify
+        # makes an interrupted delivery RESUMABLE (a 900 s ssh pipe was
+        # a coin-flip at ~0.5 MB/s on the wifi-Orin leg, and every retry
+        # restarted from zero). Rerun register; it picks up where it
+        # died, then unpacks atomically and cleans the stage.
+        stage = f"/tmp/qtrain-{name}.tar.gz"
+        r = subprocess.run(
+            ["rsync", "-e", "ssh -o ConnectTimeout=10",
+             "--partial", "--append-verify", "--timeout=120",
+             str(local), f"{host}:{stage}"],
+            capture_output=True,
+            timeout=int(os.environ.get("QTRAIN_REGISTER_TIMEOUT", "7200")))
+        if r.returncode != 0:
+            return {**result, "status": "error",
+                    "error": f"rsync failed rc={r.returncode}: "
+                             f"{r.stderr.decode()[-200:]} — rerun register "
+                             f"to resume"}
+        remote = (f"mkdir -p {q(target)} && tar -xzf {q(stage)} "
+                  f"-C {q(target)} && rm -f {q(stage)}")
+        r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", host, remote],
+                           capture_output=True, timeout=900)
+    else:
+        remote = f"mkdir -p {q(target)} && tar -xzf - -C {q(target)}"
+        r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", host, remote],
+                           input=local.read_bytes(), capture_output=True,
+                           timeout=900)
     if r.returncode != 0:
         return {**result, "status": "error",
                 "error": f"ssh unpack failed: {r.stderr.decode()[:200]}"}

@@ -68,3 +68,52 @@ def test_register_dry(staged, monkeypatch):
                             AssertionError("dry must not ssh")))
     res = register.register(RID, dry=True)
     assert res.get("dry") and "target" in res
+
+
+def test_register_large_tar_is_resumable(staged, monkeypatch):
+    """Over-threshold tars rsync (--partial --append-verify) to a stage
+    path, then unpack + clean on the host — interrupted transfers rerun
+    from the partial instead of zero."""
+    calls = []
+
+    class R:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(cmd, input=None, capture_output=None, timeout=None):
+        calls.append((list(cmd), input))
+        return R()
+
+    monkeypatch.setattr(register.subprocess, "run", fake_run)
+    monkeypatch.setattr(register, "RESUME_THRESHOLD", 5)   # tar is 11 B
+    res = register.register(RID, name="queer08b-merged")
+    assert res["status"] == "registered"
+    (cmd1, in1), (cmd2, in2) = calls
+    assert cmd1[0] == "rsync" and "--append-verify" in cmd1
+    assert cmd1[-1] == "me@nano0.lan:/tmp/qtrain-queer08b-merged.tar.gz"
+    assert in1 is None and cmd2[0] == "ssh"
+    assert "tar -xzf /tmp/qtrain-queer08b-merged.tar.gz" in cmd2[-1]
+    assert "rm -f /tmp/qtrain-queer08b-merged.tar.gz" in cmd2[-1]
+
+
+def test_register_resume_rerun_survives_partial(staged, monkeypatch,
+                                                tmp_path):
+    """A failed rsync surfaces a resume hint and does NOT touch the
+    target; the rerun uses the SAME stage path (rsync continues)."""
+    state = {"n": 0}
+
+    class R:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stderr = b"link died"
+
+    def fake_run(cmd, input=None, capture_output=None, timeout=None):
+        state["n"] += 1
+        return R(255 if state["n"] == 1 else 0)
+
+    monkeypatch.setattr(register.subprocess, "run", fake_run)
+    monkeypatch.setattr(register, "RESUME_THRESHOLD", 5)
+    res = register.register(RID, name="queer08b-merged")
+    assert res["status"] == "error" and "resume" in res["error"]
+    res2 = register.register(RID, name="queer08b-merged")
+    assert res2["status"] == "registered"
