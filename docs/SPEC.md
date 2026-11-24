@@ -1037,3 +1037,14 @@ Daily flow after qtrain register: quadra.yaml backend entry ->
 vllm-deploy.sh --apply -> MCP fleet picks it up via configmap
 vllm-active (no hardcoded model ids anywhere downstream).
 register's serve_hint updated to teach exactly that.
+
+**(x) daily nano0 flipped to Kandi (2026-11-24).** apps.vllm active:
+queer360-awq (infra 4be6ff3 + renderer auto-mount for absolute local
+paths). Probe matrix settled the identity story: WITH the system prompt
+every training row carries ("You are Kandi, trained to be queer and
+kinky.") the model answers in-voice ("i am Kandi, the digital girl...")
+— the persona was learned CONDITIONED on the prompt, as the data format
+teaches. WITHOUT it, base alignment answers generically. Client rule:
+attach the system prompt (next step: pin it in the MCP-side defaults).
+Serve-test script (scripts/nano0-serve-test.sh) remains the validation
+tool for any newly registered artifact.
