@@ -464,7 +464,7 @@ else
 fi
 
 rsync -aqz --progress -e "$rsync_rsh" "$domain_cfg" "${ssh_target}:~/${remote_cfg_name}"
-rsync -aqz --progress -e "$rsync_rsh" "./axolotl/fix-axolotl.sh" "${ssh_target}:~/fix-axolotl.sh"
+rsync -aqz --progress -e "$rsync_rsh" "./bin/fix-axolotl.sh" "${ssh_target}:~/fix-axolotl.sh"
 if [ -f "$env_file" ]; then
   rsync -aqz --progress -e "$rsync_rsh" "$env_file" "${ssh_target}:~/.env"
 fi

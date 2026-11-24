@@ -107,8 +107,9 @@ Key decisions:
 ## 4. Job spec & recipes
 
 `configs/jobs/*.yaml` — one file per recurring experiment; `qtrain submit -f`.
-`configs/recipes/<domain>/<model>-<strategy>.yaml` — axolotl overlays
-(absorbs today's `axolotl/<domain>/*.yaml`).
+`$CORPORA_DIR/recipes/<domain>/<model>-<strategy>.yaml` — axolotl overlays
+(moved out of training per the §4b boundary law; superseded the old
+`configs/recipes` in-repo plan and absorbed `axolotl/<domain>/*.yaml`).
 
 ```yaml
 id: queer-smollm2-360m-qlora
@@ -151,6 +152,29 @@ Curation data does **not** live in the training repo. Sibling private repo
   job specs reference `domain@sha256…`; S3 `datasets/<domain>/<hash>/` is the
   durable distribution (pods get presigned GETs, never a git checkout).
 - Linkage is by env: `CORPORA_DIR` (default sibling `../corpora`; unset =
+  legacy layout, resolved against the repo root, never CWD).
+
+**The §4b boundary law (2026-11-24, run/task data round).** The training
+repo is PURE MACHINERY: orchestrator, agent, postproc scripts, generic
+image definitions, expander, tests, this spec. Anything that carries
+domain truth lives in corpora and NOTHING in training should:
+
+| corpora path | content | was |
+|---|---|---|
+| `datasets/<domain>/` | template corpus rows | (already the rule) |
+| `recipes/<domain>/*.yaml` | axolotl per-model regimes | `training/axolotl/<domain>/` |
+| `bench/queer.json` | question suite + endpoint urls | `bench.py` constants |
+| `templates/kandi.jinja` | the served chat template | nano0 host only |
+| `tools/gen_data_round1.py` | corpus content generators | `training/src/` |
+| `docs/` | audits, bench snapshots, run records | `training/docs/` |
+
+Run OUTPUTS belong to neither repo: the PVC lane is the durable store
+(`runs/<id>/*` + `runs/index.jsonl`), the local `runs/` + `state/` dirs
+are untracked caches. The mcp-trainer image no longer bakes domain data
+(`COPY axolotl/` dropped; the pod already mounts the corpora checkout
+read-only at `/data/corpora`). Mechanical fallbacks remain one-level
+deep so old paths still resolve during the transition — they are
+delete-when-quiet, not permanent compat.
   legacy in-repo layout during migration). `scripts/split-corpora.sh`
   refreshes/commits the corpora checkout from the training worktree; it is
   idempotent and additive.
@@ -1180,6 +1204,28 @@ m-v0.3.0 and predates these tools — the next image cut (blocked on the
 GitHub mirror for CI) must move to the digest-pinned ref and the pod
 redeployed; until then the facade lags the repo.
 
+**(ab) §4b boundary enforcement: training repo = pure machinery
+(2026-11-24).** User call, and correct: no run/task data belongs in the
+code repo. Violations found by audit: 624 MiB of run artifacts *tracked*
+under `runs/` (the 625M qwen merge tarball included — the `.gitignore`
+entry postdated the `git add`), domain axolotl recipes in-repo, the mcp
+image `COPY axolotl/`-ing domain config into machinery, persona bench
+suite + nano0 URLs hardcoded in `bench.py`, corpus generator in `src/`,
+audit/bench records in `training/docs`. All moved: corpora gains
+`recipes/`, `bench/queer.json`, `templates/kandi.jinja` (pulled from
+nano0 — now version-controlled, was host-only), `tools/`, `docs/`;
+training gains `config.corpora_dir()`/`resolve_recipe()` (relative
+CORPORA_DIR resolves against repo ROOT, never CWD), list_recipes +
+submit + bench suite all resolve through it with one-level legacy
+fallbacks; fix-axolotl.sh → bin/ (mechanical). `runs/`+`state/` untracked
+(lane is the durable store, local dirs are caches). `split-corpora.sh`
+de-`--delete`d — it would have stripped corpora-only data-round files;
+corpora is now canonical and the script is one-way convenience. Tests
+updated, 102 green. **History caveat:** untracking does not shrink
+history — the repo still carries ~624 MiB of packed run blobs; a
+`git filter-repo` pass + coordinated force-push (mirror, pod pins, any
+sibling clones) is the deliberate follow-up, NOT done unilaterally.
+
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
@@ -1204,8 +1250,10 @@ adds targeted `$`-template rows (expand like the rest of the corpus):
 Measured after round 1 (expanded, via `bin/prepare-domain` corpus audit):
 self-named feeling turns **0 → 228** (40% of 565), valid-JSON assistant
 turns **0 → 92**, unresolved-template 0, invalid lines 0, total expanded
-23,563 unique conversations. Generator kept at `src/gen_data_round1.py`
-(idempotent; templates are one-level — the expander is single-pass).
+23,563 unique conversations. Generator kept at `tools/gen_data_round1.py`
+**in corpora** (per §4b: it authors domain content; idempotent; templates
+are one-level — the expander is single-pass). All four files live under
+corpora `datasets/queer/`.
 
 Bench is the acceptance gate: after the 0.8B (and any 360M retrain)
 `json` flips to PASS, `feeling` self-names, and instruction stays

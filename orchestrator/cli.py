@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import load_dotenv
+from .config import load_dotenv, resolve_recipe
 from . import dispatch, storage
 from .ledger import Ledger
 from .models import ProviderError
@@ -111,7 +111,8 @@ def cmd_submit(args):
         except _json.JSONDecodeError:
             overrides[k] = v
     res = dispatch.submit(
-        args.domain, Path(args.recipe), mini=args.mini, overrides=overrides,
+        args.domain, resolve_recipe(args.recipe), mini=args.mini,
+        overrides=overrides,
         provider=args.provider, gpus=args.gpu or None, tier=args.tier,
         dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost,
         force_lane=args.lane, max_price_hr=args.max_price,
@@ -394,7 +395,8 @@ def build_parser():
     s = sub.add_parser("submit", help="full-cycle training job (SPEC §6)")
     prov_arg(s)
     s.add_argument("domain")
-    s.add_argument("--recipe", required=True, help="axolotl YAML path")
+    s.add_argument("--recipe", required=True,
+                   help="axolotl YAML (corpora recipes/<domain>/… or path)")
     s.add_argument("--mini", action="store_true",
                    help=f"tiny dataset ({dispatch.MINI_LINES} rows, seq 256, 1 epoch) "
                         "— lane validation, not a real training run")

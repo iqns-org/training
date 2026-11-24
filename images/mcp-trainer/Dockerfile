@@ -9,7 +9,6 @@ COPY orchestrator/ ./orchestrator/
 COPY agent/ ./agent/
 COPY src/ ./src/
 COPY bin/ ./bin/
-COPY axolotl/ ./axolotl/
 COPY mcp_trainer/ ./mcp_trainer/
 
 RUN pip install --no-cache-dir "httpx>=0.27" "pydantic>=2.7" "PyYAML>=6" \

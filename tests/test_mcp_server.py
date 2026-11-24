@@ -16,15 +16,17 @@ def test_tools_registered():
 
 
 def test_list_recipes_finds_repo(tmp_path, monkeypatch):
+    # SPEC §4b: recipes live in corpora; CORPORA_DIR drives resolution
+    monkeypatch.setenv("CORPORA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "ROOT", tmp_path)
-    r = (tmp_path / "axolotl" / "queer")
+    r = (tmp_path / "recipes" / "queer")
     r.mkdir(parents=True)
     (r / "SmolLM2-360M-qlora.yaml").write_text("base_model: x\n")
     got = {t.name: t for t in asyncio.run(server.mcp.list_tools())}[
         "list_recipes"].fn()
     assert got["recipes"] == [{"domain": "queer",
                                "model": "SmolLM2-360M-qlora",
-                               "recipe": "axolotl/queer/SmolLM2-360M-qlora.yaml"}]
+                               "recipe": "queer/SmolLM2-360M-qlora.yaml"}]
 
 
 def test_bearer_gate(monkeypatch):

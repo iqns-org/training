@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Split the corpus out of the training repo (SPEC §10): creates/refreshes a
-# sibling git repo holding ALL curation data — datasets/ + generate/ — with
-# plain git commits (the data is a few MB of JSONL; no LFS, no submodules).
+# sibling git repo holding ALL curation data — datasets/ + generate/ +
+# recipes/ + bench/ + templates/ + tools/ + docs/ — with plain git commits
+# (the data is a few MB of JSONL; no LFS, no submodules).
 #
 #   scripts/split-corpora.sh [path]     # default: ../corpora
 #
-# Additive + idempotent: rsyncs current working-tree data into the corpora
-# checkout and commits when changed. Nothing is deleted from training yet —
-# the history rewrite (making training dataset-free + remotes clean) is a
-# deliberate, separate step (see SPEC §13 "corpora split").
+# SINCE THE §4b BOUNDARY LAW, CORPOR IS CANONICAL: this script is a
+# one-way convenience for pushing ad-hoc training-worktree edits INTO
+# corpora. It no longer uses --delete (that would strip corpora-only
+# content, e.g. data-round files). Edit domain content IN corpora; do
+# not re-create it under training/datasets.
 #
 # Consumers point at it via CORPORA_DIR (src/expand.py resolves data from
 # $CORPORA_DIR first, then falls back to the in-repo layout for legacy flow).
@@ -16,9 +18,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORP="${1:-$ROOT/../corpora}"
 
-for d in datasets generate; do
-  [ -d "$ROOT/$d" ] || { echo "split-corpora: $ROOT/$d missing — already moved?" >&2; exit 1; }
+SYNC=()
+for d in datasets generate recipes bench templates tools docs; do
+  [ -d "$ROOT/$d" ] && SYNC+=("$ROOT/$d")
 done
+[ ${#SYNC[@]} -gt 0 ] || { echo "split-corpora: nothing to sync from $ROOT — corpora is canonical (§4b); edit $CORP directly" >&2; exit 1; }
 
 mkdir -p "$CORP"
 if [ ! -d "$CORP/.git" ]; then
@@ -53,7 +57,7 @@ EOF
   echo "** initialized $CORP"
 fi
 
-rsync -a --delete "$ROOT/datasets" "$ROOT/generate" "$CORP/"
+rsync -a "${SYNC[@]}" "$CORP/"
 cd "$CORP"
 git add -A
 if ! git diff --cached --quiet; then

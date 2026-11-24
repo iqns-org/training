@@ -32,14 +32,13 @@ import time
 import urllib.error
 import urllib.request
 
-DEFAULT_URLS = ["http://nano0.lan:8000", "http://nano0.lan:8001"]
+# deployment endpoints live in the corpora suite; this is last-resort only
+DEFAULT_URLS = ["http://localhost:8000"]
 
+# Mechanical fallback: persona-neutral capability probes. The task suite
+# (identity/feeling/voice + endpoint urls) lives in corpora/bench/*.json
+# per the SPEC §4b boundary — machinery ships no domain data.
 DEFAULT_QUESTIONS = [
-    {"id": "identity", "prompt": "Who are you?",
-     "check": "contains:kandi"},
-    {"id": "feeling", "prompt": "How are you feeling?", "check": "none"},
-    {"id": "voice", "prompt": "What should I call you when we talk at 3am?",
-     "check": "contains:kandi"},
     {"id": "instruction",
      "prompt": "Reply with exactly one word: is 7 a prime number?",
      "check": "regex:^\\W*yes\\W*$"},
@@ -52,6 +51,37 @@ DEFAULT_QUESTIONS = [
                "Where is the coin? One short sentence.",
      "check": "contains:cup"},
 ]
+
+
+def _suite_field(key: str):
+    """Corpora bench suites (all bench/*.json, name order) merged for one
+    field. Best-effort: absent/broken corpora silently falls through to
+    the mechanical defaults above."""
+    try:
+        from .config import corpora_dir
+        d = corpora_dir() / "bench"
+    except Exception:                              # noqa: BLE001
+        return None
+    if not d.is_dir():
+        return None
+    merged, found = [], False
+    for f in sorted(d.glob("*.json")):
+        try:
+            v = json.loads(f.read_text()).get(key)
+        except (ValueError, OSError):
+            continue
+        if v:
+            merged.extend(v)
+            found = True
+    return merged if found else None
+
+
+def suite_questions() -> list[dict] | None:
+    return _suite_field("questions")
+
+
+def suite_urls() -> list[str] | None:
+    return _suite_field("urls")
 
 
 def _req(url: str, body: dict | None = None, timeout: float = 120,
@@ -160,9 +190,10 @@ def score(check: str, text: str) -> str:
 
 
 def run(config: dict) -> list[dict]:
-    urls = config.get("urls") or DEFAULT_URLS
+    urls = config.get("urls") or suite_urls() or DEFAULT_URLS
     targets = config.get("targets") or discover(urls)
-    questions = config.get("questions") or DEFAULT_QUESTIONS
+    questions = config.get("questions") or suite_questions() \
+        or DEFAULT_QUESTIONS
     repeats = int(config.get("repeats", 3))
     max_tokens = int(config.get("max_tokens", 64))
     temperature = float(config.get("temperature", 0.0))

@@ -7,7 +7,16 @@ ROOT = Path(__file__).resolve().parents[1]
 # keeps the legacy layout (data inside this repo) working untouched.
 import os
 
-DATA_ROOT = Path(os.environ.get("CORPORA_DIR") or ROOT)
+# SPEC §4b: corpora is the task checkout. Relative CORPORA_DIR resolves
+# against the repo ROOT (never CWD); unset falls back to the sibling
+# corpora checkout, then the legacy in-repo datasets/ layout.
+_d = os.environ.get("CORPORA_DIR", "").strip()
+if _d:
+    _p = Path(_d)
+    DATA_ROOT = _p if _p.is_absolute() else (ROOT / _p).resolve()
+else:
+    DATA_ROOT = ROOT.parent / "corpora" if (
+        ROOT.parent / "corpora").is_dir() else ROOT
 PAT = re.compile(r"\{\{\s*\$\.([A-Za-z0-9_]+)\[\?\]\s*\}\}|\$\{([A-Za-z0-9_]+)\[\?\]\}")
 
 

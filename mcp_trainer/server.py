@@ -20,7 +20,7 @@ from pathlib import Path
 from fastmcp import FastMCP
 
 from orchestrator import dispatch, notify, progress, storage
-from orchestrator.config import ROOT, load_dotenv
+from orchestrator.config import ROOT, corpora_dir, load_dotenv, resolve_recipe
 from orchestrator.ledger import Ledger
 from orchestrator.providers import get_provider
 
@@ -70,16 +70,20 @@ def gpu_catalog(gpus: list[str] | None = None, tier: str | None = None,
 
 @mcp.tool
 def list_recipes(domain: str | None = None) -> dict:
-    """Training recipes in the repo (axolotl/<domain>/<model>.yaml)."""
-    base = ROOT / "axolotl"
+    """Training recipes — task config lives in corpora (SPEC §4b boundary):
+    $CORPORA_DIR/recipes/<domain>/<model>.yaml, with the legacy in-repo
+    axolotl/<domain>/ as read-fallback until fully retired."""
     out = []
-    if base.is_dir():
+    bases = [(corpora_dir() / "recipes", ""), (ROOT / "axolotl", "axolotl/")]
+    for base, prefix in bases:
+        if not base.is_dir():
+            continue
         for d in sorted(base.iterdir()):
             if not d.is_dir() or (domain and d.name != domain):
                 continue
             for f in sorted(d.glob("*.yaml")):
                 out.append({"domain": d.name, "model": f.stem,
-                            "recipe": str(f.relative_to(ROOT))})
+                            "recipe": prefix + f.relative_to(base).as_posix()})
     return {"recipes": out}
 
 
@@ -95,9 +99,7 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
     Budget: max_cost None = derived (runtime x rate); offers above the
     rate ceiling are never launched — waiting beats overbuying.
     Track with job_status(run_id)."""
-    recipe_path = Path(recipe)
-    if not recipe_path.is_absolute():
-        recipe_path = ROOT / recipe_path
+    recipe_path = resolve_recipe(recipe)
     if not recipe_path.is_file():
         return {"error": f"recipe not found: {recipe}"}
     holder: dict = {}
