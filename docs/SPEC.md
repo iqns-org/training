@@ -1006,3 +1006,28 @@ REST/MCP with zero secrets in pods and every artifact sha-verified at
 each hop. Session spend across all 20 attempts + chain: ~$1.20 of the
 prepaid balance; every failed attempt cost cents and left a named
 root cause in its own run.log.
+
+**(w) "who are you" — endpoint truth vs model truth (2026-11-24).**
+Symptom: user asked "who are you" and got Qwen3.5. Diagnosis was two
+layers, separated by direct probes:
+* The standing nano0 :8000 was (correctly, by design) the RESTORED qwen
+  engine after the serve-test trap — any question to the daily endpoint
+  answered as Qwen because it WAS Qwen. The delivered model is not a
+  Qwen derivative (merge base = HuggingFaceTB/SmolLM2-360M-Instruct,
+  config model_type=llama — ledger-verified).
+* Probed OUR artifact directly (serve-test, PROMPT="Who are you?"):
+  it answers "I'm a helpful assistant." — NOT "Kandi". The corpus has
+  only 3 identity rows (me.jsonl "I'm Kandi" x2 + one awake.jsonl
+  row that also contains an UNRENDERED template literal `{{ $.who[?]
+  }}` — a corpus bug worth fixing at the data source). 3 rows do not
+  survive LoRA/360M; persona learning needs dozens of varied identity
+  exchanges, which is the next data-side round.
+Durable fix for the routing half: the infra vllm CATALOG now has a
+`queer360-awq` backend (apps.vllm: model=/home/me/models/queer-360m-awq
+absolute path — render_vllm.py gained the convention that absolute
+paths under /home/me/models get a same-path hostPath mount; flags are
+the serve-test-validated ones) and `active` is flipped from qwen3-05.
+Daily flow after qtrain register: quadra.yaml backend entry ->
+vllm-deploy.sh --apply -> MCP fleet picks it up via configmap
+vllm-active (no hardcoded model ids anywhere downstream).
+register's serve_hint updated to teach exactly that.

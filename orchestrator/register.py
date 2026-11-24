@@ -2,9 +2,10 @@
 
 Lane -> host: the artifacts.tar.gz of any succeeded run (usually a
 stage: merged fp16 or AWQ int4) is streamed to the target machine under
-<dir>/<name>/ and unpacked there. Serving is then one command:
-
-    MODEL=/home/me/models/<name> ./scripts/serve-vllm.sh   # infra, on nano0
+<dir>/<name>/ and unpacked there. Daily serving is the infra backend
+catalog: add an apps.vllm entry with `model: /home/me/models/<name>`
+(render_vllm mounts that path automatically) and flip `active`; one-off
+validation is `MODEL=/home/me/models/<name> ./scripts/serve-vllm.sh`.
 
 vLLM auto-detects compressed-tensors (AWQ/W4A16) and safetensors from
 config.json — no --quantization flag needed for llm-compressor outputs.
@@ -71,6 +72,7 @@ def register(run_id: str, *, name: str | None = None,
     notify.emit("delivered", run_id, name=result.get("name", ""),
                 host=result.get("host", ""))
     result["serve_hint"] = (
-        f"on {host.split('@')[-1]}: MODEL={target} "
-        "./scripts/serve-vllm.sh  (infra repo)")
+        f"daily: add/flip a backend for {target} in infra quadra.yaml "
+        f"(apps.vllm) then ./scripts/vllm-deploy.sh --apply; "
+        f"one-off: MODEL={target} ./scripts/serve-vllm.sh")
     return result
