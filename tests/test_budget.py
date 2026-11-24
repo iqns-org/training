@@ -22,6 +22,7 @@ def test_margin_and_totals_are_env_overridable():
     import os
     os.environ["QTRAIN_BUDGET_MARGIN"] = "2.0"
     os.environ["QTRAIN_BUDGET"] = "9.0"
+    os.environ["QTRAIN_BUDGET_OBS"] = "/nonexistent/obs.json"  # pin static
     importlib.reload(budget)
     try:
         assert budget.MARGIN == 2.0
@@ -30,6 +31,7 @@ def test_margin_and_totals_are_env_overridable():
     finally:
         del os.environ["QTRAIN_BUDGET_MARGIN"]
         del os.environ["QTRAIN_BUDGET"]
+        del os.environ["QTRAIN_BUDGET_OBS"]
         importlib.reload(budget)
 
 

@@ -45,7 +45,8 @@ BILLED = ("pending", "provisioning", "running", "uploading")
 # real data exists (observations from live runs beat folklore). Stage
 # kinds only: train duration is a property of the user's recipe, not a
 # job-class default, and must not be polluted by mini validations.
-OBS_FILE = ROOT / "state" / "budget_obs.json"
+OBS_FILE = Path(os.environ.get("QTRAIN_BUDGET_OBS",
+                               str(ROOT / "state" / "budget_obs.json")))
 OBS_KINDS = ("merge", "onnx", "int8", "awq")
 
 
