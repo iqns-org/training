@@ -345,6 +345,23 @@ def progress_resource(run_id: str) -> str:
     return json.dumps(progress.snapshot(run_id), default=str)
 
 
+@mcp.tool
+def reap_pods(provider: str = "runpod", dry: bool = True) -> dict:
+    """Idempotency hygiene: terminate live GPUs with no active task
+    behind them (terminal claims, stale run-suffix pods). DRY by
+    default; only trainer-* named pods are ever candidates; unclaimed
+    pods are kept unless QTRAIN_REAP_UNCLAIMED=1 declares a single
+    controller."""
+    return dispatch.reap(provider, dry=dry)
+
+
+@mcp.tool
+def janitor_pass(provider: str = "runpod", dry: bool = True) -> dict:
+    """One full idempotency sweep: reap stray pods + relaunch stale
+    pending-but-never-launched runs (crashed dispatchers)."""
+    return dispatch.janitor_once(provider, dry=dry)
+
+
 # ------------------------------------------------------------------ serve
 
 def build_app():
@@ -360,6 +377,25 @@ def _port() -> int:
         return int(raw)
     except ValueError:      # e.g. k8s service-link tcp://... if re-enabled
         return 3022
+
+
+def _janitor_loop() -> None:
+    """Periodic reap+relaunch sweep for controllers that own the lane.
+    OFF unless QTRAIN_JANITOR=1: the server ledger is pod-local, so
+    enabling it is a declaration that this process is THE janitor."""
+    interval = int(os.environ.get("QTRAIN_JANITOR_INTERVAL", "900"))
+    while True:
+        try:
+            out = dispatch.janitor_once(dry=False)
+            interesting = {k: out.get(k) for k in ("reaped", "relaunched")
+                           if out.get(k)}
+            if interesting:
+                print("qtrain-janitor "
+                      + json.dumps(interesting, default=str)[:600],
+                      flush=True)
+        except Exception as e:                              # noqa: BLE001
+            print(f"qtrain-janitor error: {e}", flush=True)
+        time.sleep(interval)
 
 
 def main(argv=None) -> int:
@@ -378,6 +414,12 @@ def main(argv=None) -> int:
     n = resume_open_runs()
     if n:
         print(f"mcp-trainer: {n} open run(s) re-attached", flush=True)
+    if os.environ.get("QTRAIN_JANITOR", "") == "1":
+        threading.Thread(target=_janitor_loop, daemon=True,
+                         name="janitor").start()
+        print("mcp-trainer: janitor loop active "
+              f"(every {os.environ.get('QTRAIN_JANITOR_INTERVAL', '900')}s)",
+              flush=True)
     print(f"mcp-trainer {__version__} listening :{port} (/mcp, /healthz)",
           flush=True)
     uvicorn.run(build_app(), host="0.0.0.0", port=port, log_level="info")

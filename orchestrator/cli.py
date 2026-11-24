@@ -114,7 +114,8 @@ def cmd_submit(args):
         args.domain, Path(args.recipe), mini=args.mini, overrides=overrides,
         provider=args.provider, gpus=args.gpu or None, tier=args.tier,
         dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost,
-        force_lane=args.lane, max_price_hr=args.max_price)
+        force_lane=args.lane, max_price_hr=args.max_price,
+        max_wait=args.wait)
     _print(res)
     raise SystemExit(0 if res.get("status") in ("succeeded", None) and not res.get("error") else 1)
 
@@ -123,7 +124,8 @@ def cmd_stage(args):
     res = dispatch.submit_stage(
         args.kind, args.from_run, base_model=args.base,
         provider=args.provider, dry=args.dry, max_runtime=args.max_runtime,
-        max_cost=args.max_cost, max_price_hr=args.max_price)
+        max_cost=args.max_cost, max_price_hr=args.max_price,
+        max_wait=args.wait)
     _print(res)
     raise SystemExit(0 if res.get("status") in ("succeeded", None)
                      and not res.get("error") else 1)
@@ -237,6 +239,17 @@ def cmd_events(args):
         print(f"{ts}  {e['kind']:<12} {e.get('run_id', ''):<26} {extra}")
 
 
+def cmd_reap(args):
+    res = dispatch.reap(args.provider, dry=args.dry)
+    _print(res)
+    raise SystemExit(0 if not res.get("error") else 1)
+
+
+def cmd_janitor(args):
+    res = dispatch.janitor_once(args.provider, dry=args.dry)
+    _print(res)
+
+
 def cmd_notify_test(args):
     from . import notify
     ev = notify.emit("notify_test", note="qtrain notify-test")
@@ -345,6 +358,9 @@ def build_parser():
     s.add_argument("--max-price", type=float, default=None,
                    help="rate ceiling $/hr for offer selection "
                         "(default: $QTRAIN_MAX_PRICE_HR or 1.50)")
+    s.add_argument("--wait", type=int, default=None,
+                   help="capacity-wait seconds (default: $QTRAIN_MAX_WAIT "
+                        "or 1800; 0 = fast-fail single wave)")
     s.set_defaults(func=cmd_submit)
 
     s = sub.add_parser("stage", help="post-process a run's artifacts "
@@ -362,6 +378,9 @@ def build_parser():
                         "margin from orchestrator/budget.py)")
     s.add_argument("--max-price", type=float, default=None,
                    help="rate ceiling $/hr (default: stage spec, 0.80)")
+    s.add_argument("--wait", type=int, default=None,
+                   help="capacity-wait seconds (default: $QTRAIN_MAX_WAIT "
+                        "or 1800; 0 = fast-fail single wave)")
     s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("register", help="deliver a run/stage artifact to a "
@@ -415,6 +434,19 @@ def build_parser():
     s = sub.add_parser("notify-test",
                        help="emit + probe QTRAIN_WEBHOOK_URL delivery")
     s.set_defaults(func=cmd_notify_test)
+
+    s = sub.add_parser("reap", help="terminate live GPUs with no active "
+                       "task behind them (idempotency hygiene)")
+    prov_arg(s)
+    s.add_argument("--dry", action="store_true",
+                   help="report what would die, kill nothing")
+    s.set_defaults(func=cmd_reap)
+
+    s = sub.add_parser("janitor", help="one full idempotency sweep: reap "
+                       "+ relaunch stale staged-never-launched runs")
+    prov_arg(s)
+    s.add_argument("--dry", action="store_true")
+    s.set_defaults(func=cmd_janitor)
 
     s = sub.add_parser("doctor", help="orphan sweep: live pods vs ledger")
     prov_arg(s)

@@ -48,6 +48,25 @@ class Instance:
     def ready(self) -> bool:
         return self.status in {"running", "READY", "RUNNING"} and bool(self.base_url)
 
+    @property
+    def created_epoch(self) -> float | None:
+        """Best-effort pod creation time (epoch seconds) from the raw
+        provider payload; None when the provider does not expose it."""
+        raw = self.raw or {}
+        for key in ("createdat", "createdAt", "created", "starttime",
+                    "startedat", "startTime"):
+            v = raw.get(key)
+            if isinstance(v, (int, float)):
+                return float(v)
+            if isinstance(v, str) and v:
+                try:
+                    from datetime import datetime, timezone
+                    iso = v.replace("Z", "+00:00")
+                    return datetime.fromisoformat(iso).timestamp()
+                except ValueError:
+                    continue
+        return None
+
 
 class ProviderError(RuntimeError):
     """Actionable provider failure (auth, capacity, bad payload, …)."""

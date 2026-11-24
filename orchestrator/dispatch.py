@@ -199,6 +199,306 @@ def _finish_done(run_id: str, started: float, price_hr, get_run=None,
                     seconds=round(time.time() - started))
 
 
+POD_PREFIX = "trainer-"
+# states whose work is OVER — a pod still alive under one of these is a
+# leak (crash between harvest and terminate), never a live task.
+SETTLED = {"done", "failed", "cancelled", "verified", "delivered", "lost"}
+
+
+def _max_wait(explicit: int | None) -> int:
+    if explicit is not None:
+        return max(0, int(explicit))
+    return int(os.environ.get("QTRAIN_MAX_WAIT", "1800"))
+
+
+def _train_pool(prov, gpus, tier, vol, ceiling):
+    """Fresh catalog pass through the train fit: SECURE when the lane
+    needs it, then the rate ceiling. Raises the capacity error so
+    _wave_launch treats 'nothing fits right now' as retryable stock."""
+    offers = prov.catalog(gpus, tier)
+    if vol:
+        # network volumes exist only in the SECURE cloud; community
+        # launches that ask for one 400 as "no instances available"
+        offers = [o for o in offers if o.secure]
+    within = [o for o in offers if (o.price_hr or 0.0) <= ceiling]
+    if not within:
+        best = min((o.price_hr for o in offers if o.price_hr), default=None)
+        cheap = f"${best:.2f}/hr" if best is not None else "none"
+        raise ProviderError(
+            f"no capacity across offers within ceiling ${ceiling:.2f}/hr "
+            f"(cheapest in stock: {cheap})")
+    return within[:8]
+
+
+def _stage_pool(prov, spec, provider, ceiling):
+    """Stage fit (SPEC 13q): SECURE-only for the volume lane, arch
+    exclusions, vram floor, rate ceiling — an oversized card is never
+    the fallback. Re-evaluated per wave: stock moves."""
+    if provider == "local":
+        return prov.catalog()
+    pool = [o for o in prov.catalog() if o.secure]
+    for pat in spec.get("arch_exclude", []):
+        pool = [o for o in pool if pat.lower() not in o.gpu_id.lower()]
+    ok, best = budget.fits(pool, spec.get("min_vram", 10), ceiling)
+    if not ok:
+        cheap = f"${best:.2f}/hr" if best is not None else "none"
+        raise ProviderError(
+            f"no capacity across offers within ceiling ${ceiling:.2f}/hr "
+            f"(cheapest vram-fit in stock: {cheap})")
+    return ok[:12]
+
+
+def _wave_launch(prov, offers_fn, *, name, image, env, lk, run_id, kind,
+                 max_wait, backoff0=30, backoff_cap=600, sleep=time.sleep):
+    """Idempotent GPU acquisition (SPEC 14): try every fitting offer, and
+    when stock refuses, BACK OFF and retry against a FRESH catalog until
+    the deadline — capacity-waiting lives in the orchestrator, not in
+    shell loops around it. max_wait=0 keeps the old fast-fail semantics
+    (one wave) for janitor/test use. Returns (instance, offer)."""
+    deadline = time.time() + max_wait
+    delay = backoff0
+    wave = 0
+    while True:
+        wave += 1
+        last_err = None
+        try:
+            offers = offers_fn()
+        except ProviderError as e:
+            offers, last_err = [], e
+        if not offers and last_err is None:
+            raise ProviderError("no capacity across offers: catalog empty")
+        for o in offers:
+            try:
+                inst = prov.launch(name=name, image=image, gpu_id=o.gpu_id,
+                                   cloud="SECURE" if o.secure else "COMMUNITY",
+                                   env=env, **lk)
+                return inst, o
+            except ProviderError as e:
+                last_err = e
+        if time.time() >= deadline:
+            raise ProviderError(
+                f"no capacity across offers: {last_err} "
+                f"(waited {max_wait}s / {wave} wave(s))")
+        notify.emit("capacity-wait", run_id, kind=kind, wave=wave,
+                    retry_in=int(delay), err=str(last_err)[:160])
+        sleep(delay)
+        delay = min(delay * 2, backoff_cap)
+
+
+def reap(provider: str = "runpod", *, grace: int | None = None,
+         dry: bool = False) -> dict:
+    """Idempotent GPU hygiene (SPEC 14): terminate live pods that have NO
+    ACTIVE TASK behind them. Rules, in order:
+
+      * only pods named with our trainer- prefix are candidates — other
+        workflows sharing the account are not ours to touch;
+      * claimed by THIS ledger with an open state -> KEEP (live run;
+        terminating it would destroy paid work);
+      * claimed by THIS ledger in a settled state -> leak from a crashed
+        watch cycle: terminate;
+      * unclaimed HERE but matching a settled run's id suffix in the pod
+        name -> stale pod whose claim row moved on: terminate;
+      * fully unclaimed -> it may live in ANOTHER controller's ledger
+        (mcp-trainer keeps its own). Kept with a reason unless
+        QTRAIN_REAP_UNCLAIMED=1 declares this the single controller.
+
+    Grace protects the launch->ledger-write window (a dispatch in flight
+    is not a leak)."""
+    if grace is None:
+        grace = int(os.environ.get("QTRAIN_REAP_GRACE", "900"))
+    unclaimed_ok = os.environ.get("QTRAIN_REAP_UNCLAIMED", "") == "1"
+    led = Ledger(ROOT / "state" / "ledger.db")
+    prov = get_provider(provider)
+    claims = {r["instance_id"]: r for r in led.list() if r["instance_id"]}
+    by_suffix = {r["run_id"][-8:]: r for r in led.list()}
+    killed, kept = [], []
+    for inst in prov.list_instances():
+        if not inst.alive or not (inst.name or "").startswith(POD_PREFIX):
+            continue
+        row = claims.get(inst.id)
+        why = ""
+        if row is None:
+            row2 = by_suffix.get(inst.name[len(POD_PREFIX):])
+            if row2 is not None and row2["state"] in SETTLED:
+                row, why = row2, (f"stale pod of settled run "
+                                  f"{row2['run_id'][-8:]} "
+                                  f"(state={row2['state']})")
+            else:
+                age = inst.created_epoch
+                if age is not None and time.time() - age < grace:
+                    kept.append({"id": inst.id, "why": "within launch grace"})
+                    continue
+                if not unclaimed_ok:
+                    kept.append({"id": inst.id, "why": "unclaimed here — "
+                                 "another controller may own it "
+                                 "(QTRAIN_REAP_UNCLAIMED=1)"})
+                    continue
+                why = "unclaimed beyond grace"
+        elif row["state"] in SETTLED:
+            why = f"terminal claim (state={row['state']})"
+        else:
+            kept.append({"id": inst.id,
+                         "why": f"open run {row['run_id'][-8:]} "
+                                f"({row['state']})"})
+            continue
+        item = {"id": inst.id, "gpu": inst.gpu_type, "why": why,
+                "run_id": row["run_id"] if row is not None else ""}
+        if dry:
+            item["dry"] = True
+            killed.append(item)
+            continue
+        try:
+            prov.terminate(inst.id)
+            killed.append(item)
+            notify.emit("reaped", item["run_id"], pod=inst.id, why=why)
+        except Exception as e:                              # noqa: BLE001
+            item["error"] = str(e)[:160]
+            killed.append(item)
+    return {"provider": provider, "killed": killed, "kept": kept,
+            "grace_s": grace, "unclaimed_kill": unclaimed_ok}
+
+
+def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
+             max_wait: int | None = None) -> dict:
+    """Bring the GPU up for a STAGED-BUT-NEVER-LAUNCHED run (crash
+    between payload staging and pod launch). Idempotent by construction:
+    the lane payload IS the complete job contract — same run_id, prefix,
+    gate — so nothing is re-staged; wave-launch + watch, done. Defaults
+    to the env capacity-wait: recovery SHOULD wait for stock, because
+    fast-failing here flips the row terminal and LOSES the run — exactly
+    the non-idempotency this path exists to remove."""
+    led = Ledger(ROOT / "state" / "ledger.db")
+    row = led.get(run_id)
+    result = {"run_id": run_id}
+    if row is None:
+        return {"status": "error", "error": f"no such run: {run_id}"}
+    if row["instance_id"]:
+        return {"status": "error", "error": "already has an instance — "
+                "use resume, not relaunch"}
+    if row["state"] != "pending":
+        return {"status": "error", "error": f"state={row['state']}, "
+                "not pending — nothing to relaunch"}
+    provider = row["provider"] or "runpod"
+    spec = json.loads(row["spec_json"] or "{}")
+    is_stage = row["kind"] == "stage"
+    pod_id = ""
+    try:
+        if provider == "local":
+            mount = os.environ.get("LOCAL_MOUNT", "/data")
+            get_run = storage.host_get
+            put_run = lambda k, d, ct="": storage.host_put(k, d)  # noqa: E731
+            vol = None
+            lane = "host"
+        elif provider == "runpod":
+            vol = storage.vol_cfg()
+            if not vol:
+                raise ProviderError("volume lane not configured")
+            mount = vol["mount"]
+            get_run = storage.vol_get
+            put_run = lambda k, d, ct="": storage.vol_put(k, d)  # noqa: E731
+            lane = "volume"
+        else:
+            raise ProviderError(f"relaunch: provider {provider!r} "
+                                "unsupported")
+        raw = get_run(f"runs/{run_id}/payload.json")
+        if raw is None:
+            raise ProviderError("payload missing on lane — nothing to "
+                                "relaunch")
+        payload = json.loads(raw)
+        if not payload.get("volume"):
+            raise ProviderError("presign-lane payloads cannot relaunch "
+                                "(signed URLs expire) — resubmit instead")
+        result["lane"] = lane
+        kind = (spec.get("kind") if is_stage else "train") or "train"
+        if is_stage and kind not in STAGE_SPECS:
+            raise ProviderError(f"stage kind {kind!r} unknown")
+        token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
+        env = {"JOB_PAYLOAD_PATH":
+               f"{payload['volume']['mount']}/runs/{run_id}/payload.json",
+               "AGENT_TOKEN": token}
+        if not is_stage:
+            env["IMAGE_TAG"] = _image_tag()
+        prov = get_provider(provider)
+        lk = ({"volume_id": vol["bucket"], "volume_path": vol["mount"],
+               "data_center": vol["dc"]} if provider == "runpod" else {})
+        if is_stage:
+            s = STAGE_SPECS[kind]
+            image = _postproc_gpu_image() if s.get("gpu") else _postproc_image()
+            ceiling = s.get("max_price_hr", 1.50)
+            offers_fn = lambda: _stage_pool(prov, s, provider, ceiling)  # noqa: E731
+            rate_bound = 0.0 if provider == "local" else ceiling
+        else:
+            image = _image_ref()
+            ceiling = float(os.environ.get("QTRAIN_MAX_PRICE_HR", "1.50"))
+            offers_fn = lambda: _train_pool(prov, None, None, vol, ceiling)  # noqa: E731
+            rate_bound = ceiling
+        result["kind"] = kind
+        result["estimate"] = round(budget.estimate(rate_bound, kind), 2)
+        notify.emit("relaunching", run_id, kind=kind, lane=lane)
+        inst, offer = _wave_launch(prov, offers_fn,
+                                   name=f"trainer-{run_id[-8:]}",
+                                   image=image, env=env, lk=lk,
+                                   run_id=run_id, kind=kind,
+                                   max_wait=_max_wait(max_wait))
+        pod_id = inst.id
+        result["instance"] = {"id": inst.id, "gpu": offer.gpu_id,
+                              "price_hr": offer.price_hr}
+        mc = (budget.estimate(offer.price_hr or rate_bound, kind) if is_stage
+              else (offer.price_hr or 0.0) * max_runtime / 60)
+        led.update(run_id, state="provisioning", instance_id=inst.id,
+                   base_url=getattr(inst, "base_url", "") or "",
+                   est_cost=round(mc, 4), price_hr=offer.price_hr or 0.0)
+        _watch(run_id, get_run, result, led, poll, started=time.time(),
+               max_runtime=max_runtime, prov=prov, inst_id=inst.id,
+               price_hr=offer.price_hr, max_cost=mc, keepalive=False,
+               put_run=put_run)
+        return result
+    except Exception as e:                                  # noqa: BLE001
+        led.update(run_id, state="failed", error=str(e)[:400])
+        result.update({"status": "error", "error": str(e)})
+        notify.emit("run_failed", run_id, error=str(e)[:300],
+                    relaunch=True)
+        return result
+    finally:
+        if pod_id:
+            try:
+                get_provider(provider).terminate(pod_id)
+                result["terminated"] = True
+            except Exception as e:                          # noqa: BLE001
+                result["terminate_error"] = str(e)
+
+
+def janitor_once(provider: str = "runpod", *, grace: int | None = None,
+                 stale_after: int = 900, dry: bool = False) -> dict:
+    """One idempotency sweep (SPEC 14): reap pods with no active task,
+    then relaunch stale pending-but-unlaunched runs. Deliberately does
+    NOT re-watch open provisioning/running rows — those belong to a live
+    dispatch or to boot-resume; a second watcher would race the harvest."""
+    out: dict = {"provider": provider}
+    try:
+        r = reap(provider, grace=grace, dry=dry)
+        out["reaped"] = r["killed"]
+        out["kept"] = r["kept"]
+    except Exception as e:                                  # noqa: BLE001
+        out["reap_error"] = str(e)[:200]
+    led = Ledger(ROOT / "state" / "ledger.db")
+    cutoff = time.time() - stale_after
+    out["relaunched"] = []
+    for row in led.list():
+        if (row["state"] == "pending" and not row["instance_id"]
+                and row["created_at"] < cutoff
+                and (row["provider"] or "runpod") == provider):
+            if dry:
+                out["relaunched"].append({"run_id": row["run_id"],
+                                          "dry": True})
+                continue
+            r2 = relaunch(row["run_id"])
+            out["relaunched"].append({"run_id": row["run_id"],
+                                      "status": r2.get("status")
+                                      or "watched to completion"})
+    return out
+
+
 def _sha(path: Path) -> str:
     return storage.sha256_file(path)
 
@@ -306,6 +606,10 @@ def resume(run_id: str | None = None, poll: int = 30,
     run_id = row["run_id"]
     provider = row["provider"] or "runpod"
     inst_id = row["instance_id"]
+    if row["state"] == "pending" and not inst_id:
+        # staged but never launched (crash between staging and launch):
+        # relaunch IS the resume path for this shape (SPEC 14)
+        return relaunch(run_id, poll=poll, max_runtime=max_runtime)
     result = {"run_id": run_id, "resumed_from": row["state"],
               "kind": row["kind"], "instance": inst_id}
     if provider == "local":
@@ -343,6 +647,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            dry: bool = False, max_runtime: int = 3600,
            max_cost: float | None = None, poll: int = 20,
            force_lane: str | None = None, max_price_hr: float | None = None,
+           max_wait: int | None = None,
            on_run_id: "callable | None" = None) -> dict:
     """Full cycle; returns ledger-shaped result dict. NEVER leaves a pod
     behind: every terminal path terminates. on_run_id (if given) fires the
@@ -419,25 +724,15 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             return result
 
         prov = get_provider(provider)
-        offers = prov.catalog(gpus, tier)
-        if vol:
-            # network volumes exist only in the SECURE cloud; community
-            # launches that ask for one 400 as "no instances available"
-            offers = [o for o in offers if o.secure]
         # right-sizing (SPEC 13q): a rate ceiling keeps small models off
         # B200/H200-class hardware even when that is all that's in stock —
-        # waiting is cheaper than overbuying. Pre-launch gates: aggregate
-        # projection + account balance (hard floor) with a reserve.
+        # waiting is cheaper than overbuying. Pre-launch gates price
+        # against the WORST card the ceiling admits, because stock moves
+        # between waves; _wave_launch retries with fresh catalogs.
         ceiling = (max_price_hr if max_price_hr is not None
                    else float(os.environ.get("QTRAIN_MAX_PRICE_HR", "1.50")))
-        within = [o for o in offers if (o.price_hr or 0.0) <= ceiling]
-        if not within:
-            best = min((o.price_hr for o in offers if o.price_hr), default=None)
-            raise ProviderError(
-                f"no capacity across offers within ceiling ${ceiling:.2f}/hr "
-                f"(cheapest in stock: ${best:.2f}/hr) — retry-loop or raise "
-                "max_price_hr")
-        est = budget.estimate(within[0].price_hr or 0.0, "train")
+        rate_bound = 0.0 if provider == "local" else ceiling
+        est = budget.estimate(rate_bound, "train")
         why = budget.aggregate_gate(
             [r.get("est_cost") or 0.0 for r in led.list()
              if r["state"] in budget.BILLED and r["run_id"] != run_id], est)
@@ -451,37 +746,29 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             raise ProviderError(why)
         result["estimate"] = round(est, 2)
         token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
-        last_err = None
-        inst = None
-        for o in within[:8]:
-            try:
-                inst = prov.launch(
-                    name=f"trainer-{run_id[-8:]}", image=_image_ref(),
-                    gpu_id=o.gpu_id, cloud="SECURE" if o.secure else "COMMUNITY",
-                    env={**payload_env, "AGENT_TOKEN": token,
-                         "IMAGE_TAG": _image_tag()},
-                    **({"volume_id": vol["bucket"], "volume_path": vol["mount"],
-                        "data_center": vol["dc"]}
-                       if (vol and not vol.get("local")) else {}))
-                pod_id = inst.id
-                result["instance"] = {"id": inst.id, "gpu": o.gpu_id,
-                                      "price_hr": o.price_hr}
-                break
-            except ProviderError as e:
-                last_err = e
-        if not inst:
-            raise ProviderError(f"no capacity across 8 offers: {last_err}")
-        led.update(run_id, state="provisioning", instance_id=inst.id,
-                   base_url=inst.base_url, est_cost=round(est, 4),
-                   price_hr=inst.price_hr or 0.0)
-
+        lk = ({"volume_id": vol["bucket"], "volume_path": vol["mount"],
+               "data_center": vol["dc"]}
+              if (vol and not vol.get("local")) else {})
+        inst, offer = _wave_launch(
+            prov, lambda: _train_pool(prov, gpus, tier, vol, ceiling),
+            name=f"trainer-{run_id[-8:]}", image=_image_ref(),
+            env={**payload_env, "AGENT_TOKEN": token,
+                 "IMAGE_TAG": _image_tag()},
+            lk=lk, run_id=run_id, kind="train",
+            max_wait=_max_wait(max_wait))
+        pod_id = inst.id
+        result["instance"] = {"id": inst.id, "gpu": offer.gpu_id,
+                              "price_hr": offer.price_hr}
         # kill threshold: explicit wins; else the runtime cap expressed in
         # dollars (wall-clock already bounds cost at this rate)
         mc = (max_cost if max_cost is not None
-              else (inst.price_hr or 0.0) * max_runtime / 60)
+              else (offer.price_hr or 0.0) * max_runtime / 60)
+        led.update(run_id, state="provisioning", instance_id=inst.id,
+                   base_url=inst.base_url, est_cost=round(mc, 4),
+                   price_hr=offer.price_hr or 0.0)
         _watch(run_id, get_run, result, led, poll, started=time.time(),
                max_runtime=max_runtime, prov=prov, inst_id=inst.id,
-               price_hr=inst.price_hr, max_cost=mc,
+               price_hr=offer.price_hr, max_cost=mc,
                keepalive=(lane == "presign"), put_run=put_run)
         return result
     except Exception as e:
@@ -568,6 +855,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                  provider: str = "runpod", max_runtime: int = 3600,
                  max_cost: float | None = None, poll: int = 15,
                  dry: bool = False, max_price_hr: float | None = None,
+                 max_wait: int | None = None,
                  on_run_id: "callable | None" = None) -> dict:
     """Post-process a finished run's artifacts (merge|onnx|int8).
 
@@ -694,39 +982,17 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
 
         prov = get_provider(provider)
         token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
-        inst = None
-        last_err = None
-        if provider == "local":
-            offers = prov.catalog()
-            lk = {}
-        else:
-            # the right GPU = cheapest that FITS (budget.fits): SECURE
-            # offers only (network volumes don't exist in community),
-            # vram >= 10 as the "real RAM + NVMe" proxy, and a RATE
-            # CEILING — an oversized card is never the fallback: when
-            # only B200-class stock exists the job WAITs (530b30 burned
-            # $7.99/hr + a crashloop proving it). arch_exclude per spec.
-            pool = [o for o in prov.catalog() if o.secure]
-            for pat in spec.get("arch_exclude", []):
-                pool = [o for o in pool if pat.lower() not in o.gpu_id.lower()]
-            ceiling = (max_price_hr if max_price_hr is not None
-                       else spec.get("max_price_hr", 1.50))
-            offers, best = budget.fits(pool, spec.get("min_vram", 10), ceiling)
-            if not offers:
-                cheap = f"${best:.2f}/hr" if best is not None else "none"
-                raise ProviderError(
-                    f"no capacity across offers within ceiling "
-                    f"${ceiling:.2f}/hr (cheapest vram-fit in stock: {cheap})")
-            offers = offers[:12]
-            lk = {"volume_id": vol["bucket"], "volume_path": vol["mount"],
-                  "data_center": vol["dc"]}
-        if not offers:
-            raise ProviderError("no capacity across offers: catalog empty")
-        # normalized budgeting (SPEC 13q): estimate drives BOTH the
-        # pre-launch gates and the kill threshold unless an explicit
-        # max_cost overrides the latter. No magic numbers anywhere.
-        est = budget.estimate(offers[0].price_hr or 0.0, kind)
-        mc = max_cost if max_cost is not None else est
+        lk = ({"volume_id": vol["bucket"], "volume_path": vol["mount"],
+               "data_center": vol["dc"]} if provider == "runpod" else {})
+        ceiling = (max_price_hr if max_price_hr is not None
+                   else spec.get("max_price_hr", 1.50))
+        # normalized budgeting (SPEC 13q): gates price the WORST card the
+        # ceiling admits — stock moves between waves, so nothing assumes
+        # an offer that may not be there when a wave actually runs. The
+        # kill threshold tightens to the card ACTUALLY launched unless
+        # an explicit max_cost says otherwise. No magic numbers anywhere.
+        rate_bound = 0.0 if provider == "local" else ceiling
+        est = budget.estimate(rate_bound, kind)
         result["estimate"] = round(est, 2)
         why = budget.aggregate_gate(
             [r.get("est_cost") or 0.0 for r in led.list()
@@ -739,29 +1005,24 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             why = budget.balance_gate(bal, est)
         if why:
             raise ProviderError(why)
-        for o in offers:
-            try:
-                inst = prov.launch(
-                    name=f"trainer-{run_id[-8:]}",
-                    image=(_postproc_gpu_image() if spec.get("gpu")
-                           else _postproc_image()),
-                    gpu_id=o.gpu_id,
-                    cloud="SECURE" if o.secure else "COMMUNITY",
-                    env={**payload_env, "AGENT_TOKEN": token}, **lk)
-                result["instance"] = {"id": inst.id, "gpu": o.gpu_id,
-                                      "price_hr": o.price_hr}
-                break
-            except ProviderError as e:
-                last_err = e
-        if not inst:
-            raise ProviderError(f"no capacity across offers: {last_err}")
+        inst, offer = _wave_launch(
+            prov, lambda: _stage_pool(prov, spec, provider, ceiling),
+            name=f"trainer-{run_id[-8:]}",
+            image=(_postproc_gpu_image() if spec.get("gpu")
+                   else _postproc_image()),
+            env={**payload_env, "AGENT_TOKEN": token}, lk=lk,
+            run_id=run_id, kind=kind, max_wait=_max_wait(max_wait))
+        mc = (max_cost if max_cost is not None
+              else budget.estimate(offer.price_hr or rate_bound, kind))
         pod_id = inst.id
+        result["instance"] = {"id": inst.id, "gpu": offer.gpu_id,
+                              "price_hr": offer.price_hr}
         led.update(run_id, state="provisioning", instance_id=inst.id,
-                   est_cost=round(est, 4), price_hr=o.price_hr or 0.0)
+                   est_cost=round(mc, 4), price_hr=offer.price_hr or 0.0)
 
         _watch(run_id, get_run, result, led, poll,
                started=time.time(), max_runtime=max_runtime,
-               prov=prov, inst_id=inst.id, price_hr=o.price_hr,
+               prov=prov, inst_id=inst.id, price_hr=offer.price_hr,
                max_cost=mc, keepalive=False, put_run=put_run)
         result["output"] = f"runs/{run_id}/artifacts.tar.gz"
         return result

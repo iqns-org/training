@@ -1048,3 +1048,37 @@ teaches. WITHOUT it, base alignment answers generically. Client rule:
 attach the system prompt (next step: pin it in the MCP-side defaults).
 Serve-test script (scripts/nano0-serve-test.sh) remains the validation
 tool for any newly registered artifact.
+
+**(y) orchestrator idempotency: reap / wave / relaunch (2026-11-24).**
+User rule adopted: *a scheduled job either acquires a GPU or waits — a
+running GPU either has an active task or dies.* Three new primitives
+(SPEC 14b):
+* `reap(provider, grace, dry)` — claim-based pod hygiene. Only
+  `trainer-*`-named pods are candidates (foreign workloads on the same
+  account are not ours to touch); open claims are kept (paid work),
+  terminal claims and settled-run-suffix pods are killed, the launch-
+  grace window (`QTRAIN_REAP_GRACE`, 900 s) protects the
+  launch→ledger-write race, and fully-unclaimed pods are LEFT ALONE by
+  default because another controller (mcp-trainer's pod-local ledger!)
+  may legitimately own them — `QTRAIN_REAP_UNCLAIMED=1` opts in when
+  this host is the declared single controller. Every kill emits `reaped`.
+* `_wave_launch` — capacity-waiting moved INTO the orchestrator:
+  wave = fresh catalog → fit → ladder; miss = exponential backoff
+  (30 s .. 600 s) + `capacity-wait` event, until `max_wait`
+  (`--wait`, `$QTRAIN_MAX_WAIT`, default 1800 s; 0 = old fast-fail).
+  Shell retry loops are now redundant. Gates price the ceiling's WORST
+  admitted card (stock moves between waves); the kill threshold
+  tightens to the card actually launched.
+* `relaunch(run_id)` — the deep hole: a `pending` row with no instance
+  (crash between payload staging and pod launch) used to haunt resume
+  as a lane-polling ghost. Now the lane payload IS the job contract
+  (command, inputs+sha, gate, volume prefix) → relaunch = wave-launch +
+  watch, zero re-staging. Presign-lane payloads refuse (expired URLs —
+  loud, correct). `resume()` routes this shape automatically;
+  boot-resume inherits it.
+* `janitor_once` = reap + relaunch-stale-pending; exposed as
+  `qtrain reap|janitor`, MCP tools `reap_pods`/`janitor_pass` (dry by
+  default), and an opt-in `QTRAIN_JANITOR=1` loop in mcp-trainer.
+Tests +12 (97 green): claim classification, grace vs stale-suffix vs
+unclaimed opt-in, backoff progression + deadline, relaunch happy path
+through the real _watch/_harvest, and refusal shapes.
