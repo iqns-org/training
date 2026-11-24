@@ -50,7 +50,9 @@ def _manifest():
 
 def test_build_record_flat_and_joined():
     row = {"kind": "train", "provider": "runpod",
-           "spec_json": json.dumps({"domain": "queer", "recipe": "r.yaml"})}
+           "spec_json": json.dumps({"domain": "queer", "recipe": "r.yaml",
+                                    "corpora": "0f10e14",
+                                    "recipe_sha": "a1b2c3d4e5f6"})}
     log = ("{'loss': 4.699, 'epoch': 0.02, 'step': 5}\n"
            "{'loss': 2.589, 'epoch': 2.0, 'step': 200}\n"
            "{'train_loss': 2.59, 'train_runtime': 60.0}\n")
@@ -61,6 +63,8 @@ def test_build_record_flat_and_joined():
     assert rec["gpu"] == "NVIDIA RTX 2000 Ada Generation"
     assert rec["n_artifacts"] == 2 and rec["artifacts_sha"] == "deadbeef"
     assert rec["image_tag"].startswith("ghcr.io")   # gap #3: tag present
+    assert rec["corpora_sha"] == "0f10e14"          # §14c provenance
+    assert rec["recipe_sha"] == "a1b2c3d4e5f6"
     # last curve point is the HF trainer's own train_loss summary line
     assert rec["first_loss"] == 4.699 and rec["last_loss"] == 2.59  # gap #2
     assert rec["min_loss"] == 2.589 and rec["n_points"] == 3

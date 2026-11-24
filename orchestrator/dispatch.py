@@ -27,7 +27,7 @@ from pathlib import Path
 import yaml
 
 from . import budget, notify, progress, storage
-from .config import ROOT
+from .config import ROOT, corpora_git_sha
 from .ledger import Ledger
 from .models import ProviderError
 from .providers import get_provider
@@ -688,7 +688,9 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
     return before staging finishes."""
     led = Ledger(ROOT / "state" / "ledger.db")  # ROOT-scoped: tests redirect
     run_id = led.create("train", {"domain": domain, "recipe": str(recipe),
-                                  "mini": mini, "overrides": overrides or {}},
+                                  "mini": mini, "overrides": overrides or {},
+                                  "corpora": corpora_git_sha(),
+                                  "recipe_sha": _sha(recipe)[:12]},
                         provider=provider)
     if on_run_id:
         on_run_id(run_id)
@@ -911,7 +913,8 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                 "error": f"stage provider {provider!r} not wired yet"}
     led = Ledger(ROOT / "state" / "ledger.db")
     run_id = led.create("stage", {"kind": kind, "from_run": from_run,
-                                  "base_model": base_model},
+                                  "base_model": base_model,
+                                  "corpora": corpora_git_sha()},
                         provider=provider)
     if on_run_id:
         on_run_id(run_id)

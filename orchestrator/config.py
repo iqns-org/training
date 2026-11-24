@@ -37,9 +37,10 @@ def corpora_dir() -> Path:
     corpora = data + domain config: datasets, recipes, bench suites,
     templates, tools). CORPORA_DIR may be relative — resolved against ROOT
     so CWD never changes the answer (the pod sets it absolute, .env sets
-    it ../corpora). Falls back to the sibling checkout, then the legacy
-    in-repo datasets/ location, whichever exists."""
-    load_dotenv()
+    it ../corpora). Does NOT load_dotenv (entry points do; doing it here
+    would leak deployment env into mid-process lane decisions — a real
+    bug the test suite caught). Falls back to the sibling checkout, then
+    the legacy in-repo datasets/ location, whichever exists."""
     d = os.environ.get("CORPORA_DIR", "").strip()
     if d:
         p = Path(d)
@@ -51,6 +52,20 @@ def corpora_dir() -> Path:
         if (cand / "datasets").is_dir():
             return cand
     return ROOT
+
+
+def corpora_git_sha() -> str:
+    """Short git SHA of the corpora checkout — dataset+recipe provenance
+    per run (SPEC 14c: any UI row is reproducible against exact task
+    state). '' when corpora isn't a git repo (test fixtures, legacy)."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", str(corpora_dir()), "rev-parse",
+                            "--short", "HEAD"], capture_output=True,
+                           text=True, timeout=15)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:                              # noqa: BLE001
+        return ""
 
 
 def resolve_recipe(recipe: str) -> Path:
