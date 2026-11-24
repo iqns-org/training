@@ -313,3 +313,18 @@ def test_terminated_flag_is_honest(led_root, monkeypatch):
     out = dispatch.resume(rid)
     assert out["status"] == "error"
     assert out["terminated"] is False
+
+
+def test_stage_base_auto_resolves(led_root, monkeypatch, tmp_path):
+    """merge without --base inherits base_model from the from-run's
+    recorded recipe (provenance), error only when truly unknowable."""
+    rec = tmp_path / "r.yaml"
+    rec.write_text("base_model: Qwen/Qwen3.5-0.8B\n")
+    monkeypatch.setattr(dispatch, "resolve_recipe", lambda r: rec)
+    led = Ledger(led_root / "state" / "ledger.db")
+    rid = led.create("train", {"recipe": "queer/x.yaml"},
+                     provider="runpod")
+    assert dispatch._recipe_base_from_row(rid) == "Qwen/Qwen3.5-0.8B"
+    # no recipe recorded -> empty -> caller returns the actionable error
+    rid2 = led.create("train", {}, provider="runpod")
+    assert dispatch._recipe_base_from_row(rid2) == ""

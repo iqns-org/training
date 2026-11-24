@@ -27,7 +27,7 @@ from pathlib import Path
 import yaml
 
 from . import budget, notify, progress, storage
-from .config import ROOT, corpora_dir, corpora_git_sha
+from .config import ROOT, corpora_dir, corpora_git_sha, resolve_recipe
 from .ledger import Ledger
 from .models import POD_PREFIX, ProviderError, pod_is_ours
 from .providers import get_provider
@@ -993,6 +993,27 @@ def _trace_dataset(get_run, run_id: str, depth: int = 4) -> dict | None:
     return None
 
 
+def _recipe_base_from_row(run_id: str) -> str:
+    """Best-effort base_model for stage auto-resolution: the from-run's
+    recorded recipe (corpora-relative since the provenance fix) is the
+    same file that drove training, so its base_model IS the base —
+    requiring --base to repeat it invites drift. Swallows everything:
+    unknown/unreachable ledger is simply 'no base', and the caller's
+    validation error (which must fire BEFORE any I/O) is actionable."""
+    try:
+        led = Ledger(ROOT / "state" / "ledger.db")
+        row = led.get(run_id)
+        rec = (json.loads((row or {}).get("spec_json") or "{}")).get(
+            "recipe")
+        if not rec:
+            return ""
+        p = resolve_recipe(rec)
+        return str((yaml.safe_load(p.read_text()) or {}).get(
+            "base_model", ""))
+    except Exception:                                  # noqa: BLE001
+        return ""
+
+
 def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                  provider: str = "runpod", max_runtime: int = 3600,
                  max_cost: float | None = None, poll: int = 15,
@@ -1014,7 +1035,14 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                          f"{', '.join(STAGE_SPECS)})"}
     spec = STAGE_SPECS[kind]
     if spec.get("needs_base") and not base_model:
-        return {"status": "error", "error": "merge stage needs base_model"}
+        # provenance auto-resolution: the from-run's recipe knows its own
+        # base (merge must use EXACTLY that tokenizer/weights — passing it
+        # by hand invites drift)
+        base_model = _recipe_base_from_row(from_run) or None
+    if spec.get("needs_base") and not base_model:
+        return {"status": "error", "error":
+                "merge stage needs base_model — pass --base or the "
+                "from-run must record a recipe that declares one"}
     if provider not in ("local", "runpod"):
         return {"status": "error",
                 "error": f"stage provider {provider!r} not wired yet"}
