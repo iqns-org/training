@@ -196,6 +196,36 @@ def cmd_metrics(args):
                   f"-> last {losses[-1]}, min {min(losses)}")
 
 
+def cmd_runs(args):
+    """UI-facing run table from the lane index (SPEC 14c) — single
+    source of truth, works across controllers, no local-sqlite coupling."""
+    from . import progress as prog
+    if args.reindex:
+        _print(prog.reindex(args.provider))
+        return
+    rows = prog.read_index(args.provider, limit=args.limit)
+    if not rows:
+        _print({"runs": [], "note": f"lane index empty on provider "
+              f"{args.provider!r} — backfill once with `qtrain runs "
+              "--reindex`"})
+        return
+    hdr = (f"{'run_id':<28} {'kind':<6} {'status':<10} {'secs':>6} "
+           f"{'cost':>7} {'loss':>8} {'gpu':<20} {'ref':<20}")
+    print(hdr)
+    print("-" * len(hdr))
+    for r in reversed(rows):
+        loss = r.get("last_loss")
+        ref = (r.get("base_model") or r.get("from_run")
+               or r.get("recipe") or r.get("domain") or "")
+        print(f"{r['run_id']:<28} {r.get('kind', '-'):<6} "
+              f"{r.get('status', '-'):<10} {r.get('seconds') or '-':>6} "
+              + (f"${r['cost']:.3f} " if r.get("cost") is not None
+                 else (f"~${r['est_cost']:.2f}" if r.get("est_cost")
+                       else "      -  "))
+              + (f"{float(loss):>8.3f} " if loss is not None else "       - ")
+              + f"{(r.get('gpu') or '-'):<20} {str(ref)[:20]:<20}")
+
+
 def cmd_budget(args):
     from . import budget as bud
     import statistics
@@ -451,6 +481,14 @@ def build_parser():
                         "(the wandb-lite view)")
     s.add_argument("run_id")
     s.set_defaults(func=cmd_metrics)
+
+    s = sub.add_parser("runs", help="lane run index (the UI-facing table): "
+                       "runs/index.jsonl; --reindex backfills it")
+    prov_arg(s)
+    s.add_argument("--limit", type=int, default=25)
+    s.add_argument("--reindex", action="store_true",
+                   help="rebuild the lane index from local runs + ledger")
+    s.set_defaults(func=cmd_runs)
 
     s = sub.add_parser("events", help="tail the notification journal")
     s.add_argument("--limit", type=int, default=20)

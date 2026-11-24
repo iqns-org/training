@@ -1159,3 +1159,70 @@ through the real _watch/_harvest, and refusal shapes.
 Serving changes live in infra (catalog + renderer port/mount rules);
 the chain itself (train->...->register) unchanged — this is what the
 merge/awq artifacts were always for: EVALUATION DATA, not forced fate.
+
+**(aa) lane run index + full MCP facade (2026-11-24).** "Does the
+orchestrator log + summarize, does it land on a PVC with metadata so we
+can put a UI on it?" audit answer was *yes-but*: lane objects existed
+per run, but (1) no cross-run index — a UI would N+1 scan, (2) old
+manifests left training metrics null despite rich live progress, (3)
+stage pods never got IMAGE_TAG so manifest provenance was empty. Fix:
+§14c lands `runs/index.jsonl` (flat rollup written at `_finish_done`,
+RMW-append, best-effort by law) + `reindex()` backfill (proved live:
+21 historical runs now render a full UI table from ONE lane object —
+kind/status/seconds/cost/loss-curve/gpu/lineage) + agent manifest
+schema 2 embeds `training.summary` scraped from the job's own log +
+IMAGE_TAG set on every launch path (submit/relaunch/stages, full pinned
+ref). MCP now fronts everything the CLI does that a UI would want:
+`list_runs` reads the lane index first, new tools `preflight_report`,
+`budget_report`, `bench_models`, `rebuild_run_index`. 102 tests (+8
+index tests). Remaining honest gap: deployed mcp-trainer image is
+m-v0.3.0 and predates these tools — the next image cut (blocked on the
+GitHub mirror for CI) must move to the digest-pinned ref and the pod
+redeployed; until then the facade lags the repo.
+
+## 14c. The lane run index (UI-facing rollup)
+
+The PVC lane (RustFS `quadra` bucket; stage/train artifacts already
+land as `runs/<id>/{manifest,run.log,progress.jsonl,artifacts.tar.gz}`)
+gains ONE more durable object: **`runs/index.jsonl`** — a flat, one-line-
+per-finished-run rollup that joins pod truth (manifest) with
+orchestrator truth the pod cannot know (provider, price/cost, spec,
+parsed loss metrics). This is the intended read-side for any UI: a run
+table is one LIST + one GET, cross-controller, never coupled to the
+control box's private sqlite.
+
+Record contract (`progress.build_record`): flat keys, no nested blobs,
+empty values dropped — `{ts, run_id, kind (true verb: awq/onnx/merge…
+not "stage"), provider, status, exit_code, image_tag, agent_version,
+started_at, finished_at, seconds, cost, est_cost, price_hr, base_model,
+from_run, domain, recipe, gpu, n_artifacts, artifacts_sha, n_problems,
+n_points, first_loss, last_loss, min_loss}`.
+
+Rules:
+- **Written at `_finish_done`** (both done AND gate-failed harvests),
+  RMW-append like progress.jsonl (S3 has no append; the file stays
+  KB-scale: one line per run). Best-effort BY LAW: an index sink
+  failure must never alter a run's terminal state — the lane objects
+  remain authoritative, the index is a view.
+- **`reindex()` is the backfill + repair verb**: rebuilds from locally
+  kept manifests/logs/ledger, MERGES (rebuilt records replace same
+  run_id lines; foreign-controller lines are preserved) — idempotent.
+  Exposed as `qtrain runs [--reindex]` and MCP `rebuild_run_index`.
+- **Terminal metrics** come from `parse_runlog` (axolotl dict lines +
+  the HF `train_loss` summary), so historical runs get real loss
+  curves in the index even though their old manifests left
+  `training.*` null. New agent manifests (schema 2) embed
+  `training.summary` directly — the same join, done pod-side.
+- **`IMAGE_TAG` env is now set for EVERY job pod** (train AND stage,
+  submit/resume/relaunch paths) — previously only train, and to the
+  constant `"v0.2.0"`; it now carries the exact pinned image ref, so
+  manifest provenance is truth, not folklore.
+- **MCP fronts the whole surface**: `list_runs` reads the lane index
+  first (falls back to ledger), plus new tools `preflight_report`,
+  `budget_report`, `bench_models`, `rebuild_run_index`. The server is
+  the canonical capability facade; CLI and MCP must not drift.
+
+UI integration note for the facade session: reading `runs/index.jsonl`
+off the S3 endpoint (cluster `s3.quadra:9000`, NodePort 30900, console
+30901) needs only the `s3-credentials` secret — no trainer token, no
+ledger access.

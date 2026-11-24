@@ -70,23 +70,63 @@ def gpu_info() -> dict:
         return {"gpus": []}
 
 
+def _log_summary(log_path) -> dict:
+    """Terminal metrics from the job's own log: HF Trainer emits one dict
+    line per log step plus a final summary dict ({'train_loss':...,
+    'train_runtime':..., 'train_samples_per_second':...}). Scraping them
+    here makes manifest.training self-describing even if the live
+    heartbeat missed the last cadence (orchestrator-side parse_runlog does
+    the same join for historical runs — SPEC 14c)."""
+    import ast
+    out: dict = {}
+    wanted = ("loss", "epoch", "train_loss", "train_runtime",
+              "train_samples_per_second", "train_steps_per_second")
+    try:
+        text = Path(log_path).read_text(errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if "'loss'" not in line and "'train_loss'" not in line:
+            continue
+        try:
+            d = ast.literal_eval(line)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(d, dict):
+            for k in wanted:
+                if k in d:
+                    out[k] = d[k]
+    return out
+
+
 def build_manifest(run_id: str, outputs_dir: Path, state: dict,
                    status: str, problems: list[str] | None = None,
-                   exclude: tuple | list | None = None) -> dict:
+                   exclude: tuple | list | None = None,
+                   log_path: Path | None = None) -> dict:
     files = {}
     if outputs_dir.is_dir():
         for p in outputs_dir.rglob("*"):
             rel = str(p.relative_to(outputs_dir))
             if p.is_file() and not _excluded(rel, exclude):
                 files[rel] = {"size": p.stat().st_size, "sha256": sha256_file(p)}
+    training = {k: state.get(k) for k in
+                ("state", "step", "total", "epoch", "loss", "exit_code")}
+    summ = _log_summary(log_path) if log_path else {}
+    if summ:
+        training["summary"] = summ
+        # heartbeat can lag the log's final dict line; prefer the log truth
+        if training.get("loss") is None and "loss" in summ:
+            training["loss"] = summ["loss"]
+        if training.get("epoch") is None and "epoch" in summ:
+            training["epoch"] = summ["epoch"]
     return {
-        "schema": 1, "run_id": run_id, "status": status,
+        "schema": 2, "run_id": run_id, "status": status,
         "agent_version": __version__,
         "image_tag": os.environ.get("IMAGE_TAG", ""),
         "finished_at": time.time(),
         "started_at": state.get("started_at"),
-        "training": {k: state.get(k) for k in
-                     ("state", "step", "total", "epoch", "loss", "exit_code")},
+        "training": training,
         "hardware": gpu_info(),
         "artifacts": files,
         "problems": problems or [],
@@ -114,7 +154,7 @@ def finalize(run_id: str, outputs_dir: Path, state: dict, log_path: Path,
     exclude = (gate_spec or {}).get("exclude_dirs", EXCLUDE_DIRS)
     manifest = build_manifest(run_id, outputs_dir, state,
                               "succeeded" if ok else "failed", problems,
-                              exclude)
+                              exclude, log_path=log_path)
     mpath = Path(outputs_dir).parent / "manifest.json"
     mpath.write_text(json.dumps(manifest, indent=1))
 

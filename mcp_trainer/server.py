@@ -31,9 +31,13 @@ mcp = FastMCP(
     "trainer",
     instructions=(
         "Automated LoRA/QLoRA fine-tuning on rented GPUs. Typical flow: "
-        "list_recipes -> gpu_catalog -> submit_training (returns run_id) -> "
-        "job_status (poll; heartbeat mid-run) -> artifacts land in runs/<id>/ "
-        "and the ledger. terminate_pod / doctor manage capacity."),
+        "list_recipes -> gpu_catalog/preflight_report -> submit_training "
+        "(returns run_id) -> run_progress/job_status (poll; heartbeat "
+        "mid-run) -> artifacts land in runs/<id>/ on the PVC lane + one "
+        "rollup line in runs/index.jsonl (list_runs reads that index — the "
+        "UI-facing table). bench_models scores any OpenAI-compatible "
+        "endpoint. terminate_pod / reap_pods / janitor_pass manage "
+        "capacity; budget_report watches spend."),
 )
 
 LEDGER = "state/ledger.db"
@@ -220,9 +224,17 @@ def job_logs(run_id: str, tail: int = 100) -> dict:
 
 @mcp.tool
 def list_runs(limit: int = 20) -> dict:
-    """Recent ledger rows."""
+    """Recent runs: lane index first (UI-facing, cross-controller truth),
+    local ledger as fallback for runs the lane never saw."""
+    try:
+        from orchestrator import progress as prog
+        rows = prog.read_index("runpod", limit=limit)
+        if rows:
+            return {"source": "lane_index", "runs": list(reversed(rows))}
+    except Exception:                              # noqa: BLE001
+        pass
     rows = _led().list()[-limit:]
-    return {"runs": [{"run_id": r["run_id"], "state": r["state"],
+    return {"source": "ledger", "runs": [{"run_id": r["run_id"], "state": r["state"],
                       "provider": r["provider"], "instance_id": r["instance_id"],
                       "artifact_uri": r["artifact_uri"], "error": r["error"]}
                      for r in rows]}
@@ -360,6 +372,69 @@ def janitor_pass(provider: str = "runpod", dry: bool = True) -> dict:
     """One full idempotency sweep: reap stray pods + relaunch stale
     pending-but-never-launched runs (crashed dispatchers)."""
     return dispatch.janitor_once(provider, dry=dry)
+
+
+@mcp.tool
+def preflight_report(kind: str = "train", provider: str = "runpod",
+                     max_price_hr: float | None = None,
+                     max_runtime: int = 3600) -> dict:
+    """Read-only launch decision (SPEC 13p): fitting cards, cost estimate,
+    kill threshold, budget gate verdicts. Launches nothing, writes
+    nothing — answers 'what would this cost, on what' before committing."""
+    return dispatch.preflight(kind, provider=provider,
+                              max_price_hr=max_price_hr,
+                              max_runtime=max_runtime)
+
+
+@mcp.tool
+def budget_report(provider: str = "runpod") -> dict:
+    """Spend visibility: live balance, open-run projections vs the cap,
+    per-kind observed medians (self-calibrated from real runs)."""
+    from orchestrator import budget as bud
+    led = _led()
+    bal = None
+    if provider == "runpod":
+        try:
+            bal = get_provider(provider).balance()
+        except Exception:                          # noqa: BLE001
+            pass
+    opens = [r for r in led.list() if r["state"] in bud.BILLED]
+    obs = bud._obs()
+    import statistics
+    return {"balance": bal, "reserve": bud.RESERVE, "budget_total": bud.TOTAL,
+            "margin": bud.MARGIN,
+            "open_runs": [{"run_id": r["run_id"], "kind": r["kind"],
+                           "state": r["state"],
+                           "est_cost": round(r.get("est_cost") or 0, 3)}
+                          for r in opens],
+            "open_projected": round(sum(r.get("est_cost") or 0
+                                        for r in opens), 2),
+            "observed_median_minutes": {k: round(statistics.median(v), 1)
+                                        for k, v in obs.items() if v}}
+
+
+@mcp.tool
+def bench_models(urls: list[str], repeats: int = 2, timeout: int = 90,
+                 max_tokens: int = 64) -> dict:
+    """Question-matrix benchmark against OpenAI-compatible endpoints
+    (identity/feeling/voice/instruction/json/world + rule checks, TTFT +
+    tok/s from the stream, models auto-discovered via /v1/models).
+    Returns a markdown table + raw rows — run it on the facade URL to
+    cover every model behind the router in one pass."""
+    from orchestrator import bench
+    cfg = {"urls": urls, "repeats": repeats, "timeout": timeout,
+           "max_tokens": max_tokens}
+    rows = bench.run(cfg)
+    return {"table": bench.table(rows), "rows": rows}
+
+
+@mcp.tool
+def rebuild_run_index(provider: str = "runpod") -> dict:
+    """Rebuild runs/index.jsonl on the PVC lane from locally kept copies
+    (manifests + run.log + ledger). Idempotent; preserves index lines for
+    runs this controller never held. The UI's list view is that one
+    object — see SPEC 14c."""
+    return progress.reindex(provider)
 
 
 # ------------------------------------------------------------------ serve

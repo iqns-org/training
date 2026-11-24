@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from . import budget, notify, storage
+from . import budget, notify, progress, storage
 from .config import ROOT
 from .ledger import Ledger
 from .models import ProviderError
@@ -98,6 +98,33 @@ def _progress_tick(run_id: str, get_run, put_run, price_hr, started: float,
                     **{k: v for k, v in row.items() if k != "ts"})
 
 
+def _index_write(run_id: str, get_run, put_run, *, cost, price_hr,
+                 started, led=None) -> None:
+    """Append this run's flat rollup to runs/index.jsonl on the lane
+    (SPEC 14c). Manifest + run.log are re-read from the lane (they were
+    just written; cheap and lane-agnostic) so the record works for harvests
+    from ANY controller — the local sqlite stays orchestrator-private, the
+    index is the shared UI view. Best-effort: index failure never touches
+    the run's terminal state."""
+    try:
+        man_raw = get_run(f"runs/{run_id}/manifest.json")
+        if not man_raw:
+            return
+        man = json.loads(man_raw.decode() if isinstance(
+            man_raw, (bytes, bytearray)) else man_raw)
+        row = led.get(run_id) if led else None
+        log = get_run(f"runs/{run_id}/run.log") or b""
+        if isinstance(log, (bytes, bytearray)):
+            log = log.decode(errors="replace")
+        progress.append_index(
+            progress.build_record(
+                run_id, man, row, provider=(row or {}).get("provider")
+                or "runpod", seconds=time.time() - started, cost=cost,
+                price_hr=price_hr, log_text=log), get_run, put_run)
+    except Exception:                              # noqa: BLE001
+        pass
+
+
 def _keepalive_public_lane() -> None:
     """Quick tunnels idle-expire; during training the pod sends no traffic,
     so the orchestrator pings the public endpoint each poll cycle (presign
@@ -145,7 +172,8 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
             _harvest(run_id, manifest_raw, get_run, led, result)
             _finish_done(run_id, started, price_hr, get_run, put_run,
                          kind=result.get("kind") or "",
-                         status=result.get("status") or "succeeded")
+                         status=result.get("status") or "succeeded",
+                         led=led)
             return result
         if prov and inst_id:
             try:
@@ -160,7 +188,8 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
                     _harvest(run_id, manifest_raw, get_run, led, result)
                     _finish_done(run_id, started, price_hr, get_run, put_run,
                          kind=result.get("kind") or "",
-                         status=result.get("status") or "succeeded")
+                         status=result.get("status") or "succeeded",
+                         led=led)
                     return result
                 raise ProviderError(
                     f"instance {inst_id} {st} without manifest — run lost")
@@ -170,7 +199,8 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
 
 
 def _finish_done(run_id: str, started: float, price_hr, get_run=None,
-                 put_run=None, kind: str = "", status: str = "succeeded") -> None:
+                 put_run=None, kind: str = "", status: str = "succeeded",
+                 led=None) -> None:
     """Terminal signal for the progress channel: final history row (best
     effort) + a run_done or run_gated event. Gate-FAILED harvests are NOT
     'done' — they delivered a manifest whose artifact gate refused, so
@@ -189,6 +219,9 @@ def _finish_done(run_id: str, started: float, price_hr, get_run=None,
                  "cost": cost}) + "\n").encode())
         except Exception:                              # noqa: BLE001
             pass
+    if get_run and put_run:
+        _index_write(run_id, get_run, put_run, cost=cost,
+                     price_hr=price_hr, started=started, led=led)
     if status == "succeeded":
         if kind:
             budget.record_observed(kind, (time.time() - started) / 60)
@@ -413,25 +446,25 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
         if is_stage and kind not in STAGE_SPECS:
             raise ProviderError(f"stage kind {kind!r} unknown")
         token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
-        env = {"JOB_PAYLOAD_PATH":
-               f"{payload['volume']['mount']}/runs/{run_id}/payload.json",
-               "AGENT_TOKEN": token}
-        if not is_stage:
-            env["IMAGE_TAG"] = _image_tag()
-        prov = get_provider(provider)
-        lk = ({"volume_id": vol["bucket"], "volume_path": vol["mount"],
-               "data_center": vol["dc"]} if provider == "runpod" else {})
         if is_stage:
             s = STAGE_SPECS[kind]
-            image = _postproc_gpu_image() if s.get("gpu") else _postproc_image()
+            image = (_postproc_gpu_image() if s.get("gpu")
+                     else _postproc_image())
             ceiling = s.get("max_price_hr", 1.50)
             offers_fn = lambda: _stage_pool(prov, s, provider, ceiling)  # noqa: E731
             rate_bound = 0.0 if provider == "local" else ceiling
         else:
+            s = None
             image = _image_ref()
             ceiling = float(os.environ.get("QTRAIN_MAX_PRICE_HR", "1.50"))
             offers_fn = lambda: _train_pool(prov, None, None, vol, ceiling)  # noqa: E731
             rate_bound = ceiling
+        env = {"JOB_PAYLOAD_PATH":
+               f"{payload['volume']['mount']}/runs/{run_id}/payload.json",
+               "AGENT_TOKEN": token, "IMAGE_TAG": image}
+        prov = get_provider(provider)
+        lk = ({"volume_id": vol["bucket"], "volume_path": vol["mount"],
+               "data_center": vol["dc"]} if provider == "runpod" else {})
         result["kind"] = kind
         result["estimate"] = round(budget.estimate(rate_bound, kind), 2)
         notify.emit("relaunching", run_id, kind=kind, lane=lane)
@@ -753,7 +786,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             prov, lambda: _train_pool(prov, gpus, tier, vol, ceiling),
             name=f"trainer-{run_id[-8:]}", image=_image_ref(),
             env={**payload_env, "AGENT_TOKEN": token,
-                 "IMAGE_TAG": _image_tag()},
+                 "IMAGE_TAG": _image_ref()},
             lk=lk, run_id=run_id, kind="train",
             max_wait=_max_wait(max_wait))
         pod_id = inst.id
@@ -1005,12 +1038,14 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             why = budget.balance_gate(bal, est)
         if why:
             raise ProviderError(why)
+        stage_image = (_postproc_gpu_image() if spec.get("gpu")
+                       else _postproc_image())
         inst, offer = _wave_launch(
             prov, lambda: _stage_pool(prov, spec, provider, ceiling),
             name=f"trainer-{run_id[-8:]}",
-            image=(_postproc_gpu_image() if spec.get("gpu")
-                   else _postproc_image()),
-            env={**payload_env, "AGENT_TOKEN": token}, lk=lk,
+            image=stage_image,
+            env={**payload_env, "AGENT_TOKEN": token,
+                 "IMAGE_TAG": stage_image}, lk=lk,
             run_id=run_id, kind=kind, max_wait=_max_wait(max_wait))
         mc = (max_cost if max_cost is not None
               else budget.estimate(offer.price_hr or rate_bound, kind))
