@@ -973,11 +973,11 @@ across the ssh stream, all 10 files on disk ✓) and **format-validated
 offline** in a matching stack (torch-cpu + transformers 5.24 +
 compressed-tensors 0.20.1 — the pod's family): AutoModelForCausalLM
 decompressed the pack-quantized checkpoint (739 tensors loaded, 224
-unpacked) and generated coherent chat output. ONTO nano0 itself: the
-Orin's 8 GiB is currently held by a live Qwen3.5-0.8B vLLM container
-(the user's — serve-vllm.sh's path is ready; drop that container or
-wait for a slot). The full ladder train→merge→onnx→int8→awq→register
-is green; nano0 serve is one `docker stop` + `serve-vllm.sh` away.
+unpacked) and generated coherent chat output. ONTO nano0 itself: the running Qwen vLLM turned out to be the k3s
+deployment `quadra/vllm-qwen3-05` on the nano0 worker (hostNetwork
+:8000, runtimeClass nvidia, nano-worker toleration, Orin-tuned flags)
+— so validation means a one-shot test pod with the SAME cluster-cached
+image and new config, not a docker run. See 13v.
 Total session spend ~$1 (RunPod prepaid); balance ~$8.5.
 
 **Failure-class ledger (this is the architecture working, not failing):**
