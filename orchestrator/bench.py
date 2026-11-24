@@ -127,7 +127,10 @@ def chat_stream(url: str, model: str, prompt: str, *, max_tokens: int,
     finally:
         resp.close()
     wall = time.perf_counter() - t0
-    tps = (n_chunks / (wall - ttft) if ttft and wall > ttft else 0.0)
+    # tok/s is only honest when there were enough chunks to divide;
+    # a 1-token answer makes the decode window ~0 and fakes 3000+ tok/s
+    tps = (n_chunks / (wall - ttft)
+           if ttft and wall > ttft and n_chunks >= 4 else 0.0)
     return "".join(parts), wall, (ttft or wall), tps
 
 
@@ -210,14 +213,15 @@ def table(rows: list[dict]) -> str:
     # per-model rollup
     models = sorted({(r["model"], r["host"]) for r in rows})
     lines.append("")
-    lines.append("| model | identity | checks | tok/s |")
+    lines.append("| model | identity | checks | tok/s (med) |")
     lines.append("|---|---|---|---|")
     for m, h in models:
         rs = [r for r in rows if r["model"] == m]
         ident = next((r["pass"] for r in rs if r["q"] == "identity"), "—")
         tot = sum(1 for r in rs if r["pass"] != "—")
         ok = sum(1 for r in rs if r["pass"] == "PASS")
-        avg = round(statistics.mean(r["tok_s_med"] for r in rs), 1)
+        rates = [r["tok_s_med"] for r in rs if r["tok_s_med"] > 0]
+        avg = round(statistics.median(rates), 1) if rates else 0
         lines.append(f"| {m} | {ident} | {ok}/{tot} | {avg} |")
     return "\n".join(lines)
 
