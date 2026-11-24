@@ -254,7 +254,26 @@ def cmd_janitor(args):
 
 def cmd_bench(args):
     from . import bench
-    raise SystemExit(bench.main(args.extra))
+    argv = []
+    if args.config:
+        argv += ["--config", args.config]
+    for url in (args.url or []):
+        argv += ["--url", url]
+    for m in (args.model or []):
+        argv += ["--model", m]
+    for q in (args.question or []):
+        argv += ["--question", q]
+    if args.repeats is not None:
+        argv += ["--repeats", str(args.repeats)]
+    if args.max_tokens is not None:
+        argv += ["--max-tokens", str(args.max_tokens)]
+    if args.temperature is not None:
+        argv += ["--temperature", str(args.temperature)]
+    if args.json:
+        argv += ["--json", args.json]
+    if args.csv:
+        argv += ["--csv", args.csv]
+    raise SystemExit(bench.main(argv))
 
 
 def cmd_notify_test(args):
@@ -443,10 +462,21 @@ def build_parser():
     s.set_defaults(func=cmd_notify_test)
 
     s = sub.add_parser("bench", help="benchmark model backends (identity + "
-                       "speed matrix over OpenAI-compatible endpoints; "
-                       "flags pass through to orchestrator/bench.py — "
-                       "use --url/--model/--question/--repeats/--json/--csv)")
-    s.add_argument("extra", nargs=argparse.REMAINDER)
+                       "speed matrix over OpenAI-compatible endpoints)")
+    s.add_argument("--config", help="json: urls/targets/questions/params")
+    s.add_argument("--url", action="append", help="endpoint, repeatable "
+                        "(default: nano0 :8000/:8001)")
+    s.add_argument("--model", action="append",
+                   help="pin model ids with --url; default = everything "
+                        "the endpoint's /v1/models lists")
+    s.add_argument("--question", action="append",
+                   help='"id|prompt|check" — check: contains:X regex:P '
+                        "one_of:a,b json none; repeatable")
+    s.add_argument("--repeats", type=int, default=None)
+    s.add_argument("--max-tokens", type=int, default=None)
+    s.add_argument("--temperature", type=float, default=None)
+    s.add_argument("--json", dest="json", help="write rows json here")
+    s.add_argument("--csv", dest="csv", help="write rows csv here")
     s.set_defaults(func=cmd_bench)
 
     s = sub.add_parser("reap", help="terminate live GPUs with no active "

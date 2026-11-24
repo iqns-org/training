@@ -168,13 +168,13 @@ def run(config: dict) -> list[dict]:
             lat, tps, ttfts, texts, verdicts = [], [], [], [], []
             for _ in range(repeats):
                 try:
-                    text, wall, ttft, t = chat_stream(
+                    text, wall, ttft, rate = chat_stream(
                         t["url"], t["model"], q["prompt"],
                         max_tokens=max_tokens, temperature=temperature,
                         seed=seed, timeout=timeout)
                 except Exception as e:
-                    text, wall, ttft, t = f"ERROR: {_short(e)}", 0, 0, 0
-                lat.append(wall); tps.append(t); ttfts.append(ttft)
+                    text, wall, ttft, rate = f"ERROR: {_short(e)}", 0, 0, 0
+                lat.append(wall); tps.append(rate); ttfts.append(ttft)
                 texts.append(text.strip())
                 verdicts.append(score(q.get("check", "none"), text))
             rows.append({
