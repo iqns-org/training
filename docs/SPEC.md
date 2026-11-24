@@ -431,6 +431,44 @@ Retagging (`git push --force v0.1.0`) is the deliberate rebuild lever.
   (root FS 96% full; data partition 17 G free). Local podman keeps small
   images only (e.g. trainer-mcp dev builds).
 
+## 14b. Idempotency (reap / wave / relaunch)
+
+The orchestrator converges state instead of trusting any single path
+through it — "a scheduled job either acquires a GPU or waits; a running
+GPU either has an active task or dies":
+
+- `reap(provider, grace, dry)` — claim-based pod hygiene. Candidates are
+  only `trainer-*`-named pods (foreign workloads on the account are not
+  ours to touch); OPEN ledger claims are KEPT (killing them destroys
+  paid work); TERMINAL claims are leaks → terminated; unclaimed pods
+  within the launch grace window (`QTRAIN_REAP_GRACE`, default 900 s —
+  the launch→ledger-write race is an in-flight dispatch, not a leak)
+  are kept, and fully unclaimed pods are kept with a REASON by default:
+  another controller (mcp-trainer!) keeps a pod-local ledger and may
+  legitimately own them. `QTRAIN_REAP_UNCLAIMED=1` declares this host
+  the single controller. Every kill emits `reaped` with `kind=pod`.
+- `_wave_launch` — capacity-waiting inside the orchestrator: each wave
+  re-reads the catalog (stock moves), tries the fit ladder, and on miss
+  emits `capacity-wait` and sleeps with exponential backoff (30 s ..
+  600 s) until `--wait`/`$QTRAIN_MAX_WAIT` (default 1800 s; 0 restores
+  fast-fail). Shell retry loops around `qtrain stage` are now redundant.
+- `relaunch(run_id)` — the deep hole: a `pending` row with no instance
+  (crash between payload staging and pod launch) used to haunt resume
+  as a lane-polling ghost. The lane payload IS the complete job contract
+  (command, sha-verified inputs, gate, volume prefix) → relaunch =
+  wave-launch + watch, zero re-staging. Presign-lane payloads refuse
+  loudly (expired signed URLs). `resume()` routes this shape, so boot-
+  resume and the janitor inherit it.
+- `janitor_once` = reap + relaunch-stale-pending. Surfaces: `qtrain
+  reap|janitor` (both `--dry` first by default semantics: dry reports,
+  live acts), MCP tools `reap_pods`/`janitor_pass` (dry=true default),
+  and an opt-in `QTRAIN_JANITOR=1` loop inside mcp-trainer.
+
+Budget interaction: aggregate projections price the WORST card the rate
+ceiling admits (waves may launch any card under it); the kill threshold
+tightens to the card actually launched, stored per-row (`est_cost`,
+`price_hr`).
+
 ## 13. Status (implementation log)
 
 - 2026-11-22 — Spec drafted (this file). Scaffold + P2-primitives landed:
@@ -865,11 +903,16 @@ exists:
   pod cannot know: dollars (`price_hr x wallclock`). Read side:
   `qtrain metrics <run>` (history table + loss curve from run.log) and
   `qtrain watch <run>` (single-line follow until terminal).
-- **EVENTS** — one funnel, `orchestrator/notify.py::emit(kind, run_id,
-  **fields)`. Event kinds: `launched`, `progress` (>=10% step jump or
-  state change), `run_done`, `run_failed` (every failure path, including
-  pre-launch capacity/ceiling refusals), `delivered` (register), and
-  `notify_test`. Sinks, fan-out order fixed:
+- **EVENTS** — one funnel, `orchestrator/notify.py::emit(event, run_id,
+  kind=..., **fields)`. The journal's `event` field names the LIFECYCLE
+  TRANSITION (`launched`, `progress` (>=10% step jump or state change),
+  `capacity-wait`, `run_done`, `run_gated`, `run_failed` (every failure
+  path, including pre-launch capacity/ceiling refusals), `reaped`,
+  `relaunching`, `delivered`, `notify_test`); the `kind` field names the
+  RESOURCE the event touches — job class (`train/merge/awq...`), infra
+  object (`pod`, `deployment`, `configmap`), or verb. Fixed keys are
+  written last, so no field can forge the event type; bare emits get
+  `kind` backfilled from the ledger. Sinks, fan-out order fixed:
   1. `state/notifications.jsonl` — always. Journal is the source of
      truth for offline inspection; `qtrain events` tails it.
   2. Webhook POST to `QTRAIN_WEBHOOK_URL` — best-effort on a daemon
