@@ -522,13 +522,21 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
                put_run=put_run)
         return result
     except Exception as e:                                  # noqa: BLE001
-        led.update(run_id, state="failed", error=str(e)[:400])
-        result.update({"status": "error", "error": str(e)})
-        notify.emit("run_failed", run_id, error=str(e)[:300],
-                    relaunch=True)
+        if pod_id and _net_blip(e):
+            led.update(run_id, error=f"watch lost (network): "
+                       f"{str(e)[:140]} — pod kept; `qtrain watch` re-attaches")
+            result.update({"status": "unwatched", "error": str(e)[:200],
+                           "pod": pod_id})
+            notify.emit("watch_lost", run_id, pod=pod_id, kind=kind,
+                        relaunch=True, error=str(e)[:160])
+        else:
+            led.update(run_id, state="failed", error=str(e)[:400])
+            result.update({"status": "error", "error": str(e)})
+            notify.emit("run_failed", run_id, error=str(e)[:300],
+                        relaunch=True)
         return result
     finally:
-        if pod_id:
+        if pod_id and not result.get("unwatched"):
             try:
                 get_provider(provider).terminate(pod_id)
                 result["terminated"] = True
@@ -655,12 +663,29 @@ def _harvest(run_id: str, manifest_raw: bytes, get_run, led: Ledger,
 
 OPEN_STATES = ("pending", "verified", "provisioning", "running", "uploading")
 
+# DNS/connectivity blips on the control box are a recurring environmental
+# fact (SPEC 13ac). They are the CONTROLLER's problem, not the job's:
+# a volume-lane pod needs zero egress to finish training. Watch-death by
+# network must never terminate a running pod — the money law kills pods
+# WITHOUT active tasks, and a training pod HAS one.
+NET_MARKERS = ("Temporary failure in name resolution",
+               "Name or service not known",
+               "[Errno -3]", "[Errno -2]", "[Errno -101]", "[Errno -110]",
+               "Network is unreachable", "timed out", "URLError",
+               "Connection aborted")
+
+
+def _net_blip(e: BaseException) -> bool:
+    return any(m in str(e) for m in NET_MARKERS)
+
 
 def resume(run_id: str | None = None, poll: int = 30,
            max_runtime: int = 4 * 3600) -> dict:
     """Re-attach to an open (non-terminal) run: resume lane polling,
-    harvest, ALWAYS terminate the instance. Recovery path for crashed
-    orchestrators / fleet restarts mid-job (2026-11-23 incident)."""
+    harvest, terminate the instance — EXCEPT on a controller-side network
+    blip, which keeps the pod (unwatched) for a later re-attach. Recovery
+    path for crashed orchestrators / fleet restarts mid-job (2026-11-23
+    incident)."""
     led = Ledger(ROOT / "state" / "ledger.db")
     # 'verified' + no instance = DRY run (staged, never launched): nothing
     # to re-attach to; polling its lane would burn max_runtime for $0 work
@@ -696,12 +721,21 @@ def resume(run_id: str | None = None, poll: int = 30,
                put_run=put_run)
         return result
     except Exception as e:
-        led.update(run_id, state="failed", error=str(e)[:400])
-        result.update({"status": "error", "error": str(e)})
-        notify.emit("run_failed", run_id, error=str(e)[:300])
+        if inst_id and _net_blip(e):
+            led.update(run_id, error=f"watch lost (network): "
+                       f"{str(e)[:140]} — pod kept; `qtrain watch` re-attaches")
+            result.update({"status": "unwatched", "error": str(e)[:200],
+                           "pod": inst_id})
+            notify.emit("watch_lost", run_id, pod=inst_id,
+                        kind=result.get("kind") or "train",
+                        error=str(e)[:160])
+        else:
+            led.update(run_id, state="failed", error=str(e)[:400])
+            result.update({"status": "error", "error": str(e)})
+            notify.emit("run_failed", run_id, error=str(e)[:300])
         return result
     finally:
-        if inst_id:
+        if inst_id and not result.get("unwatched"):
             try:
                 get_provider(provider).terminate(inst_id)
                 result["terminated"] = True
@@ -845,12 +879,20 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                keepalive=(lane == "presign"), put_run=put_run)
         return result
     except Exception as e:
-        led.update(run_id, state="failed", error=str(e)[:400])
-        result.update({"status": "error", "error": str(e)})
-        notify.emit("run_failed", run_id, error=str(e)[:300])
+        if pod_id and _net_blip(e):
+            led.update(run_id, error=f"watch lost (network): "
+                       f"{str(e)[:140]} — pod kept; `qtrain watch` re-attaches")
+            result.update({"status": "unwatched", "error": str(e)[:200],
+                           "pod": pod_id})
+            notify.emit("watch_lost", run_id, pod=pod_id, kind="train",
+                        error=str(e)[:160])
+        else:
+            led.update(run_id, state="failed", error=str(e)[:400])
+            result.update({"status": "error", "error": str(e)})
+            notify.emit("run_failed", run_id, error=str(e)[:300])
         return result
     finally:
-        if pod_id:
+        if pod_id and not result.get("unwatched"):
             try:
                 get_provider(provider).terminate(pod_id)
                 result["terminated"] = True
@@ -1104,12 +1146,20 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         result["output"] = f"runs/{run_id}/artifacts.tar.gz"
         return result
     except Exception as e:
-        led.update(run_id, state="failed", error=str(e)[:400])
-        result.update({"status": "error", "error": str(e)})
-        notify.emit("run_failed", run_id, error=str(e)[:300])
+        if pod_id and _net_blip(e):
+            led.update(run_id, error=f"watch lost (network): "
+                       f"{str(e)[:140]} — pod kept; `qtrain watch` re-attaches")
+            result.update({"status": "unwatched", "error": str(e)[:200],
+                           "pod": pod_id})
+            notify.emit("watch_lost", run_id, pod=pod_id, kind=kind,
+                        error=str(e)[:160])
+        else:
+            led.update(run_id, state="failed", error=str(e)[:400])
+            result.update({"status": "error", "error": str(e)})
+            notify.emit("run_failed", run_id, error=str(e)[:300])
         return result
     finally:
-        if pod_id:
+        if pod_id and not result.get("unwatched"):
             try:
                 get_provider(provider).terminate(pod_id)
                 result["terminated"] = True

@@ -228,3 +228,51 @@ def test_reap_matches_hinted_and_legacy_names(led_root, monkeypatch):
     monkeypatch.setattr(dispatch, "get_provider", lambda p: prov)
     out = dispatch.reap("runpod", grace=900)
     assert {k["id"] for k in out["killed"]} == {"pod-a", "pod-b"}
+
+
+def test_net_blip_classification():
+    assert dispatch._net_blip(OSError(-3, "Temporary failure in name "
+                                          "resolution"))
+    assert dispatch._net_blip(RuntimeError("[Errno -3] Temporary failure"))
+    assert not dispatch._net_blip(RuntimeError("budget cap $1 crossed"))
+    assert not dispatch._net_blip(RuntimeError("max runtime exceeded"))
+    assert not dispatch._net_blip(RuntimeError("instance x terminated "
+                                               "without manifest"))
+
+
+def test_watch_lost_keeps_pod(led_root, monkeypatch):
+    """DNS death mid-watch must NOT terminate the running pod: row stays
+    OPEN with an unwatched note, status=unwatched, watch_lost emitted."""
+    from orchestrator import notify
+    journal = led_root / "notifications.jsonl"
+    monkeypatch.setattr(notify, "JOURNAL", journal)
+
+    class DeadProv:
+        def terminate(self, i):
+            raise AssertionError(f"terminate({i}) must not be called on blip")
+
+        def poll(self, i):
+            raise OSError(-3, "Temporary failure in name resolution")
+
+        def list_instances(self):
+            return []
+
+    monkeypatch.setattr(dispatch, "get_provider", lambda name: DeadProv())
+    # fast path: the watch raises the blip (first lane read behind DNS)
+    monkeypatch.setattr(dispatch, "_watch",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            OSError(-3, "Temporary failure in name "
+                                        "resolution")))
+    led = Ledger(led_root / "state" / "ledger.db")
+    rid = led.create("stage", {"kind": "onnx", "from_run": "r-parent"},
+                     provider="runpod")
+    led.update(rid, state="provisioning", instance_id="pod-live")
+    out = dispatch.resume(rid)          # re-attaches then hits thrown blip
+    assert out["status"] == "unwatched"
+    assert out["pod"] == "pod-live"
+    row = led.get(rid)
+    assert row["state"] == "provisioning"        # still OPEN, not failed
+    assert "watch lost" in (row["error"] or "")
+    assert out.get("terminated") is None
+    assert json.loads(journal.read_text().strip().splitlines()[-1])[
+        "event"] == "watch_lost"
