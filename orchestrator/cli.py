@@ -445,8 +445,10 @@ def build_parser():
                         "serving host (nano0 vLLM)")
     s.add_argument("run_id")
     s.add_argument("--name", help="model dir name (default kind-runid)")
-    s.add_argument("--host", default="me@nano0.lan")
-    s.add_argument("--dest", default="/home/me/models")
+    s.add_argument("--host", default=None,
+                   help="serve host (default: $QTRAIN_SERVE_HOST)")
+    s.add_argument("--dest", default=None,
+                   help="model dir on host (default: $QTRAIN_SERVE_DIR)")
     s.add_argument("--dry", action="store_true")
     s.set_defaults(func=cmd_register)
 

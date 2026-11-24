@@ -13,6 +13,8 @@ RID = "2026-rid-awq001"
 def staged(tmp_path, monkeypatch):
     """A harvested stage run: ledger row + local manifest + artifacts tar."""
     monkeypatch.setattr(register, "ROOT", tmp_path)
+    monkeypatch.setenv("QTRAIN_SERVE_HOST", "me@nano0.lan")
+    monkeypatch.setenv("QTRAIN_SERVE_DIR", "/home/me/models")
     led = Ledger(tmp_path / "state" / "ledger.db")
     led.db.execute("INSERT INTO runs (run_id, kind, spec_json, state, "
                    "provider, created_at, updated_at) VALUES (?,?,?,?,?,0,0)",

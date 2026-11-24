@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -25,8 +26,8 @@ from .ledger import Ledger
 
 
 def register(run_id: str, *, name: str | None = None,
-             host: str = "me@nano0.lan",
-             dest_dir: str = "/home/me/models",
+             host: str | None = None,
+             dest_dir: str | None = None,
              dry: bool = False) -> dict:
     led = Ledger(ROOT / "state" / "ledger.db")
     row = next((r for r in led.list() if r["run_id"] == run_id), None)
@@ -34,6 +35,14 @@ def register(run_id: str, *, name: str | None = None,
     if row is None:
         return {"status": "error", "error": f"no such run: {run_id}"}
     name = name or f"{row['kind']}-{run_id[-6:]}"
+    # §4b/§8 boundary: serving topology is deployment config, not code —
+    # QTRAIN_SERVE_HOST/QTRAIN_SERVE_DIR come from .env / pod env.
+    host = host or os.environ.get("QTRAIN_SERVE_HOST", "").strip()
+    dest_dir = dest_dir or os.environ.get("QTRAIN_SERVE_DIR", "").strip()
+    if not host or not dest_dir:
+        return {"status": "error", "error":
+                "no serve target: pass --host/--dest or set "
+                "QTRAIN_SERVE_HOST/QTRAIN_SERVE_DIR"}
 
     key = f"runs/{run_id}/artifacts.tar.gz"
     local = ROOT / "runs" / run_id / "artifacts.tar.gz"
