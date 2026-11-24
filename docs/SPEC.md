@@ -1226,6 +1226,23 @@ history — the repo still carries ~624 MiB of packed run blobs; a
 `git filter-repo` pass + coordinated force-push (mirror, pod pins, any
 sibling clones) is the deliberate follow-up, NOT done unilaterally.
 
+**(ac) role-play round + provenance fields + UI brief (2026-11-24).**
+Corpus gained `roleplay/` in corpora (9 scenario threads — first-meeting,
+date-night, sleepover, roadtrip, club-night, long-term, aftercare,
+shapeshifter, strangers-to-us — 223 expanded conversations, median turn
+DEPTH 7 vs the corpus's ~3, consent + aftercare beats modeled in-scene;
+generator corpora `tools/gen_roleplay.py`, same one-level-$ discipline —
+nested placeholders inside $ values stay unresolved, caught and
+flattened, twice now). Index lines carry `corpora_sha` + `recipe_sha`
+(§14c contract updated) — every future run reproducible against exact
+task state. `docs/UI.md` written for the UX team: four-route read-mostly
+design (runs table → run detail+provenance card → serving panel joining
+the facade router's catalog with our index → budget), honesty rules
+(failed rows visible, money in the confirm button), MCP as the action
+API. Operational note: workstation DNS flapped mid-session (WAN + .lan
+dead ~40 min — pi00 hosts the local resolver); pushes queued through a
+retry loop, recovered on watcher signal.
+
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
@@ -1274,7 +1291,8 @@ Record contract (`progress.build_record`): flat keys, no nested blobs,
 empty values dropped — `{ts, run_id, kind (true verb: awq/onnx/merge…
 not "stage"), provider, status, exit_code, image_tag, agent_version,
 started_at, finished_at, seconds, cost, est_cost, price_hr, base_model,
-from_run, domain, recipe, gpu, n_artifacts, artifacts_sha, n_problems,
+from_run, domain, recipe, corpora_sha, recipe_sha, gpu, n_artifacts,
+artifacts_sha, n_problems,
 n_points, first_loss, last_loss, min_loss}`.
 
 Rules:
