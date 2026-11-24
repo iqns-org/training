@@ -1018,10 +1018,16 @@ layers, separated by direct probes:
 * Probed OUR artifact directly (serve-test, PROMPT="Who are you?"):
   it answers "I'm a helpful assistant." — NOT "Kandi". The corpus has
   only 3 identity rows (me.jsonl "I'm Kandi" x2 + one awake.jsonl
-  row that also contains an UNRENDERED template literal `{{ $.who[?]
-  }}` — a corpus bug worth fixing at the data source). 3 rows do not
-  survive LoRA/360M; persona learning needs dozens of varied identity
-  exchanges, which is the next data-side round.
+  rows — and the template literals like `{{ $.mood[?] }}` are NOT a bug:
+  they are a deliberate variant format the expansion pipeline renders
+  (verified: zero leftovers in the expanded tmp/queer.jsonl).
+  THE REAL MECHANISM: every expanded row carries the system prompt
+  "You are Kandi, trained to be queer and kinky." — the 360M learned
+  the persona CONDITIONED ON THAT PROMPT, and my probe curl omitted it,
+  so base alignment answered. Practical fix is client-side (send the
+  system prompt; a defaults.json/infra config can pin it); optional
+  data-side hardening: more unconditional identity Q/A rows so the
+  name survives without the prompt.
 Durable fix for the routing half: the infra vllm CATALOG now has a
 `queer360-awq` backend (apps.vllm: model=/home/me/models/queer-360m-awq
 absolute path — render_vllm.py gained the convention that absolute
