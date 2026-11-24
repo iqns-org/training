@@ -13,7 +13,7 @@ measured faster than AWQ-360 on Orin)?
 | expanded unique conversations | 22,931 |
 | unique user prompts | 2,717 (~8.5 replies/prompt — variety is **combinatorial**, not semantic) |
 | trainable tokens / epoch | ~644k (2 epochs = the 360M run; ppl 110→93 early) |
-| 360M train cost | 14 min on workstation RTX 2000 Ada, 1.67 GiB peak |
+| 360M train cost | 14 min on a rented RunPod RTX 2000 Ada pod (~$0.25/hr, 1.67 GiB peak) |
 
 ## The smoking guns
 
@@ -26,9 +26,11 @@ measured faster than AWQ-360 on Orin)?
 ## Verdict
 
 **Volume: sufficient.** 23k conversations is generous for a persona LoRA
-at 0.8B; compute is trivial (workstation LoRA, est. 35-45 min — 0.8B fp16
-fits 16GB easily, and serving on Orin is already proven by the qwen3-0.8B
-reference engine).
+at 0.8B; compute is cheap — the pipeline rents RunPod pods (this dev box
+has no CUDA GPU at all; SPEC §1: serverless GPUs, provision → train →
+ship → terminate). Est. 35-45 min on an RTX 2000 Ada class pod ($0.24-0.25/hr
+per the ledger) ≈ $0.20, fits 16GB VRAM easily, and serving on Orin is
+already proven by the qwen3-0.8B reference engine.
 
 **Quality: not sufficient yet — and a bigger model makes it WORSE, not
 better.** A 360M under-fits the corpus, hiding its gaps. A 0.8B Qwen
@@ -54,6 +56,6 @@ being bought for.
    re-bake for Qwen's chat template before serving (identity is served,
    not trained — keep it that way).
 
-Then: `qtrain train --base Qwen/Qwen3.5-0.8B` on the workstation
+Then: `qtrain train --base Qwen/Qwen3.5-0.8B` on a rented RunPod pod
 (zero cluster mutation — no collision with the facade session), merge,
 register, serve via `--lora-modules` on the qwen3-05 engine.
