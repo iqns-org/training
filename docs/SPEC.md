@@ -1250,6 +1250,23 @@ API. Operational note: workstation DNS flapped mid-session (WAN + .lan
 dead ~40 min — pi00 hosts the local resolver); pushes queued through a
 retry loop, recovered on watcher signal.
 
+**(ad) pod identities + blip-proof watching (2026-11-24).** The 0.8B
+launch died twice to the flapping resolver — the second death exposed a
+real flaw: the pod had LAUNCHED (RTX 4000 Ada, dataset incl. roleplay),
+then DNS died mid-watch and submit's "never leave a pod behind" finally
+TERMINATED the running training. Wrong law for the wrong failure:
+controller blindness is not an idle GPU. Now `_net_blip()` classifies
+name-resolution/unreachable/timeout deaths and all four dispatch paths
+(submit/stage/resume/relaunch) on blip KEEP the pod, leave the row OPEN
+with an `unwatched` note, and emit `watch_lost` — volume-lane pods need
+no egress to finish, so the run completes offline and `qtrain watch`
+re-attaches with connectivity (the launcher loops exactly that). Plus
+pod NAMES carry meaning — `trainer-<kind>[.<domain.model|forParent>]-<run-suffix>`
+(`trainer-train.queer.qwen3508b-…`, `trainer-awq.for20e8db-…`) while the
+reap contract shifts to prefix + TRAILING suffix (`name[-8:]`), parsing
+new AND legacy names identically; payloads carry `meta` so relaunch
+reconstructs hints. 106 tests (+4).
+
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
