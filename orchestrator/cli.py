@@ -252,6 +252,11 @@ def cmd_janitor(args):
     _print(res)
 
 
+def cmd_bench(args):
+    from . import bench
+    raise SystemExit(bench.main(args.extra))
+
+
 def cmd_notify_test(args):
     from . import notify
     ev = notify.emit("notify_test", note="qtrain notify-test")
@@ -436,6 +441,13 @@ def build_parser():
     s = sub.add_parser("notify-test",
                        help="emit + probe QTRAIN_WEBHOOK_URL delivery")
     s.set_defaults(func=cmd_notify_test)
+
+    s = sub.add_parser("bench", help="benchmark model backends (identity + "
+                       "speed matrix over OpenAI-compatible endpoints; "
+                       "flags pass through to orchestrator/bench.py — "
+                       "use --url/--model/--question/--repeats/--json/--csv)")
+    s.add_argument("extra", nargs=argparse.REMAINDER)
+    s.set_defaults(func=cmd_bench)
 
     s = sub.add_parser("reap", help="terminate live GPUs with no active "
                        "task behind them (idempotency hygiene)")
