@@ -1180,6 +1180,37 @@ m-v0.3.0 and predates these tools — the next image cut (blocked on the
 GitHub mirror for CI) must move to the digest-pinned ref and the pod
 redeployed; until then the facade lags the repo.
 
+## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
+
+Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
+has the bench failures baked in — 337 feeling turns with zero
+self-named answers, zero JSON turns against 748 emoji turns. Round 1
+adds targeted `$`-template rows (expand like the rest of the corpus):
+
+- `datasets/queer/identity/awake-feeling.jsonl` — in-context identity:
+  feeling/mood/state prompts answered in voice WITH the name in the
+  assistant text. Repairs the 0/337 directly.
+- `datasets/queer/identity/awake-paraphrase.jsonl` — the who-are-you /
+  name / are-you-real intent family across varied user phrasings
+  (semantic diversity, not just mood-slot combinatorics).
+- `datasets/queer/format/json-instruct.jsonl` — persona-voiced format
+  compliance: JSON answers to format instructions (objects, arrays,
+  keys kept exact), the anti-🌦️ fixtures.
+- `datasets/queer/format/instruct-general.jsonl` — non-persona format
+  anchors (plain JSON/boolean/terse answers): the anti-forgetting mix
+  so the 0.8B keeps base instruction-following. Kept name-free and
+  neutral-voice so it dilutes nothing but collapse risk.
+
+Measured after round 1 (expanded, via `bin/prepare-domain` corpus audit):
+self-named feeling turns **0 → 228** (40% of 565), valid-JSON assistant
+turns **0 → 92**, unresolved-template 0, invalid lines 0, total expanded
+23,563 unique conversations. Generator kept at `src/gen_data_round1.py`
+(idempotent; templates are one-level — the expander is single-pass).
+
+Bench is the acceptance gate: after the 0.8B (and any 360M retrain)
+`json` flips to PASS, `feeling` self-names, and instruction stays
+green.
+
 ## 14c. The lane run index (UI-facing rollup)
 
 The PVC lane (RustFS `quadra` bucket; stage/train artifacts already
