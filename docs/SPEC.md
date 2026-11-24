@@ -1317,6 +1317,25 @@ earlier structural smoke claimed '0 visual tensors' via a wrong key
 prefix — the crash log was the true instrument.) Machinery follow-up
 queued: a `lora-trim` stage so the trim is pipeline-provenanced, not
 surgery.
+**(ah) promotion smoke + acceptance bench (2026-11-25, early morning).**
+qwen3-05 serves EXACTLY `['Qwen/Qwen3.5-0.8B','kandi']` (infra `8fff19f`:
+`--chat-template` -> corpora `kandi-qwen.jinja` — native Qwen3.5 template +
+default-slot identity; the SmolLM-era chatml had been starving the
+empty-think-block contract, routing answers into `reasoning` with
+`content=null`). BENCH (json artifact /tmp/opencode/bench08b.json):
+**kandi PASS 5/5 graded** — identity "I'm Kandi." 3/3, json flipped to
+PASS 3/3 (`{"mood":"wet","topic":"rain"}` — the 360-era emoji bleed is
+GONE, data round 1 confirmed), instruction green, voice/world green;
+feeling probe (check:none, non-graded) self-names: "I'm Kandi. I'm warm,
+and I'm not going anywhere." — acceptance gate MET. Base id: identity
+stays vendor-honest (FAIL-as-intended), feeling refuses (correct), and
+prime-question now answers `yes` 3/3 — the earlier "no" was TEMPLATE
+CONFUSION, not model capability. tok/s: base 55.5 vs kandi 34.7 (LoRA
+compute tax on Orin; persona lane acceptable). Side effects cleared:
+iq-ux prefill synced (SmolLM->Qwen), router persona->kandi, GitHub
+mirror unblocked by the history slim (640MB->784KB pack) and postproc
+builds p-v0.1.0..2 landed success overnight — p-v0.1.3/4 next in
+mirror order; mcp-trainer image cut is newly unblockable.
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
