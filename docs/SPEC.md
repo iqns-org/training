@@ -1322,4 +1322,5 @@ Rules:
 UI integration note for the facade session: reading `runs/index.jsonl`
 off the S3 endpoint (cluster `s3.quadra:9000`, NodePort 30900, console
 30901) needs only the `s3-credentials` secret — no trainer token, no
-ledger access.
+ledger access. The UX-facing design (views, join keys, honesty rules)
+is documented in `docs/UI.md`.
