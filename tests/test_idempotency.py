@@ -287,3 +287,29 @@ def test_watch_lost_keeps_pod(led_root, monkeypatch):
     assert out.get("terminated") is None
     assert json.loads(journal.read_text().strip().splitlines()[-1])[
         "event"] == "watch_lost"
+
+
+def test_terminated_flag_is_honest(led_root, monkeypatch):
+    """terminate() returning False (kill refused / blip during confirm)
+    must surface as terminated:false — 2026-11-24 leak: a blanket true
+    hid two billing pods for an hour."""
+    class BadProv:
+        def terminate(self, i):
+            return False
+
+        def poll(self, i):
+            raise ProviderError("gone")
+
+        def list_instances(self):
+            return []
+
+    monkeypatch.setattr(dispatch, "get_provider", lambda name: BadProv())
+    monkeypatch.setattr(dispatch, "_watch",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            RuntimeError("budget cap $1 crossed")))
+    led = Ledger(led_root / "state" / "ledger.db")
+    rid = led.create("train", {}, provider="runpod")
+    led.update(rid, state="running", instance_id="pod-x")
+    out = dispatch.resume(rid)
+    assert out["status"] == "error"
+    assert out["terminated"] is False

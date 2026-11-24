@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 
 import httpx
 
@@ -174,17 +175,29 @@ class RunpodProvider:
         return normalize_pod(pod if isinstance(pod, dict) else {})
 
     def terminate(self, instance_id: str) -> bool:
+        """DELETE + CONFIRM. RunPod's terminate is async (a poll right
+        after DELETE may still read RUNNING), so confirm over a few
+        seconds. Honesty rules (2026-11-24 leak: blipped watchers paired
+        with over-optimistic confirms left $/hr pods alive): 404 anywhere
+        = gone = True; a network blip during confirmation is NOT proof —
+        return False and let the caller (and reap) retry."""
         try:
             self._req("DELETE", f"/v2/pods/{instance_id}")
         except ProviderError as e:
             if "404" in str(e):
                 return True
             return False
-        try:
-            rec = self.poll(instance_id)
-            return rec.status in {"terminated", "deleted", "failed"}
-        except ProviderError:
-            return True   # gone is gone
+        for _ in range(4):
+            try:
+                rec = self.poll(instance_id)
+            except ProviderError as e:
+                if "404" in str(e):
+                    return True
+                return False          # unreachable != gone
+            if rec.status in {"terminated", "deleted", "failed"}:
+                return True
+            time.sleep(2.0)
+        return False
 
     # -- discovery -----------------------------------------------------------
     def catalog(self, gpu_ids: list[str] | None = None,

@@ -552,8 +552,8 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
     finally:
         if pod_id and not result.get("unwatched"):
             try:
-                get_provider(provider).terminate(pod_id)
-                result["terminated"] = True
+                result["terminated"] = bool(
+                    get_provider(provider).terminate(pod_id))
             except Exception as e:                          # noqa: BLE001
                 result["terminate_error"] = str(e)
 
@@ -572,7 +572,12 @@ def janitor_once(provider: str = "runpod", *, grace: int | None = None,
     except Exception as e:                                  # noqa: BLE001
         out["reap_error"] = str(e)[:200]
     led = Ledger(ROOT / "state" / "ledger.db")
-    cutoff = time.time() - stale_after
+    # A pending row is only a GHOST once its original dispatch can no
+    # longer be launching: capacity-waits run up to QTRAIN_MAX_WAIT
+    # (default 1800 s). Relaunching inside that window = double launch.
+    horizon = max(stale_after,
+                  int(os.environ.get("QTRAIN_MAX_WAIT", "1800")) + 120)
+    cutoff = time.time() - horizon
     out["relaunched"] = []
     for row in led.list():
         if (row["state"] == "pending" and not row["instance_id"]
@@ -751,8 +756,8 @@ def resume(run_id: str | None = None, poll: int = 30,
     finally:
         if inst_id and not result.get("unwatched"):
             try:
-                get_provider(provider).terminate(inst_id)
-                result["terminated"] = True
+                result["terminated"] = bool(
+                    get_provider(provider).terminate(inst_id))
             except Exception as e:
                 result["terminate_error"] = str(e)
 
@@ -916,8 +921,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
     finally:
         if pod_id and not result.get("unwatched"):
             try:
-                get_provider(provider).terminate(pod_id)
-                result["terminated"] = True
+                result["terminated"] = bool(
+                    get_provider(provider).terminate(pod_id))
             except Exception as e:
                 result["terminate_error"] = str(e)
 
@@ -1183,8 +1188,8 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     finally:
         if pod_id and not result.get("unwatched"):
             try:
-                get_provider(provider).terminate(pod_id)
-                result["terminated"] = True
+                result["terminated"] = bool(
+                    get_provider(provider).terminate(pod_id))
             except Exception as e:
                 result["terminate_error"] = str(e)
 
