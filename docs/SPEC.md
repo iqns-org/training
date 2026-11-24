@@ -1281,6 +1281,22 @@ comes from the recipe's internal `base_model` (Qwen/Qwen3.5-0.8B →
 Suffix-token contract (`name[-8:]`) unchanged. 106 tests, rewritten
 naming/reap pair covers new+legacy+foreign classification.
 
+**(af) 0.8B chain end-to-end (2026-11-24, night).** `train 1a6ea5`
+(Qwen3.5-0.8B QLoRA, RTX 2000 Ada $0.24/hr: 438 steps, loss 4.81 ->
+0.678, $0.157) -> `merge 6b74d0` (auto-derived base from the run's
+recipe — the §13ae-era provenance path proved live; $0.079) -> register
+both to nano0 (`queer08b-adapter`, `queer08b-merged`). Structural smoke
+green: adapter r32/a64 LORA with exact base ref; merged 1.5 GB F16,
+`Qwen3_5ForCausalLM`, vocab 248320 tied, safetensors byte-exact vs
+manifest. Total pipeline cost **$0.236**. Two delivery bugs found and
+fixed under load: (i) `submit_stage` required `--base` despite owning the
+answer — now inherits from provenance; (ii) register's single-shot ssh
+pipe could not cross the ~0.5 MB/s wifi-Orin leg (2x 900 s timeouts, a
+truncated model.safetensors left on host) — over-64 MB tars now rsync
+`--partial --append-verify` to a staged path, so interrupted transfers
+RESUME (pushed 2f2b7c3). Serving attach (`--lora-modules` / merged
+backend in quadra.yaml) belongs to the facade session; the handoff
+snippet went with this run's report.
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
