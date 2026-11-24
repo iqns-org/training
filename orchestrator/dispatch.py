@@ -233,6 +233,33 @@ def _finish_done(run_id: str, started: float, price_hr, get_run=None,
 
 
 POD_PREFIX = "trainer-"
+
+
+def _pod_hint(domain=None, recipe=None, parent=None) -> str:
+    """Compact human tag for pod names: domain + model stem (train) or
+    parent-run token (stages). Cosmetic ONLY — identity lives in the
+    prefix and the trailing run-suffix (SPEC 14b)."""
+    bits = []
+    if domain:
+        bits.append(re.sub(r"[^a-z0-9]+", "", str(domain).lower())[:12])
+    if recipe:
+        stem = re.sub(r"[-_ ]?qlora\b", "", Path(str(recipe)).stem.lower())
+        stem = re.sub(r"[^a-z0-9]+", "", stem)[:16]
+        if stem and stem not in bits:
+            bits.append(stem)
+    if parent:
+        tok = re.sub(r"[^a-z0-9]+", "", str(parent).split("-")[-1].lower())[:8]
+        if tok:
+            bits.append(f"for{tok}")
+    return ".".join(b for b in bits if b)
+
+
+def _pod_name(kind: str, run_id: str, hint: str = "") -> str:
+    """CONTRACT: starts with POD_PREFIX, ENDS with run_id[-8:]. The reap
+    stale-claim fallback matches on that trailing suffix — hint tokens
+    must never occupy the tail (SPEC 14b)."""
+    tag = f"{kind}.{hint}" if hint else kind
+    return f"{POD_PREFIX}{tag}-{run_id[-8:]}".lower()
 # states whose work is OVER — a pod still alive under one of these is a
 # leak (crash between harvest and terminate), never a live task.
 SETTLED = {"done", "failed", "cancelled", "verified", "delivered", "lost"}
@@ -351,7 +378,9 @@ def reap(provider: str = "runpod", *, grace: int | None = None,
         row = claims.get(inst.id)
         why = ""
         if row is None:
-            row2 = by_suffix.get(inst.name[len(POD_PREFIX):])
+            # identity = trailing run-suffix token (works for hint-bearing
+            # names trainer-<kind>.<hint>-<suffix> AND legacy plain ones)
+            row2 = by_suffix.get(inst.name[-8:])
             if row2 is not None and row2["state"] in SETTLED:
                 row, why = row2, (f"stale pod of settled run "
                                   f"{row2['run_id'][-8:]} "
@@ -438,6 +467,7 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
             raise ProviderError("payload missing on lane — nothing to "
                                 "relaunch")
         payload = json.loads(raw)
+        meta = payload.get("meta") or {}
         if not payload.get("volume"):
             raise ProviderError("presign-lane payloads cannot relaunch "
                                 "(signed URLs expire) — resubmit instead")
@@ -469,7 +499,12 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
         result["estimate"] = round(budget.estimate(rate_bound, kind), 2)
         notify.emit("relaunching", run_id, kind=kind, lane=lane)
         inst, offer = _wave_launch(prov, offers_fn,
-                                   name=f"trainer-{run_id[-8:]}",
+                                   name=_pod_name(
+                                       kind, run_id,
+                                       (_pod_hint(meta.get("domain"),
+                                                  meta.get("recipe"))
+                                        if not is_stage else
+                                        _pod_hint(parent=meta.get("from_run")))),
                                    image=image, env=env, lk=lk,
                                    run_id=run_id, kind=kind,
                                    max_wait=_max_wait(max_wait))
@@ -729,6 +764,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             payload = {"run_id": run_id,
                        "command": "axolotl train /work/job/train.yaml",
                        "config_yaml": config_yaml,
+                       "meta": {"domain": domain, "recipe": str(recipe)},
                        "dataset": {"name": dataset_path.name,
                                    "path": pod_ds_path, "sha256": dataset_sha},
                        "outputs_dir": "/work/outputs",
@@ -742,6 +778,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             payload = {"run_id": run_id,
                        "command": "axolotl train /work/job/train.yaml",
                        "config_yaml": config_yaml,
+                       "meta": {"domain": domain, "recipe": str(recipe)},
                        "dataset": {"name": dataset_path.name,
                                    "url": urls["dataset_get"],
                                    "sha256": dataset_sha},
@@ -786,7 +823,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
               if (vol and not vol.get("local")) else {})
         inst, offer = _wave_launch(
             prov, lambda: _train_pool(prov, gpus, tier, vol, ceiling),
-            name=f"trainer-{run_id[-8:]}", image=_image_ref(),
+            name=_pod_name("train", run_id, _pod_hint(domain, recipe)),
+            image=_image_ref(),
             env={**payload_env, "AGENT_TOKEN": token,
                  "IMAGE_TAG": _image_ref()},
             lk=lk, run_id=run_id, kind="train",
@@ -999,6 +1037,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         cmd = "sh -c " + shlex.quote(f"{spec['prelude']} && {cmd}")
     payload = {"run_id": run_id, "command": cmd, "config_yaml": "",
                "inputs": inputs,
+               "meta": {"kind": kind, "from_run": from_run},
                "outputs_dir": "/work/outputs",
                "gate": {"required_files": spec["required"]},
                "urls": {},
@@ -1045,7 +1084,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                        else _postproc_image())
         inst, offer = _wave_launch(
             prov, lambda: _stage_pool(prov, spec, provider, ceiling),
-            name=f"trainer-{run_id[-8:]}",
+            name=_pod_name(kind, run_id, _pod_hint(parent=from_run)),
             image=stage_image,
             env={**payload_env, "AGENT_TOKEN": token,
                  "IMAGE_TAG": stage_image}, lk=lk,

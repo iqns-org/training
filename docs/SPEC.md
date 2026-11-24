@@ -471,6 +471,13 @@ GPU either has an active task or dies":
   another controller (mcp-trainer!) keeps a pod-local ledger and may
   legitimately own them. `QTRAIN_REAP_UNCLAIMED=1` declares this host
   the single controller. Every kill emits `reaped` with `kind=pod`.
+  Pod NAMES carry a human hint —
+  `trainer-<kind>[.<domain.model|forParent>]-<run-suffix>`
+  (e.g. `trainer-train.queer.qwen3508b-1-b9b130`,
+  `trainer-awq.for20e8db-0-abc123`) —
+  but the CONTRACT is prefix + TRAILING run-suffix: reap's stale-claim
+  fallback matches `name[-8:]`, so hint tokens must never occupy the
+  tail, and legacy plain names parse identically.
 - `_wave_launch` — capacity-waiting inside the orchestrator: each wave
   re-reads the catalog (stock moves), tries the fit ladder, and on miss
   emits `capacity-wait` and sleeps with exponential backoff (30 s ..
