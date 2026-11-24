@@ -60,9 +60,10 @@ def _req(url: str, body: dict | None = None, timeout: float = 120,
     r = urllib.request.Request(url, data=data,
                                headers={"Content-Type": "application/json"},
                                method="POST" if body else "GET")
+    if stream:
+        # caller owns the socket (SSE iteration needs it open)
+        return urllib.request.urlopen(r, timeout=timeout)
     with urllib.request.urlopen(r, timeout=timeout) as resp:
-        if stream:
-            return resp
         return json.loads(resp.read())
 
 
@@ -102,8 +103,9 @@ def chat_stream(url: str, model: str, prompt: str, *, max_tokens: int,
     parts: list[str] = []
     ttft = None
     n_chunks = 0
-    with _req(f"{url}/v1/chat/completions", body, timeout=timeout,
-              stream=True) as resp:
+    resp = _req(f"{url}/v1/chat/completions", body, timeout=timeout,
+                stream=True)
+    try:
         for raw in resp:
             line = raw.decode(errors="replace").strip()
             if not line.startswith("data:"):
@@ -122,6 +124,8 @@ def chat_stream(url: str, model: str, prompt: str, *, max_tokens: int,
             if piece:
                 n_chunks += 1
             parts.append(piece)
+    finally:
+        resp.close()
     wall = time.perf_counter() - t0
     tps = (n_chunks / (wall - ttft) if ttft and wall > ttft else 0.0)
     return "".join(parts), wall, (ttft or wall), tps
