@@ -1297,6 +1297,26 @@ truncated model.safetensors left on host) — over-64 MB tars now rsync
 RESUME (pushed 2f2b7c3). Serving attach (`--lora-modules` / merged
 backend in quadra.yaml) belongs to the facade session; the handoff
 snippet went with this run's report.
+**(ag) kandi promotion to the 0.8B + the VLM-LoRA trap (2026-11-25).**
+Option A (user call) went live: `qtrain register`ed adapter attached to
+the `qwen3-05` engine via `--lora-modules kandi=...` + `--chat-template
+kandi.jinja` (infra `db371dc`: `active: qwen3-05`, router persona lane
+retargeted, `smollm2-360m` removed from router.json — 360 engine stays
+in the catalog at 0 replicas for on-demand A/B). THE TRAP: axolotl's
+`lora_target_linear` = ALL linear layers, which on VL-capable bases
+(Qwen3.5 ships a vision tower) trains 102 dead `visual.*` LoRA tensors —
+and vLLM under `--language-model-only` REFUSES such adapters
+(`init_static_loras` ValueError, crash-loop). Fix chain: (i) live trim
+on nano0 — safetensors rebuilt stdlib-pure without `.visual.` keys
+(474->372 tensors, 107->87 MB; target_modules narrowed to the 12
+text-path leaves; originals intact in the run tar + lane), (ii) recipe
+guard in corpora (`33b86d6`): explicit `lora_target_modules` for all
+Qwen3.5 recipes — future text adapters identical on the language path,
+zero visual weights, directly vLLM-loadable. (Honest note: tonight's
+earlier structural smoke claimed '0 visual tensors' via a wrong key
+prefix — the crash log was the true instrument.) Machinery follow-up
+queued: a `lora-trim` stage so the trim is pipeline-provenanced, not
+surgery.
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
