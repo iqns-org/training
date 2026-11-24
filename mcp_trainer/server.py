@@ -363,7 +363,8 @@ def progress_resource(run_id: str) -> str:
 def reap_pods(provider: str = "runpod", dry: bool = True) -> dict:
     """Idempotency hygiene: terminate live GPUs with no active task
     behind them (terminal claims, stale run-suffix pods). DRY by
-    default; only trainer-* named pods are ever candidates; unclaimed
+    default; only pods OUR naming scheme made (kind-first train-/awq/…,
+    or legacy trainer-) are ever candidates; unclaimed
     pods are kept unless QTRAIN_REAP_UNCLAIMED=1 declares a single
     controller."""
     return dispatch.reap(provider, dry=dry)

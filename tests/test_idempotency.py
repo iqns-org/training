@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from orchestrator import dispatch
+from orchestrator import dispatch, models
 from orchestrator.ledger import Ledger
 from orchestrator.models import Instance, Offer, ProviderError
 
@@ -198,33 +198,44 @@ def test_resume_routes_pending_ghost_to_relaunch(led_root, monkeypatch):
     assert calls["relaunch"] == [rid]
 
 
-def test_pod_name_is_human_and_contract_safe():
-    # trainer- prefix + trailing run-suffix are the reap contract; the
-    # middle is purely for eyes on provider consoles / kubectl
-    n = dispatch._pod_name("train", "20261124-190341-b9b130",
-                           dispatch._pod_hint("queer",
-                                              "x/Qwen3.5-0.8B-qlora.yaml"))
-    assert n.startswith(dispatch.POD_PREFIX) and n.endswith("1-b9b130")
-    assert "queer" in n and "qwen" in n and "qlora" not in n
-    assert len(n) <= 63   # k8s-safe
+def test_pod_name_is_human_and_contract_safe(tmp_path):
+    # kind-first, internal slug from base_model, trailing run-suffix
+    rec = tmp_path / "Qwen3.5-0.8B-qlora.yaml"
+    rec.write_text("base_model: Qwen/Qwen3.5-0.8B\n")
+    n = dispatch._pod_name("train", "20261124-191736-425e6c",
+                           dispatch._pod_hint("queer", str(rec)))
+    assert n == "train-queer-qwen3.5-0.8b-6-425e6c"
+    assert n.endswith("6-425e6c") and len(n) <= 63
+    assert models.pod_is_ours(n)
+    # legacy trainer- names stay reapable (pods may live across the change)
+    assert models.pod_is_ours("trainer-train.queer.qwen3508b-6-425e6c")
+    assert models.pod_is_ours("trainer-1-b9b130")
+    # foreign names are NOT ours
+    for f in ("user-vllm-stuff", "training-run-job", "qdrant-0"):
+        assert not models.pod_is_ours(f)
+    # fallback: recipe without base_model -> filename stem minus qlora
+    rec2 = tmp_path / "SmolLM2-360M-qlora.yaml"
+    rec2.write_text("nope: 1\n")
+    h = dispatch._pod_hint("queer", str(rec2))
+    assert "smollm2-360m" in h
+    # stages tag the parent run; no hint must not double-dash
     s = dispatch._pod_name("awq", "20261124-200000-abc123",
                            dispatch._pod_hint(parent="20261123-162929-20e8db"))
-    assert s.endswith("0-abc123") and "for20e8db" in s   # own tail, parent tag
-    # plain fallback (old payloads without meta)
-    assert dispatch._pod_name("merge", "r-x-99887766") == \
-        dispatch.POD_PREFIX + "merge-99887766"
+    assert s == "awq-for20e8db-0-abc123"
+    assert dispatch._pod_name("merge", "r-x-99887766") == "merge-99887766"
 
 
-def test_reap_matches_hinted_and_legacy_names(led_root, monkeypatch):
-    """name[-8:] suffix parsing kills BOTH new hint-bearing stale pods and
-    legacy plain names — the contract token always sits at the tail."""
+def test_reap_matches_new_and_legacy_names(led_root, monkeypatch):
+    """name[-8:] suffix parsing kills BOTH kind-first hint names and
+    legacy trainer- names — the contract token always sits at the tail."""
     monkeypatch.delenv("QTRAIN_REAP_UNCLAIMED", raising=False)
     led = Ledger(led_root / "state" / "ledger.db")
     rid = led.create("train", {}, provider="runpod")
     led.update(rid, state="failed")
-    hinted = f"trainer-train.queer-qwen3508b-{rid[-8:]}"
+    new = f"train-queer-qwen3.5-0.8b-{rid[-8:]}"
     legacy = f"trainer-{rid[-8:]}"
-    prov = StubProv([_inst("pod-a", hinted), _inst("pod-b", legacy)])
+    prov = StubProv([_inst("pod-a", new), _inst("pod-b", legacy),
+                     _inst("pod-c", "user-vllm-stuff")])
     monkeypatch.setattr(dispatch, "get_provider", lambda p: prov)
     out = dispatch.reap("runpod", grace=900)
     assert {k["id"] for k in out["killed"]} == {"pod-a", "pod-b"}

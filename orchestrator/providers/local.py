@@ -19,7 +19,7 @@ import os
 import shlex
 import subprocess
 
-from ..models import Instance, Offer, ProviderError
+from ..models import Instance, Offer, ProviderError, pod_is_ours
 
 NS = os.environ.get("LOCAL_NAMESPACE", "quadra")
 LANE_PATH = os.environ.get("LOCAL_WORKDIR", "/srv/mcps/trainer")
@@ -157,7 +157,7 @@ class LocalProvider:
         out = []
         for j in json.loads(raw).get("items", []):
             name = j["metadata"]["name"]
-            if not name.startswith("trainer-"):
+            if not pod_is_ours(name):
                 continue
             st = j.get("status", {})
             status = ("succeeded" if st.get("succeeded") else

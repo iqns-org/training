@@ -471,13 +471,16 @@ GPU either has an active task or dies":
   another controller (mcp-trainer!) keeps a pod-local ledger and may
   legitimately own them. `QTRAIN_REAP_UNCLAIMED=1` declares this host
   the single controller. Every kill emits `reaped` with `kind=pod`.
-  Pod NAMES carry a human hint —
-  `trainer-<kind>[.<domain.model|forParent>]-<run-suffix>`
-  (e.g. `trainer-train.queer.qwen3508b-1-b9b130`,
-  `trainer-awq.for20e8db-0-abc123`) —
-  but the CONTRACT is prefix + TRAILING run-suffix: reap's stale-claim
-  fallback matches `name[-8:]`, so hint tokens must never occupy the
-  tail, and legacy plain names parse identically.
+  Pod NAMES carry the task identity: `train-queer-qwen3.5-0.8b-6-425e6c`,
+  `awq-for20e8db-0-abc123` — kind-first (no `trainer-train` redundancy),
+  the model slug read from the recipe's INTERNAL `base_model` (filename
+  stem only as fallback), parent-run token for stages. The CONTRACT is
+  (a) a recognized name — `models.pod_is_ours`: kind-first OR the legacy
+  `trainer-` prefix (pods may live across the scheme change; foreign
+  names like `user-vllm-stuff`/`training-run-job` stay untouched) — and
+  (b) the TRAILING run-suffix: reap's stale-claim fallback matches
+  `name[-8:]`, so hint tokens must never occupy the tail and legacy
+  plain names parse identically. K8s/RunPod-safe (lowercase, ≤63).
 - `_wave_launch` — capacity-waiting inside the orchestrator: each wave
   re-reads the catalog (stock moves), tries the fit ladder, and on miss
   emits `capacity-wait` and sleeps with exponential backoff (30 s ..
@@ -1266,6 +1269,17 @@ pod NAMES carry meaning — `trainer-<kind>[.<domain.model|forParent>]-<run-suff
 reap contract shifts to prefix + TRAILING suffix (`name[-8:]`), parsing
 new AND legacy names identically; payloads carry `meta` so relaunch
 reconstructs hints. 106 tests (+4).
+
+**(ae) naming refinement (2026-11-24, same day — user: "we don't need
+trainer-train").** Kind-first: `train-queer-qwen3.5-0.8b-<suffix>` — the
+`trainer-` prefix was the legacy ownership marker and stays ACCEPTED by
+`pod_is_ours` (reap, local-job listing) so pods launched under it remain
+reapable, but new names don't stack prefix-on-kind. The model slug now
+comes from the recipe's internal `base_model` (Qwen/Qwen3.5-0.8B →
+`qwen3.5-0.8b`, dots legal in K8s+RunPod names) instead of the filename
+— filename stem is fallback only. Stages: `awq-for<parent>-<suffix>`.
+Suffix-token contract (`name[-8:]`) unchanged. 106 tests, rewritten
+naming/reap pair covers new+legacy+foreign classification.
 
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 

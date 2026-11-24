@@ -68,5 +68,22 @@ class Instance:
         return None
 
 
+# Pod ownership (SPEC 14b reap contract). Current scheme is kind-first:
+# "<kind>-<hint>-<run-suffix>" e.g. train-queer-qwen3.5-0.8b-6-425e6c.
+# The legacy "trainer-" prefix is STILL honored so pods launched under the
+# old scheme remain reapable. Trailing run-suffix token is the second
+# anchor: pods map to ledger rows via name[-8:] == run_id[-8:].
+POD_PREFIX = "trainer-"
+JOB_KINDS = ("train", "merge", "onnx", "int8", "awq")
+
+
+def pod_is_ours(name: str) -> bool:
+    if not name:
+        return False
+    if name.startswith(POD_PREFIX):        # legacy scheme
+        return True
+    return name.split("-")[0] in JOB_KINDS
+
+
 class ProviderError(RuntimeError):
     """Actionable provider failure (auth, capacity, bad payload, …)."""

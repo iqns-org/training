@@ -29,7 +29,7 @@ import yaml
 from . import budget, notify, progress, storage
 from .config import ROOT, corpora_dir, corpora_git_sha
 from .ledger import Ledger
-from .models import ProviderError
+from .models import POD_PREFIX, ProviderError, pod_is_ours
 from .providers import get_provider
 
 MINI_LINES = 48
@@ -232,34 +232,47 @@ def _finish_done(run_id: str, started: float, price_hr, get_run=None,
                     seconds=round(time.time() - started))
 
 
-POD_PREFIX = "trainer-"
+JOB_KINDS = ("train", "merge", "onnx", "int8", "awq")   # noqa: F841 re-export
 
 
 def _pod_hint(domain=None, recipe=None, parent=None) -> str:
-    """Compact human tag for pod names: domain + model stem (train) or
-    parent-run token (stages). Cosmetic ONLY — identity lives in the
-    prefix and the trailing run-suffix (SPEC 14b)."""
+    """Human tag for pod names: domain + model slug. The slug prefers the
+    recipe's INTERNAL `base_model` (Qwen/Qwen3.5-0.8B -> qwen3.5-0.8b —
+    reads like the thing it trains) over the filename; filename stem is
+    the fallback. Stages tag their parent run (`for<token>`)."""
+    import yaml
     bits = []
     if domain:
-        bits.append(re.sub(r"[^a-z0-9]+", "", str(domain).lower())[:12])
+        bits.append(re.sub(r"[^a-z0-9.-]+", "", str(domain).lower())[:12])
     if recipe:
-        stem = re.sub(r"[-_ ]?qlora\b", "", Path(str(recipe)).stem.lower())
-        stem = re.sub(r"[^a-z0-9]+", "", stem)[:16]
-        if stem and stem not in bits:
-            bits.append(stem)
+        slug = ""
+        try:
+            bm = str((yaml.safe_load(Path(str(recipe)).read_text())
+                      or {}).get("base_model", ""))
+            slug = bm.rsplit("/", 1)[-1]
+        except Exception:                              # noqa: BLE001
+            pass
+        if not slug:
+            slug = re.sub(r"[-_ ]?qlora\b", "",
+                          Path(str(recipe)).stem, flags=re.I)
+        slug = re.sub(r"[^a-z0-9.-]+", "", slug.lower())[:24].strip("-.")
+        if slug and slug not in bits:
+            bits.append(slug)
     if parent:
         tok = re.sub(r"[^a-z0-9]+", "", str(parent).split("-")[-1].lower())[:8]
         if tok:
             bits.append(f"for{tok}")
-    return ".".join(b for b in bits if b)
+    return "-".join(b for b in bits if b)
 
 
 def _pod_name(kind: str, run_id: str, hint: str = "") -> str:
-    """CONTRACT: starts with POD_PREFIX, ENDS with run_id[-8:]. The reap
-    stale-claim fallback matches on that trailing suffix — hint tokens
-    must never occupy the tail (SPEC 14b)."""
-    tag = f"{kind}.{hint}" if hint else kind
-    return f"{POD_PREFIX}{tag}-{run_id[-8:]}".lower()
+    """CONTRACT (SPEC 14b): starts with the kind (legacy trainer- names
+    remain reapable) and ENDS with run_id[-8:] — reap maps pods to ledger
+    rows by that trailing token, so hint parts must never occupy the
+    tail. Total length stays k8s-safe (<= 63)."""
+    tail = f"{run_id[-8:]}"
+    return "-".join(p for p in (kind.lower(), hint.lower().strip("-."),
+                                tail) if p)[:63].rstrip("-.")
 # states whose work is OVER — a pod still alive under one of these is a
 # leak (crash between harvest and terminate), never a live task.
 SETTLED = {"done", "failed", "cancelled", "verified", "delivered", "lost"}
@@ -350,8 +363,9 @@ def reap(provider: str = "runpod", *, grace: int | None = None,
     """Idempotent GPU hygiene (SPEC 14): terminate live pods that have NO
     ACTIVE TASK behind them. Rules, in order:
 
-      * only pods named with our trainer- prefix are candidates — other
-        workflows sharing the account are not ours to touch;
+      * only pods OUR naming scheme produced are candidates — kind-first
+        (train-/merge-/onnx-/int8-/awq-) or the legacy trainer- prefix;
+        other workflows sharing the account are not ours to touch;
       * claimed by THIS ledger with an open state -> KEEP (live run;
         terminating it would destroy paid work);
       * claimed by THIS ledger in a settled state -> leak from a crashed
@@ -373,7 +387,7 @@ def reap(provider: str = "runpod", *, grace: int | None = None,
     by_suffix = {r["run_id"][-8:]: r for r in led.list()}
     killed, kept = [], []
     for inst in prov.list_instances():
-        if not inst.alive or not (inst.name or "").startswith(POD_PREFIX):
+        if not inst.alive or not pod_is_ours(inst.name or ""):
             continue
         row = claims.get(inst.id)
         why = ""
