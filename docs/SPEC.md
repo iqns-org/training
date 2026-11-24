@@ -987,3 +987,22 @@ drift; c38f58 float-args; 632689 optimum stack), and the loop broke on
 the first non-capacity error (run_gated) demanding forensics rather than
 burning money retrying a bug that needed a one-line fix. Five ladder
 iterations (v1→v5) closed the class; the final v5 wins on variant #1.
+
+**(v) nano0 SERVE VALIDATION — pipeline complete end to end (2026-11-24).**
+`scripts/nano0-serve-test.sh`: pauses the standing quadra/vllm-qwen3-05
+deployment (the Orin hosts ONE vLLM engine: ~6 GiB of 7.7 GiB unified
+memory), boots the REGISTERED artifact with the SAME cluster-cached
+image (`vllm/vllm-openai:latest` — changed config only: model path via
+hostPath /home/me/models, served name, Qwen-specific parsers dropped),
+waits the readiness gate, curls a real chat completion through the
+OpenAI API, and RESTORES qwen via an EXIT trap regardless of outcome.
+First live result for queer-360m-awq (attempt #20 artifact): coherent
+on-topic completion at 19 tokens/stop via vllm-0.34.0, max-model-len
+4096, gpu-memory-utilization 0.5 — the int4 pack-quantized checkpoint
+serves as designed, ~2x smaller than fp16 and ~half the Orin budget
+qwen's engine uses. THE FULL CHAIN IS GREEN: train -> merge -> onnx ->
+int8 -> awq -> register -> serve, all of it driven from this repo via
+REST/MCP with zero secrets in pods and every artifact sha-verified at
+each hop. Session spend across all 20 attempts + chain: ~$1.20 of the
+prepaid balance; every failed attempt cost cents and left a named
+root cause in its own run.log.
