@@ -11,7 +11,9 @@ def test_tools_registered():
     expected = {"gpu_catalog", "list_recipes", "submit_training",
                 "job_status", "job_logs", "list_runs", "list_pods",
                 "terminate_pod", "doctor", "refresh_corpora", "reconcile",
-                "submit_stage"}
+                "submit_stage", "synth_derive", "synth_abstain",
+                "synth_graph", "synth_audit", "synth_manifest",
+                "synth_bundle", "synth_status"}
     assert expected <= _tool_names()
 
 
@@ -68,3 +70,49 @@ def test_gate_open_mode_needs_explicit_flag(monkeypatch):
     monkeypatch.setenv("MCP_TRAINER_ALLOW_OPEN", "1")
     open_client = TestClient(BearerGate(ok_app, token=""))  # explicit opt-in
     assert open_client.get("/mcp").status_code == 200
+
+
+TTL = ('@PREFIX my: <http://example.org/entity/> .\n'
+       '@PREFIX ai: <http://example.org/property/> .\n'
+       'my:site1 ai:inspectedBy my:inspector7 .\n'
+       'my:inspector7 ai:yearsExp 12 .\n'
+       'my:site1 ai:hasStatus my:Active .\n')
+
+
+def test_synth_tools_chain(tmp_path, monkeypatch):
+    """graph → manifest → bundle entirely through the MCP surface."""
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    ttl = tmp_path / "register.ttl"
+    ttl.write_text(TTL)
+    out = tmp_path / "derived"
+
+    stats = tools["synth_graph"].fn(ttl_path=str(ttl), domain="construction",
+                                    out=str(out))
+    assert stats["templates"] >= 1 and stats["preflight_fail"] == []
+
+    man = tools["synth_manifest"].fn(out=str(out))
+    assert man["corpus_id"].startswith("derived@")
+
+    synth = server._synth()
+    monkeypatch.setattr(synth, "DATA_ROOT", tmp_path)
+    bun = tools["synth_bundle"].fn(domain="cognition", out=str(out))
+    assert bun["rows"] > 0
+    dest = tmp_path / "datasets" / "cognition"
+    tags = {p.stem for p in dest.glob("*.jsonl")}
+    assert {"graph-qa", "abstain"} <= tags
+
+
+def test_synth_graph_rejects_missing_path():
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    r = tools["synth_graph"].fn(ttl_path="/nonexistent/x.ttl")
+    assert "error" in r
+
+
+def test_synth_derive_background_and_status(tmp_path):
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    r = tools["synth_derive"].fn(limit=2, per_code=1, background=True,
+                                 out=str(tmp_path / "d"),
+                                 tmp=str(tmp_path / "t"))
+    assert r["state"] == "running" and r["job"]
+    st = tools["synth_status"].fn(job="")
+    assert r["job"] in st["jobs"]

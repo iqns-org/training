@@ -334,6 +334,19 @@ def run_progress(run_id: str) -> dict:
 
 
 @mcp.tool
+def verify(run_id: str | None = None, live: bool = False,
+           recompute: bool = False) -> dict:
+    """Sanity check one run (default: most recent): does what the pod
+    TRAINED ON match what we THINK it trained on? Cross-checks ledger
+    record -> lane payload -> agent-attested hashes (dataset sha/lines,
+    config, exact image), plus corpora/recipe drift. 'ok' is False iff a
+    leg disagrees. recompute re-expands the domain first (slow, exact).
+    """
+    from orchestrator import provenance
+    return provenance.verify_run(run_id, live=live, recompute=recompute)
+
+
+@mcp.tool
 def wait_for_events(since: float = 0.0, timeout: int = 300,
                    run_id: str | None = None) -> dict:
     """Long-poll the lifecycle feed: blocks until events newer than `since`
@@ -438,6 +451,147 @@ def rebuild_run_index(provider: str = "runpod") -> dict:
     runs this controller never held. The UI's list view is that one
     object — see SPEC 14c."""
     return progress.reindex(provider)
+
+
+# ------------------------------------------------------- synthesis (FRAMEWORK §10)
+
+_SYNTH = None
+_SYNTH_JOBS: dict = {}
+
+
+def _synth():
+    """Lazy-load src/synth.py (the deterministic IR synthesis engine —
+    zero LLM, every artifact oracle-gated before it lands)."""
+    global _SYNTH
+    if _SYNTH is None:
+        import importlib.machinery
+        import importlib.util
+        path = ROOT / "src" / "synth.py"
+        spec = importlib.util.spec_from_file_location(
+            "synth", str(path),
+            loader=importlib.machinery.SourceFileLoader("synth", str(path)))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _SYNTH = mod
+    return _SYNTH
+
+
+def _synth_run(argv: list[str]) -> dict:
+    """Drive synth.main() and return its JSON report (stdout contract)."""
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+        _synth().main(argv)
+    out = buf.getvalue().strip()
+    try:
+        return json.loads(out)
+    except Exception:                                    # noqa: BLE001
+        return {"raw": out[:2000]}
+
+
+@mcp.tool
+def synth_derive(codes: list[str] | None = None, systems: list[str] | None = None,
+                 per_code: int = 4, limit: int = 0, background: bool = True,
+                 out: str | None = None, tmp: str | None = None) -> dict:
+    """P2/P23 mutation synthesis: valid IR → exactly-one-error mutants
+    (15-rule rulebook, E1–E7), emitted as derived invalid-program/repair
+    templates + dpo.jsonl preference pairs. Every template is preflighted
+    by the Pass-1 checker + fixture executor before it lands — yield
+    report in stats. background=True (default): full-corpus runs take
+    minutes; poll synth_status(job_id)."""
+    argv = ["derive", "--per-code", str(per_code), "--limit", str(limit)]
+    if codes:
+        argv += ["--codes", ",".join(codes)]
+    if systems:
+        argv += ["--systems", ",".join(systems)]
+    if out:
+        argv += ["--out", out]
+    if tmp:
+        argv += ["--tmp", tmp]
+    if not background:
+        return _synth_run(argv)
+    job = f"synth-{int(time.time()) % 100000:05d}"
+
+    def _bg() -> None:
+        try:
+            _SYNTH_JOBS[job] = {"state": "done", "stats": _synth_run(argv)}
+        except Exception as e:                           # noqa: BLE001
+            _SYNTH_JOBS[job] = {"state": "error", "error": str(e)[:400]}
+
+    _SYNTH_JOBS[job] = {"state": "running", "argv": argv}
+    threading.Thread(target=_bg, daemon=True, name=job).start()
+    return {"job": job, "state": "running",
+            "note": "poll synth_status(job)"}
+
+
+@mcp.tool
+def synth_abstain(per_code: int = 2, out: str | None = None) -> dict:
+    """P12: NOT-DERIVABLE rows — drop one fact from nl-to-ir graphs and
+    emit a refusal row only where the fixture executor proves the program
+    can no longer derive the answer (0 rows). Anti-hallucination data."""
+    argv = ["abstain", "--per-code", str(per_code)]
+    if out:
+        argv += ["--out", out]
+    return _synth_run(argv)
+
+
+@mcp.tool
+def synth_graph(ttl_path: str, domain: str | None = None,
+                max_facts: int = 50, out: str | None = None) -> dict:
+    """P4/P6/P12 over REAL knowledge: a .ttl file (or directory of them,
+    e.g. rmcp-extract funnel output) becomes graph QA / hop-ladder /
+    abstention scenario templates — every answer is RECOMPUTED by the
+    closed-world fixture executor, never typed. This is the knowledge↔
+    cognition bridge: the same graph teaches facts and reasoning."""
+    if not Path(ttl_path).exists():
+        return {"error": f"no such ttl path: {ttl_path}"}
+    argv = ["graph", ttl_path, "--max-facts", str(max_facts)]
+    if domain:
+        argv += ["--domain", domain]
+    if out:
+        argv += ["--out", out]
+    return _synth_run(argv)
+
+
+@mcp.tool
+def synth_audit() -> dict:
+    """P28/P29/P31 corpus health: template coverage by task family,
+    phrasing-entropy ratios (combinatorial-vs-semantic variety),
+    final-IR near-duplicate pairs, derived inventory."""
+    return _synth_run(["audit"])
+
+
+@mcp.tool
+def synth_manifest(out: str | None = None) -> dict:
+    """Phase-0 kernel lineage: content-address every derived template +
+    the oracle source digests (FRAMEWORK L3: checker changes invalidate
+    downstream rows). Writes derived/manifest.json, returns derived@h."""
+    argv = ["manifest"]
+    if out:
+        argv += ["--out", out]
+    return _synth_run(argv)
+
+
+@mcp.tool
+def synth_bundle(domain: str = "cognition", out: str | None = None) -> dict:
+    """Close the synthesis→training lane: expand all derived templates into
+    $CORPORA_DIR/datasets/<domain>/*.jsonl (diagnosis/repair/abstain/graph)
+    + preference.jsonl, and report the dataset@hash ids the qtrain pipeline
+    consumes. Then submit_training(domain=..., recipe=...)."""
+    argv = ["bundle", "--domain", domain]
+    if out:
+        argv += ["--out", out]
+    return _synth_run(argv)
+
+
+@mcp.tool
+def synth_status(job: str) -> dict:
+    """Result of a background synth job (synth_derive). Also lists live
+    jobs when job is empty."""
+    if not job:
+        return {"jobs": {k: v.get("state") for k, v in _SYNTH_JOBS.items()}}
+    return {"job": job, **_SYNTH_JOBS.get(job, {"state": "unknown"})}
 
 
 # ------------------------------------------------------------------ serve
