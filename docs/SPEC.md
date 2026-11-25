@@ -1336,6 +1336,26 @@ iq-ux prefill synced (SmolLM->Qwen), router persona->kandi, GitHub
 mirror unblocked by the history slim (640MB->784KB pack) and postproc
 builds p-v0.1.0..2 landed success overnight — p-v0.1.3/4 next in
 mirror order; mcp-trainer image cut is newly unblockable.
+
+**(ai) the template trap, corrected (2026-11-25, user catch).** The (ah)
+separation claim was FALSE for systemless clients: `--chat-template` is
+ENGINE-WIDE, so `Qwen/Qwen3.5-0.8B` also received "You are Kandi" and
+answered *as Kandi* ("what should I call you?" -> "Hmph…"). Attempts to
+scope it: per-LoRA `chat_template` PROVEN UNAVAILABLE in this vLLM
+(LoRAModulePath has no such field; comma key=value fails parsing — both
+fail-fast crashloops on nano0, infra `34b08f7`->`a3fdfa2`). Resolution
+shipped: NO engine template — base serves native tokenizer template,
+clean isolation (probe: "I'm Qwen3.5, developed by Tongyi Lab" ✓).
+But the flip side broke: kandi WITHOUT injection answers identity as
+"I am Qwen3.5." — last night's "I'm Kandi" bench was the TEMPLATE, not
+the adapter; voice/style ARE in the weights, the NAME is not (r32 LoRA
+can't touch embeddings, and training used tokenizer_default = no system
+line). Remaining options: (1) data round 2 — direct identity + name-
+paraphrase turns, retrain ~$0.20 (chain already automated; the
+lora_target_modules recipe guard means NO trim step needed next time);
+(2) router persona-lane system-prompt prefill (facade territory,
+identity then lives in routing config); (3) accept roleplay-on-both.
+Recommendation: (1).
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
