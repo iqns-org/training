@@ -1355,7 +1355,18 @@ paraphrase turns, retrain ~$0.20 (chain already automated; the
 lora_target_modules recipe guard means NO trim step needed next time);
 (2) router persona-lane system-prompt prefill (facade territory,
 identity then lives in routing config); (3) accept roleplay-on-both.
-Recommendation: (1).
+Recommendation: (1). **EXECUTED (2026-11-25):** round 2 = corpora
+`075c057` (gen_data_round2.py — 840 bare identity Q&A × 12 ask-voice
+grids, 160 vendor reframes, 1152 mid-thread namings; 2152 conversations,
+zero system roles so the name fires under tokenizer_default = the
+serving shape; +2 graded bench probes name/reframe). Retrain `de3c7d`:
+476/476 steps, loss 0.643 (< v1's 0.678), $0.436 — and the
+`lora_target_modules` recipe guard produced a **372-tensor / 0-visual**
+adapter straight from training (the trim surgery is now structurally
+unnecessary). Merge `5c698d` (base auto-derived, second live use),
+register v2 via the new resumable rsync path (84 MB, one pass), infra
+`1ee73a2` points `--lora-modules` at `queer08b-adapter-v2`, v1 kept for
+30-second rollback.
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
