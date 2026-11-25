@@ -599,21 +599,26 @@ def _sha(path: Path) -> str:
 
 
 def prepare_dataset(domain: str, mini: bool = False,
-                    vol: dict | None = None) -> tuple[str, Path, str]:
+                    vol: dict | None = None) -> tuple[str, Path, str, int]:
     """Run corpus expansion (via prepare-domain), upload to the lane, return
-    (key, local_path, sha256). vol=None -> presign lane; vol dict -> volume
-    lane; vol["local"] set -> host lane."""
+    (key, local_path, sha256, lines). vol=None -> presign lane; vol dict ->
+    volume lane; vol["local"] set -> host lane."""
     subprocess.run([sys.executable, str(ROOT / "bin/prepare-domain"),
                     domain], check=True, capture_output=True, text=True)
     src = ROOT / "tmp" / f"{domain}.jsonl"
     if not src.is_file():
         raise ProviderError(f"prepare-domain produced no {src}")
+    lines = 0
     if mini:
-        lines = src.read_text().splitlines()[:MINI_LINES]
+        all_lines = src.read_text().splitlines()[:MINI_LINES]
         mini_path = src.with_name(f"{domain}.mini.jsonl")
-        mini_path.write_text("\n".join(lines) + "\n")
+        mini_path.write_text("\n".join(all_lines) + "\n")
         src = mini_path
+        lines = len(all_lines)
     sha = _sha(src)
+    if not lines:
+        with open(src, "rb") as f:
+            lines = sum(1 for _ in f)
     key = f"datasets/{domain}/{sha[:16]}/{src.name}"
     data = src.read_bytes()
     if vol and vol.get("local"):
@@ -623,7 +628,7 @@ def prepare_dataset(domain: str, mini: bool = False,
     else:
         storage.ensure_bucket()
         storage.put_object(key, data, "application/x-ndjson")
-    return key, src, sha
+    return key, src, sha, lines
 
 
 def render_config(recipe: Path, overrides: dict, dataset_name: str) -> str:
@@ -810,7 +815,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                    else (lambda k, d, ct="": storage.put_object(k, d, ct)))
     result["lane"] = lane
     try:
-        dataset_key, dataset_path, dataset_sha = prepare_dataset(domain, mini, vol)
+        dataset_key, dataset_path, dataset_sha, dataset_lines = prepare_dataset(
+            domain, mini, vol)
         ov = dict(overrides or {})
         if mini:
             ov.update({"sequence_len": 256, "num_epochs": 1,
@@ -849,6 +855,13 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 "application/json")
         result.update({"dataset_key": dataset_key, "dataset_sha256": dataset_sha,
                        "payload_key": f"runs/{run_id}/payload.json"})
+        # provenance INTO the ledger (SPEC 13ak): the row must exist before
+        # staging (async callers grab the id), so the staged contract is
+        # merged after — dataset sha/lines + exact image bytes. Without
+        # this, "did the pod train on the data we think?" is unanswerable
+        # (de3c7d post-mortem, 2026-11-25).
+        led.merge_spec(run_id, dataset_sha=dataset_sha,
+                       dataset_lines=dataset_lines, image=_image_ref())
         if dry:
             led.update(run_id, state="verified", note=f"dry-run: {lane} lane staged")
             result["dry"] = True
@@ -939,6 +952,13 @@ STAGE_SPECS = {
              # torch 2.6: newer torches dropped the symbolic_opset14
              # symbols optimum 1.x imports; optimum 2.x dropped the
              # exporters extra entirely.
+             # PROBE CLOSED 2026-11-25 (9aea4b + 32606b): for qwen3_5_text
+             # this pin-set is an IMPOSSIBLE triangle — new transformers
+             # breaks optimum 1.x at import (is_tf_available removed),
+             # old transformers cannot LOAD the hybrid config. No pin
+             # reaches optimum's support list at all. Edge target for the
+             # qwen3.5 family is GGUF (SPEC 13al); ONNX here stays for
+             # optimum-era families (smollm2 etc.).
              "prelude": "pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.*'"
                         " && pip install --no-cache-dir -q 'optimum[exporters]<2' onnx"},
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"],
@@ -1147,6 +1167,14 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         put_run(f"runs/{run_id}/payload.json",
                 json.dumps(payload).encode())
         result["payload_key"] = f"runs/{run_id}/payload.json"
+        # same discipline as train (SPEC 13ak): what exact bytes this
+        # stage job was handed, recorded in the ledger spec.
+        led.merge_spec(run_id,
+                       image=_postproc_gpu_image() if spec.get("gpu")
+                       else _postproc_image(),
+                       inputs=[{"name": i.get("name", ""),
+                                "sha256": i.get("sha256", "")}
+                               for i in inputs if i.get("sha256")])
         if dry:
             led.update(run_id, state="verified", note=f"dry stage {kind}")
             result["dry"] = True
