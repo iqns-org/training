@@ -20,6 +20,7 @@ signal.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tarfile
@@ -47,12 +48,22 @@ def _fetch(inp: dict, blob: Path) -> None:
 
 def materialize(payload: dict, work: Path = WORK) -> dict:
     """Write config + dataset + stage inputs under work/, return
-    {run_id, command, outputs_dir, log_path, urls, volume, gate}."""
+    {run_id, command, outputs_dir, log_path, urls, volume, gate,
+    attestation}.
+
+    Attestation (SPEC 13ak): every byte this pod ACCEPTED is hashed here,
+    after the verify-else-raise gates — positive proof, not "absence of
+    complaint". Written to work/attest.json (live /sanity reads it) and
+    carried in the run dict into the manifest at finalize.
+    """
     run_id = payload["run_id"]
+    attest: dict = {"run_id": run_id}
     jobdir = work / "job"
     jobdir.mkdir(parents=True, exist_ok=True)
     if payload.get("config_yaml"):
         (jobdir / "train.yaml").write_text(payload["config_yaml"])
+        attest["config_sha"] = hashlib.sha256(
+            payload["config_yaml"].encode()).hexdigest()
 
     ds = payload.get("dataset") or {}
     if ds:
@@ -65,7 +76,13 @@ def materialize(payload: dict, work: Path = WORK) -> dict:
                 raise ValueError(f"dataset sha mismatch for {dest.name}")
         elif ds.get("url"):                              # presign lane: fetch
             download(ds["url"], dest, sha256=ds.get("sha256"))
+        if dest.is_file():
+            with open(dest, "rb") as f:
+                attest["dataset"] = {"name": dest.name,
+                                     "sha256": sha256_file(dest),
+                                     "lines": sum(1 for _ in f)}
 
+    attest["inputs"] = []
     for inp in payload.get("inputs", []):                # stage jobs
         name = inp.get("name", "in")
         if inp.get("extract"):
@@ -77,22 +94,31 @@ def materialize(payload: dict, work: Path = WORK) -> dict:
                 # doubles the I/O and the stall risk (cae537 boot hang)
                 with tarfile.open(inp["path"]) as tf:
                     tf.extractall(out, filter="data")
+                attest["inputs"].append(
+                    {"name": name, "sha256": sha256_file(Path(inp["path"])),
+                     "extracted": True})
             else:
                 blob = work / "inputs" / f"{name}.tar.gz"
                 _fetch(inp, blob)
                 with tarfile.open(blob) as tf:
                     tf.extractall(out, filter="data")
+                attest["inputs"].append(
+                    {"name": name, "sha256": sha256_file(blob),
+                     "extracted": True})
                 blob.unlink()
         else:
             _fetch(inp, out := work / "inputs" / name)
+            attest["inputs"].append({"name": name, "sha256": sha256_file(out)})
 
     outputs = Path(payload.get("outputs_dir") or work / "outputs" / run_id)
     outputs.mkdir(parents=True, exist_ok=True)
+    (work / "attest.json").write_text(json.dumps(attest, indent=1))
     return {"run_id": run_id, "command": payload["command"],
             "outputs_dir": outputs, "log_path": None,
             "urls": payload.get("urls", {}),
             "volume": payload.get("volume"),
-            "gate": payload.get("gate")}
+            "gate": payload.get("gate"),
+            "attestation": attest}
 
 
 def boot_from_env(work: Path = WORK) -> dict | None:

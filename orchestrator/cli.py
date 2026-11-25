@@ -159,6 +159,28 @@ def cmd_progress(args):
     _print(json.loads(raw))
 
 
+def cmd_verify(args):
+    from . import provenance
+    res = provenance.verify_run(args.run_id, live=args.live,
+                                recompute=args.recompute)
+    if args.json:
+        _print(res)
+    else:
+        print(f"run {res.get('run_id')}  kind={res.get('kind','?')}  "
+              f"state={res.get('state','?')}  "
+              f"agent={res.get('agent_version','') or '?'}")
+        for c in res.get("checks", []):
+            line = (f"  [{c['status']:>4}] {c['check']:<28} "
+                    f"{str(c['expected'])[:24]:>24}  "
+                    f"{str(c['actual'])[:24]}")
+            if c.get("note"):
+                line += f"   # {c['note']}"
+            print(line)
+        if res.get("error"):
+            print("  error:", res["error"])
+    sys.exit(0 if res.get("ok") else 1)
+
+
 def cmd_watch(args):
     from . import progress as prog
     while True:
@@ -520,6 +542,17 @@ def build_parser():
     s.add_argument("--json", dest="json", help="write rows json here")
     s.add_argument("--csv", dest="csv", help="write rows csv here")
     s.set_defaults(func=cmd_bench)
+
+    s = sub.add_parser("verify", help="provenance cross-check: ledger vs "
+                                      "lane payload vs agent attestation "
+                                      "(SPEC 13ak); non-zero exit on FAIL")
+    s.add_argument("run_id", nargs="?", help="default: most recent run")
+    s.add_argument("--live", action="store_true",
+                   help="also ask the running pod /v1/sanity")
+    s.add_argument("--recompute", action="store_true",
+                   help="re-expand the domain now and compare (slow)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_verify)
 
     s = sub.add_parser("reap", help="terminate live GPUs with no active "
                        "task behind them (idempotency hygiene)")

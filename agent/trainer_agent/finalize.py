@@ -103,7 +103,8 @@ def _log_summary(log_path) -> dict:
 def build_manifest(run_id: str, outputs_dir: Path, state: dict,
                    status: str, problems: list[str] | None = None,
                    exclude: tuple | list | None = None,
-                   log_path: Path | None = None) -> dict:
+                   log_path: Path | None = None,
+                   attestation: dict | None = None) -> dict:
     files = {}
     if outputs_dir.is_dir():
         for p in outputs_dir.rglob("*"):
@@ -120,7 +121,7 @@ def build_manifest(run_id: str, outputs_dir: Path, state: dict,
             training["loss"] = summ["loss"]
         if training.get("epoch") is None and "epoch" in summ:
             training["epoch"] = summ["epoch"]
-    return {
+    man = {
         "schema": 2, "run_id": run_id, "status": status,
         "agent_version": __version__,
         "image_tag": os.environ.get("IMAGE_TAG", ""),
@@ -131,6 +132,9 @@ def build_manifest(run_id: str, outputs_dir: Path, state: dict,
         "artifacts": files,
         "problems": problems or [],
     }
+    if attestation is not None:
+        man["attestation"] = attestation
+    return man
 
 
 def _vol_write(src: Path, volume: dict, name: str) -> None:
@@ -145,7 +149,8 @@ def _vol_write(src: Path, volume: dict, name: str) -> None:
 
 def finalize(run_id: str, outputs_dir: Path, state: dict, log_path: Path,
              urls: dict[str, str], volume: dict | None = None,
-             gate_spec: dict | None = None) -> dict:
+             gate_spec: dict | None = None,
+             attestation: dict | None = None) -> dict:
     """Gate → pack → publish artifacts/manifest/log via the payload's lane
     (presigned URLs and/or mounted volume). Manifest LAST = completion
     signal. gate_spec overrides required files/excludes for stage jobs.
@@ -154,7 +159,8 @@ def finalize(run_id: str, outputs_dir: Path, state: dict, log_path: Path,
     exclude = (gate_spec or {}).get("exclude_dirs", EXCLUDE_DIRS)
     manifest = build_manifest(run_id, outputs_dir, state,
                               "succeeded" if ok else "failed", problems,
-                              exclude, log_path=log_path)
+                              exclude, log_path=log_path,
+                              attestation=attestation)
     mpath = Path(outputs_dir).parent / "manifest.json"
     mpath.write_text(json.dumps(manifest, indent=1))
 

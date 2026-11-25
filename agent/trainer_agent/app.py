@@ -6,6 +6,7 @@ One active job per pod; ``POST /v1/jobs`` 409s while one runs.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import subprocess
@@ -72,6 +73,23 @@ def info():
             "gpu": gpu, "workdir": os.environ.get("AGENT_WORKDIR", "/work")}
 
 
+@_app.get("/v1/sanity", dependencies=[Depends(_auth)])
+def sanity():
+    """Live provenance while a job runs (SPEC 13ak): exact image/agent
+    bytes + the hashes materialize accepted. `qtrain verify --live` reads
+    this and cross-checks against the ledger's staged contract."""
+    att = None
+    try:
+        p = joblane.WORK / "attest.json"
+        if p.is_file():
+            att = json.loads(p.read_text())
+    except Exception:                          # unreadable mid-write
+        att = {"error": "attest.json unreadable"}
+    return {"agent_version": __version__,
+            "image_tag": os.environ.get("IMAGE_TAG", ""),
+            "attestation": att}
+
+
 @_app.post("/v1/jobs", dependencies=[Depends(_auth)])
 def start_job(req: JobRequest):
     global _active
@@ -120,7 +138,7 @@ def start_boot_job() -> None:
                     post_hook=lambda state: finalize(
                         run["run_id"], run["outputs_dir"], state,
                         runner.log_path, run["urls"], run.get("volume"),
-                        run.get("gate")))
+                        run.get("gate"), attestation=run.get("attestation")))
     runner.start()
     runner.start_heartbeat(volume=run.get("volume"), urls=run["urls"])
     _active = runner

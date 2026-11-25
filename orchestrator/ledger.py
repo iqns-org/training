@@ -84,6 +84,21 @@ class Ledger:
         rows = self.db.execute(q + " ORDER BY created_at", args).fetchall()
         return [dict(r) for r in rows]
 
+    def merge_spec(self, run_id: str, **fields) -> None:
+        """Amend spec_json AFTER create(). The ledger row must register
+        early (async callers grab the run_id before staging finishes),
+        but provenance — dataset sha/lines, exact image — only exists
+        once staging is done. Never rewrite existing keys' semantics;
+        additive fields only (SPEC 13ak)."""
+        row = self.get(run_id)
+        if not row:
+            raise KeyError(f"no run {run_id}")
+        spec = json.loads(row["spec_json"])
+        spec.update(fields)
+        self.db.execute("UPDATE runs SET spec_json=?, updated_at=? WHERE run_id=?",
+                        (json.dumps(spec, default=str), time.time(), run_id))
+        self.db.commit()
+
     def update(self, run_id: str, state: str | None = None, **fields) -> None:
         sets, args = [], []
         if state:
