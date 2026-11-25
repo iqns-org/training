@@ -1000,6 +1000,57 @@ def cmd_graph(args):
                 stats["templates"] += 1
             else:
                 stats["preflight_fail"].append(rec["id"])
+        # CFKG (REGIMES R2): counterfactual edits — rewrite ONE fact, the
+        # right answer is what the EDITED graph says, never what memory
+        # says. Trains graph-reading over parametric priors — the skill
+        # that makes retrieval-grounded serving actually hold (legal/
+        # construction facts CHANGE). Alt values preserve the literal type
+        # so the fixture's typed assert comparison holds.
+        qnames = sorted({o for _s, _p, o, native in facts if native is None})
+        cf_entries = []
+        for i, (s, p, o_ir, native) in enumerate(facts[:args.max_facts]):
+            if native is None:                       # qname object
+                pool = [q for q in qnames if q != o_ir]
+                alt = alt_ir = pool[i % len(pool)] if pool else f"my:cf{i}"
+            elif isinstance(native, bool):
+                alt = not native
+                alt_ir = "true" if alt else "false"
+            elif isinstance(native, (int, float)):
+                alt = native + 100
+                alt_ir = str(alt)
+            else:                                    # string literal
+                alt = f"{native}-cf"
+                alt_ir = f'"{alt}"'
+            edited = [t if k != i else (s, p, alt_ir,
+                                        None if native is None else alt)
+                      for k, t in enumerate(facts)]
+            cf_entries.append({"ctx": ttl_context(prefix_lines, edited),
+                               "subj": s, "pred": p, "obj": alt,
+                               "orig": o_ir, "slabel": label(s),
+                               "plabel": label(p)})
+        if cf_entries:
+            rec = make_template("nl-to-ir", f"graph.{domain}.{stem}--cfkg",
+                                "CFKG", [
+                {"role": "assistant", "content": "{domain.ctx}"},
+                {"role": "user", "content": "{phrasing}"},
+                {"role": "assistant", "content":
+                 "READ WORLD {domain.subj} {domain.pred} my:?v . ONE.\n"
+                 "RETURN my:?v."},
+            ], {"valid": True, "returned": "{domain.obj}",
+                "world_add": [], "world_delete": [],
+                "memory_add": [], "memory_delete": [], "emitted": []})
+            rec["id"] = f"graph/{domain}/{stem}--cfkg"
+            rec["comment"] = (f"counterfactual graph edits over {f.name}@"
+                              f"{gsha} (REGIMES R2): answer follows the "
+                              f"EDITED graph, never memory")
+            rec["variants"] = {"domain": cf_entries, "phrasing": QA_PHRASINGS}
+            if _verify_scenario(rec):
+                write_template(rec, out_root)
+                stats["templates"] += 1
+                stats["counterfactuals"] = stats.get("counterfactuals", 0) \
+                    + len(cf_entries)
+            else:
+                stats["preflight_fail"].append(rec["id"])
         # abstain: remove each fact, the lookup must stop being derivable
         ab_entries = []
         for i, (s, p, o, native) in enumerate(facts[:args.max_facts]):
@@ -1168,7 +1219,11 @@ def cmd_bundle(args):
         sysname = rec["system"]
         gid = rec["id"]
         if "graph" in gid:
-            tag = "graph-qa" if sysname == "nl-to-ir" else sysname
+            # split graph-bridge families by id suffix (qa/hops/cfkg)
+            tag = ("graph-qa" if gid.endswith("--qa")
+                   else "graph-hops" if gid.endswith("--hops")
+                   else "counterfactual" if gid.endswith("--cfkg")
+                   else sysname)
         else:
             tag = BUNDLE_MAP.get(sysname, sysname)
         rows = buckets.setdefault(tag, [])
@@ -1182,13 +1237,30 @@ def cmd_bundle(args):
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         written[tag] = {"rows": len(rows),
                         "sha256": hashlib.sha256(out.read_bytes()).hexdigest()[:16]}
-    # P23 preference pairs ride along (DPO/ORPO loader consumes separately)
+    # P23 preference pairs: axolotl chat_preference format ({chosen,
+    # rejected}) written into a SEPARATE dataset domain — prepare-domain
+    # merges every jsonl under datasets/<domain>/, so preference rows
+    # must never live beside the SFT envelopes (REGIMES R1; qtrain
+    # submit --domain cognition-dpo + a pref_datasets recipe).
     dpo = Path(args.dpo) if getattr(args, "dpo", None) else TMP / "dpo.jsonl"
     if dpo.is_file():
-        (dest / "preference.jsonl").write_text(dpo.read_text())
-        written["preference"] = {"rows": len(dpo.read_text().splitlines()),
-                                 "sha256": hashlib.sha256(
-                                     dpo.read_bytes()).hexdigest()[:16]}
+        pdest = DATA_ROOT / "datasets" / f"{domain}-dpo"
+        pdest.mkdir(parents=True, exist_ok=True)
+        with (pdest / "preference.jsonl").open("w") as fh:
+            n = 0
+            for line in dpo.read_text().splitlines():
+                if not line.strip():
+                    continue
+                pair = json.loads(line)
+                fh.write(json.dumps({
+                    "chosen": pair["messages"],
+                    "rejected": pair["rejected"]["messages"],
+                }, ensure_ascii=False) + "\n")
+                n += 1
+        written["preference->" + f"{domain}-dpo"] = {
+            "rows": n,
+            "sha256": hashlib.sha256(
+                (pdest / "preference.jsonl").read_bytes()).hexdigest()[:16]}
     total = sum(w["rows"] for w in written.values())
     print(json.dumps({"dataset": f"{domain}@{hashlib.sha256(str(sorted(written.items())).encode()).hexdigest()[:16]}",
                       "path": str(dest), "files": written, "rows": total},

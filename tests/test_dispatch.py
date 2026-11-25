@@ -48,6 +48,22 @@ def test_render_config_rewrites_paths(recipe):
     assert out["load_in_4bit"] is True
 
 
+def test_render_config_preference_lane(tmp_path):
+    """R1: pref_datasets recipes mount the domain file into the PREF slot
+    and never fabricate an SFT datasets entry (axolotl chat_preference
+    reads chosen/rejected)."""
+    r = tmp_path / "dpo.yaml"
+    r.write_text(yaml.safe_dump({
+        "base_model": "Qwen/Qwen3.5-0.8B",
+        "beta": 0.1,
+        "pref_datasets": [{"path": "./datasets/cognition-dpo.jsonl",
+                           "type": "chat_preference"}],
+    }))
+    out = yaml.safe_load(dispatch.render_config(r, {}, "cognition-dpo.jsonl"))
+    assert out["pref_datasets"][0]["path"] == "/work/datasets/cognition-dpo.jsonl"
+    assert "datasets" not in out
+
+
 def test_submit_dry_stages_objects(tmp_path, monkeypatch, fake_s3, recipe):
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
     (tmp_path / "tmp").mkdir()

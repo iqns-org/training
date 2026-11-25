@@ -634,7 +634,15 @@ def prepare_dataset(domain: str, mini: bool = False,
 def render_config(recipe: Path, overrides: dict, dataset_name: str) -> str:
     cfg = yaml.safe_load(recipe.read_text())
     name = f"/work/datasets/{dataset_name}"
-    if cfg.get("datasets"):
+    if cfg.get("pref_datasets"):
+        # preference regimes (DPO/ORPO/SimPO, REGIMES R1): the domain file
+        # IS the preference set (synth bundle writes datasets/<domain>-dpo
+        # exclusively) — mount it into the pref slot, never invent an SFT
+        # datasets entry (axolotl reads chosen/rejected fields).
+        cfg["pref_datasets"][0]["path"] = name
+        cfg["pref_datasets"] = [cfg["pref_datasets"][0]]
+        cfg.pop("datasets", None)
+    elif cfg.get("datasets"):
         cfg["datasets"][0]["path"] = name
         cfg["datasets"] = [cfg["datasets"][0]]
     else:

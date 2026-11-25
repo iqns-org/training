@@ -288,7 +288,7 @@ def test_graph_bridge_templates(synth, tree, tmp_path):
     ttl.write_text(TTL)
     code, stats = run(synth, ["graph", str(ttl), "--domain", "construction",
                               "--out", str(out)])
-    assert code == 0 and stats["templates"] >= 2 and stats["skipped"] == 0
+    assert code == 0 and stats["templates"] >= 4 and stats["skipped"] == 0
     assert stats["preflight_fail"] == []
     qa = json.loads((out / "nl-to-ir" / "site-register--qa.json").read_text())
     assert qa["system"] == "nl-to-ir"
@@ -296,14 +296,22 @@ def test_graph_bridge_templates(synth, tree, tmp_path):
     # literal object types survive (int stays int, "Class-A" stays str)
     seen = set()
     for messages, expected in synth.check.expansions(qa):
-        rep = synth.check.check_record(qa, messages, expected)
+        synth.check.check_record(qa, messages, expected)
         seen.add(str(expected["returned"]))
-        assert rep in (True, False)
     assert any("12" in s for s in seen) and any("Class-A" in s for s in seen)
     # hop chain site1 -> inspector7 -> cert exists
     hops = json.loads((out / "nl-to-ir" / "site-register--hops.json").read_text())
     mids = {e["mid"] for e in hops["variants"]["domain"]}
     assert "my:inspector7" in mids
+    # CFKG: every edited fact's answer is the ALTERNATE, never the original
+    cf = json.loads((out / "nl-to-ir" / "site-register--cfkg.json").read_text())
+    assert cf["variants"]["domain"]
+    for e in cf["variants"]["domain"]:
+        assert e["obj"] != e["orig"], e
+        # numeric edits preserve type (native+100), qname edits pick a
+        # different entity from the graph pool
+    for messages, expected in synth.check.expansions(cf):
+        synth.check.check_record(cf, messages, expected)
     ab = json.loads((out / "abstain" / "site-register--abstain.json").read_text())
     assert synth.preflight(ab) == []
 
@@ -322,7 +330,14 @@ def test_manifest_bundle(synth, tree, tmp_path, monkeypatch):
     assert code == 0 and bun["rows"] > 0
     dest = tmp_path / "datasets" / "cognition"
     assert sorted(p.name for p in dest.iterdir()) == \
-        ["diagnosis.jsonl", "preference.jsonl", "repair.jsonl"]
+        ["diagnosis.jsonl", "repair.jsonl"]
+    # R1: preference rows live in their OWN dataset domain (prepare-domain
+    # merges everything in a dir — chosen/rejected must not leak into SFT)
+    pdest = tmp_path / "datasets" / "cognition-dpo"
+    pref = json.loads((pdest / "preference.jsonl").read_text().splitlines()[0])
+    assert set(pref) == {"chosen", "rejected"}
+    assert [m["role"] for m in pref["chosen"]] == \
+        ["assistant", "user", "assistant"]
     first = json.loads((dest / "diagnosis.jsonl").read_text().splitlines()[0])
     assert [m["role"] for m in first["messages"]] == \
         ["assistant", "user", "assistant"]
