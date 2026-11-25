@@ -229,6 +229,10 @@ not build a new service. Tool surface (agents + humans, same API):
 ingest.put(path|url, domain)        ingest.status            graphs.query(ttl@h|domain, ASK/SPARQL-ish)   [planned: needs rmcp-extract wiring]
 rules.list/get/propose              vocab.get/propose                                                          [planned]
 synth.derive(codes,systems,…)       synth.abstain(…)      synth.graph(ttl_path,domain,…)     [SHIPPED]
+synth.equiv() — P5 mining           synth.conflict(a,b) — P19 mining                          [SHIPPED]
+synth.gbnf() — R3 grammar export    synth.sample(url,k,…) — R4 student RFT                    [SHIPPED]
+synth.grade(jsonl) — R7 reward fct   synth.gaps(bench) — P7 propose step                       [SHIPPED]
+synth.merge(base,adapters) — R6 cfg  synth.mix(sources,rows,seed,name) — R5 grid prim          [SHIPPED]
 synth.manifest() → derived@h        synth.audit()         synth.bundle(domain) → <domain>@h  [SHIPPED]
 synth.status(job) — background jobs [SHIPPED]
 dataset.build(domain) → h           dataset.audit(h)       # token stats, ratio floors, lineage (L2)
@@ -340,21 +344,51 @@ bin/synth derive [--codes a,b] [--systems a,b] [--per-code N] [--limit N]
 bin/synth abstain                # P12 NOT-DERIVABLE rows (anti-hallucination)
 bin/synth graph <ttl|dir> [--domain d]
     # P4/P6/P12 knowledge↔cognition bridge: turtle facts → graph-qa /
-    # hop-ladder / abstention templates; asserts RECOMPUTED by the fixture
-    # executor (never typed)
+    # hop-ladder / counterfactual (R2 CFKG, typed edits) / abstention
+    # templates; asserts RECOMPUTED by the fixture executor (never typed)
+bin/synth equiv [--max-pairs N]
+    # P5 equivalence mining: uniform renames (EQUIVALENT) + observable
+    # line deletions (DIFFERENT); the fixture executor COMPUTES verdicts
+    # by comparing full execution deltas; undecidables counted & dropped
+bin/synth conflict <base.ttl> <rev.ttl>
+    # P19 contradiction mining: same (s,p), different objects across
+    # sources → CONFLICT rows citing both files (memory governance)
+bin/synth gbnf [--root response|document] [--out f]
+    # R3 grammar export (src/ir-gbnf.py: one rule per line, lexer-pinned
+    # facts — ops are = != < only; 130/130 property-test parse rate)
+bin/synth sample --url <openai-endpoint> [--model m --k 4 --limit n]
+    # R4 student-side RFT: serve → sample k → fleet-contract grade → keep
+    # passes only; yield = the recursion's before/after meter (live nano0
+    # baseline on the base model: 0.0 — rises with every trained round)
+bin/synth grade <jsonl> [--out reward.jsonl]
+    # R7 harness: offline (s, r) reward pairs via the same contract — the
+    # exact function the GRPO loop calls; gold-side agreement 821/821
+bin/synth mix --sources d:w,d:w --rows n --seed s --name X
+    # R5 seeded weighted mix of PREPARED datasets → datasets/X/{mix.jsonl
+    #   ,mix.manifest.json}; the mixing-law experiment primitive
+bin/synth gaps --bench bench.json
+    # P7/R10: failed bench probes → targeted `derive --codes` proposals
+    # (the loop's propose step; scheduling it into a PR bot is pending)
+bin/synth merge --base B --adapters a,b [--method ties|dare_ties|slerp]
+    # R6 mergekit config generation (postproc/merge_loras.py) — compose
+    # axis LoRAs offline into one adapter; pod-exec pending run volume
 bin/synth rows [--task t]        # expand derived templates → jsonl
 bin/synth manifest               # derived@h + oracle digests (L2/L3 lineage)
 bin/synth bundle --domain cognition
     # derived → $CORPORA_DIR/datasets/cognition/{diagnosis,repair,abstain,
-    # graph-qa,preference}.jsonl → dataset@h → bin/prepare-domain → S3 →
-    # qtrain submit. End-to-end proven: cognition@4006d94f, 6409 rows.
+    # graph-qa,graph-hops,counterfactual,equivalence,conflict}.jsonl +
+    # datasets/cognition-dpo/preference.jsonl → dataset@h →
+    # bin/prepare-domain → S3 → qtrain submit. Proven live:
+    # cognition@e184c8de 9,865 rows + cognition-dpo 821 pairs.
 bin/synth audit                  # P28 near-dup + phrasing entropy, P29
                                  # coverage matrix, P3 re-check
 ```
 
 MCP parity: `synth_derive` (background jobs + `synth_status`),
-`synth_abstain`, `synth_graph`, `synth_audit`, `synth_manifest`,
-`synth_bundle` — the outer loop is agent-drivable from here.
+`synth_abstain`, `synth_graph`, `synth_equiv`, `synth_conflict`,
+`synth_gbnf`, `synth_sample`, `synth_grade`, `synth_mix`, `synth_gaps`,
+`synth_merge`, `synth_audit`, `synth_manifest`, `synth_bundle` — the
+outer loop is agent-drivable end to end.
 
 **Known rulebook gaps:** `E1_BAD_VARIABLE`, `E1_BAD_CARDINALITY`,
 `E6_UNKNOWN_STATEMENT`, `E6_BAD_SCOPE` are **unreachable from text

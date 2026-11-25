@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from mcp_trainer import server
 
@@ -13,7 +14,9 @@ def test_tools_registered():
                 "terminate_pod", "doctor", "refresh_corpora", "reconcile",
                 "submit_stage", "synth_derive", "synth_abstain",
                 "synth_graph", "synth_audit", "synth_manifest",
-                "synth_bundle", "synth_status"}
+                "synth_bundle", "synth_status", "synth_sample",
+                "synth_mix", "synth_grade", "synth_gaps", "synth_gbnf",
+                "synth_merge"}
     assert expected <= _tool_names()
 
 
@@ -116,3 +119,29 @@ def test_synth_derive_background_and_status(tmp_path):
     assert r["state"] == "running" and r["job"]
     st = tools["synth_status"].fn(job="")
     assert r["job"] in st["jobs"]
+
+
+def test_synth_closeout_tools(tmp_path):
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    r = tools["synth_gbnf"].fn(out=str(tmp_path / "ir.gbnf"))
+    assert r["undefined_refs"] == [] and (tmp_path / "ir.gbnf").is_file()
+    bench = tmp_path / "b.json"
+    bench.write_text(json.dumps({"rows": [
+        {"model": "m", "question": "ir-repair", "passed": False}]}))
+    g = tools["synth_gaps"].fn(bench_path=str(bench))
+    assert g["failing"] == 1 and g["gaps"][0]["commands"]
+    mg = tools["synth_merge"].fn(base="Qwen/Qwen3.5-0.8B",
+                                 adapters="/models/a,/models/b",
+                                 method="dare_ties", density=0.3)
+    assert mg["merge_method"] == "dare_ties" and len(mg["models"]) == 3
+
+
+def test_synth_gbnf_and_gaps_tools(tmp_path):
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    r = tools["synth_gbnf"].fn(out=str(tmp_path / "ir.gbnf"))
+    assert r["undefined_refs"] == [] and (tmp_path / "ir.gbnf").is_file()
+    bench = tmp_path / "b.json"
+    bench.write_text(json.dumps({"rows": [
+        {"model": "m", "question": "ir-repair", "passed": False}]}))
+    g = tools["synth_gaps"].fn(bench_path=str(bench))
+    assert g["failing"] == 1 and g["gaps"][0]["commands"]

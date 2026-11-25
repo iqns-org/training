@@ -1168,6 +1168,466 @@ def cmd_audit(args):
     return 0
 
 
+# ── R4: student-side RFT sampling + grading (the recursion half) ──────
+#
+# Prompts come from derived templates (first+user, gold hidden); the
+# served model answers; a completion is KEPT only if the same fleet
+# contract that gates every corpus artifact accepts it (check_record /
+# NOT-DERIVABLE verdict). Teacher-independent; content-addressed when
+# bundled.
+
+import random
+import urllib.request
+
+
+def http_json(url, payload, timeout=120):
+    """Minimal OpenAI-compatible POST (bench.py's seam, no streaming)."""
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def grade_completion(rec, messages, expected, completion):
+    """Student-side oracle: build [a,u,a] with the completion as the final
+    assistant turn and run the fleet's own record contract over it.
+    prose-verdict families (abstain/conflict) are graded on the verdict
+    phrase; everything else must satisfy check_record exactly."""
+    try:
+        trial = messages[:2] + [{"role": "assistant", "content": completion}]
+        if rec["system"] == "abstain":
+            return ("NOT DERIVABLE" in completion.upper(), "abstain verdict")
+        if rec["system"] == "conflict":
+            return ("CONFLICT" in completion.upper(), "conflict verdict")
+        check.check_record(rec, trial, expected)
+        return True, "oracle pass"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:140]}"
+
+
+def cmd_sample(args):
+    if not args.url:
+        print(json.dumps({"error": "sample needs --url <openai-endpoint>"}))
+        return 1
+    roots = ([Path(args.out)] if args.out else [SCEN_ROOT, DERIVED_ROOT])
+    tmp = TMP / "rft"
+    tmp.mkdir(parents=True, exist_ok=True)
+    stats = {"prompts": 0, "sampled": 0, "kept": 0, "by_family": {},
+             "errors": []}
+    rows_path = tmp / "rft.jsonl"
+    paths = [p for r in roots if r.is_dir()
+             for p in sorted(r.rglob("*.json")) if p.name != "manifest.json"]
+    with rows_path.open("w") as fh:
+        for path in paths:
+            rec = json.loads(path.read_text())
+            if args.task and rec["system"] != args.task:
+                continue
+            for messages, expected in check.expansions(rec):
+                if stats["prompts"] >= args.limit:
+                    break
+                prompt = messages[:2]
+                stats["prompts"] += 1
+                for _ in range(args.k):
+                    try:
+                        resp = http_json(
+                            args.url.rstrip("/") + "/chat/completions",
+                            {"model": args.model, "messages": prompt,
+                             "temperature": args.temperature,
+                             "max_tokens": args.max_tokens})
+                        completion = (resp["choices"][0]["message"]
+                                      ["content"] or "").strip()
+                    except Exception as exc:
+                        stats["errors"].append(str(exc)[:120])
+                        continue
+                    if not completion:
+                        continue
+                    stats["sampled"] += 1
+                    ok, _why = grade_completion(rec, messages, expected,
+                                                completion)
+                    if ok:
+                        stats["kept"] += 1
+                        fam = ("graph-" if "graph" in rec["id"]
+                               else "") + rec["system"]
+                        stats["by_family"][fam] = \
+                            stats["by_family"].get(fam, 0) + 1
+                        fh.write(json.dumps({"messages": messages[:2] + [
+                            {"role": "assistant", "content": completion}]},
+                            ensure_ascii=False) + "\n")
+            if stats["prompts"] >= args.limit:
+                break
+    stats["yield"] = round(stats["kept"] / max(1, stats["sampled"]), 3)
+    if args.dataset:
+        dest = DATA_ROOT / "datasets" / args.dataset
+        dest.mkdir(parents=True, exist_ok=True)
+        out = dest / "rft.jsonl"
+        out.write_text(rows_path.read_text())
+        stats["dataset"] = (f"{args.dataset}@" +
+                            hashlib.sha256(out.read_bytes()).hexdigest()[:16])
+    print(json.dumps(stats, indent=1, ensure_ascii=False))
+    return 0
+
+
+# ── R5: data-mixing regression (grid primitive) ───────────────────────
+
+def cmd_mix(args):
+    """Weighted merge of PREPARED domain files (run bin/prepare-domain on
+    each source first) into a reproducible, seeded, content-addressed
+    dataset — the mixing-law experiment primitive (REGIMES R5)."""
+    spec = []
+    for part in args.sources.split(","):
+        name, _, w = part.partition(":")
+        spec.append((name.strip(), float(w) if w else 1.0))
+    total = sum(w for _n, w in spec) or 1
+    rng = random.Random(args.seed)
+    pools = {}
+    for name, _w in spec:
+        src = ROOT / "tmp" / f"{name}.jsonl"
+        if not src.is_file():
+            print(json.dumps({"error": f"no prepared file {src} — run "
+                                       f"bin/prepare-domain {name} first"}))
+            return 1
+        pools[name] = [l for l in src.read_text().splitlines() if l.strip()]
+    rows = []
+    for name, w in spec:
+        take = int(round(args.rows * w / total))
+        pool = pools[name]
+        if not pool:
+            continue
+        if take <= len(pool):
+            idx = rng.sample(range(len(pool)), take)
+            rows.extend(pool[i] for i in idx)
+        else:
+            rows.extend(pool[rng.randrange(len(pool))] for _ in range(take))
+    rng.shuffle(rows)
+    rows = rows[:args.rows]
+    dest = DATA_ROOT / "datasets" / args.name
+    dest.mkdir(parents=True, exist_ok=True)
+    out = dest / "mix.jsonl"
+    out.write_text("".join(l + "\n" for l in rows))
+    manifest = {"mix": f"{args.name}@{hashlib.sha256(out.read_bytes()).hexdigest()[:16]}",
+                "seed": args.seed, "rows": len(rows),
+                "weights": {n: round(w / total, 4) for n, w in spec},
+                "sources": {n: hashlib.sha256(
+                    (ROOT / "tmp" / f"{n}.jsonl").read_bytes()).hexdigest()[:16]
+                    for n, _ in spec}}
+    (dest / "mix.manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
+    print(json.dumps(manifest, indent=1))
+    return 0
+
+
+# ── R6/R7/P5/P19 close-out: gbnf, grade, gaps, merge, equiv, conflict ─
+#
+# All deterministic, all oracle-decided: gbnf emits the R3 grammar (via
+# src/ir-gbnf.py, property-tested there); grade is the fleet contract as
+# an offline RLVR reward function (R7 harness); gaps turns bench failures
+# into targeted synthesis proposals (P7/R10); merge wraps
+# postproc/merge_loras.py (R6); equiv and conflict mine two new families
+# (P5 equivalence pairs, P19 dual-source contradictions) whose verdicts
+# are COMPUTED by the fixture executor, never typed.
+
+def cmd_gbnf(args):
+    g = _load("ir_gbnf_cli", "ir-gbnf.py")
+    text = g.build(args.root)
+    refs = g.check_refs(text)
+    res = {"root": args.root, "rules": text.count("::="),
+           "undefined_refs": refs, "grammar": text}
+    if args.out:
+        Path(args.out).write_text(text)
+        res["out"] = args.out
+        res.pop("grammar", None)
+    print(json.dumps(res, ensure_ascii=False))
+    return 0
+
+
+def _grade_index(roots):
+    """(first, user) -> (record, expanded messages, expected): the prompt
+    space students are asked in — the curated scenario tree (gold
+    programs) AND the derived tree (mutants/verdicts), so any completion
+    anywhere in the loop grades against the fleet's own record contract."""
+    index = {}
+    for root in roots:
+        if not Path(root).is_dir():
+            continue
+        for path in sorted(Path(root).rglob("*.json")):
+            if path.name == "manifest.json":
+                continue
+            try:
+                rec = json.loads(path.read_text())
+            except Exception:
+                continue
+            if rec.get("system") not in ("nl-to-ir", "valid-program",
+                                         "program-transform", "semantic-edit",
+                                         "program-completion", "repair",
+                                         "invalid-program", "abstain",
+                                         "conflict", "equivalence"):
+                continue
+            for messages, expected in check.expansions(rec):
+                index.setdefault((messages[0]["content"],
+                                  messages[1]["content"]),
+                                 (rec, messages, expected))
+    return index
+
+
+def cmd_grade(args):
+    """R7 harness: offline grade of {messages} jsonl rows — the exact
+    (prompt -> s in {0,1}) reward pairs a GRPO loop reuses, without any
+    model weights."""
+    roots = [Path(args.derived)] if args.derived else [SCEN_ROOT, DERIVED_ROOT]
+    index = _grade_index(roots)
+    rows = [l for l in Path(args.path).read_text().splitlines() if l.strip()]
+    graded = kept = unmatched = 0
+    out_rows = []
+    for line in rows:
+        row = json.loads(line)
+        msgs = row["messages"]
+        key = (msgs[0]["content"], msgs[1]["content"])
+        hit = index.get(key)
+        if hit is None:
+            unmatched += 1
+            out_rows.append({**row, "s": 0, "why": "unmatched prompt"})
+            continue
+        rec, exp_msgs, expected = hit
+        ok, why = grade_completion(rec, exp_msgs, expected, msgs[-1]["content"])
+        graded += 1
+        kept += ok
+        out_rows.append({**row, "s": 1 if ok else 0, "why": why})
+    if args.out:
+        Path(args.out).write_text(
+            "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out_rows))
+    print(json.dumps({"graded": graded, "kept": kept, "unmatched": unmatched,
+                      "yield": round(kept / max(1, graded), 3),
+                      "out": args.out}, indent=1))
+    return 0
+
+
+GAP_COMMANDS = {
+    "ir-translate": ["synth derive --systems nl-to-ir",
+                     "synth graph <ttl> --domain <d>"],
+    "ir-diagnose": ["synth derive --codes E1_DUP_PREFIX,E1_DUP_TYPE,"
+                    "E1_DUP_CAPABILITY,E1_DUP_EVENT,E1_DUP_PLAN,"
+                    "E1_DUP_PROJECTION,E7_EFFECT_IN_PROJECTION"],
+    "ir-repair": ["synth derive --codes E2_UNBOUND,E3_REDEFINE,"
+                  "E3_USE_BEFORE_DEF,E5_CARD_MISMATCH,E6_UNREACHABLE,"
+                  "E6_PARALLEL_ARITY,E6_BAD_TIMEOUT,E7_IMMUTABLE_SCOPE"],
+    "abstain": ["synth abstain --per-code 3", "synth graph <ttl> --domain <d>"],
+    "json-guard": ["bin/expand <domain>  # format-fixture floors (P8)"],
+    "ir-emit": ["synth derive --codes E7_EFFECT_IN_PROJECTION,E1_DUP_EVENT"],
+}
+
+
+def cmd_gaps(args):
+    """P7/R10: failed bench questions -> targeted synthesis proposals
+    (the loop's propose step). Input: `qtrain bench --json` output."""
+    bench = json.loads(Path(args.bench).read_text())
+    rows = bench.get("rows", bench if isinstance(bench, list) else [])
+    failing = [r for r in rows if not r.get("passed", True)]
+    gaps = {}
+    for r in failing:
+        q = r.get("question", "?")
+        g = gaps.setdefault(q, {"question": q, "models": [],
+                                "commands": GAP_COMMANDS.get(q, [
+                                    "synth derive",
+                                    "bin/ir-scenarios  # manual curriculum"])})
+        g["models"].append(r.get("model", "?"))
+    print(json.dumps({"failing": len(failing), "rows": len(rows),
+                      "gaps": list(gaps.values())}, indent=1,
+                     ensure_ascii=False))
+    return 0
+
+
+def cmd_merge(args):
+    """R6: mergekit config generation (postproc/merge_loras.py)."""
+    spec = importlib.util.spec_from_file_location(
+        "merge_loras", ROOT / "postproc" / "merge_loras.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    adapters = [a.strip() for a in args.adapters.split(",") if a.strip()]
+    cfg = m.gen_merge_config(args.base, adapters, args.method, args.density,
+                             out_path=(args.out if args.out != "-"
+                                       else "./merged"))
+    if args.out and args.out != "-":
+        Path(args.out).write_text(json.dumps(cfg, indent=1) + "\n")
+        print(json.dumps({"out": args.out, "adapters": len(adapters),
+                          "method": args.method, "density": args.density}))
+    else:
+        print(json.dumps(cfg, indent=1))
+    return 0
+
+
+def _run_program(ctx_text, program):
+    """Execution delta of a program under a context, or None when the
+    fixture cannot decide deterministically (same honesty law)."""
+    doc, rep = validate(ctx_text)
+    if rep is None or not rep["valid"] or rep["warnings"]:
+        return None
+    try:
+        combined = check.document(check.context_nodes(doc)
+                                  + ir.parse(program)["body"])
+        delta = check.Fixture().run(combined)
+    except Exception:
+        return None
+    return {k: (sorted(v, key=repr) if isinstance(v, list) else v)
+            for k, v in delta.items()}
+
+
+def _preflight_equivalence(rec):
+    try:
+        for messages, _expected in check.expansions(rec):
+            check.check_record(rec, messages, {"valid": True})
+        return True
+    except Exception:
+        return False
+
+
+EQUIV_PHRASINGS = [
+    "Are these programs equivalent? Answer with the verdict.",
+    "Compare A and B on this scenario: EQUIVALENT or DIFFERENT?",
+    "Do A and B behave identically? Give the verdict.",
+]
+
+
+def cmd_equiv(args):
+    """P5 equivalence mining: uniform variable renames (must be
+    EQUIVALENT) and targeted BIND/EMIT deletions (must be DIFFERENT) over
+    derived programs; the fixture executor computes the verdict by
+    comparing execution deltas. Undecidable pairs are dropped."""
+    root = Path(args.out) if args.out else DERIVED_ROOT
+    index = {}
+    for path in sorted(root.rglob("*.json")):
+        if path.name == "manifest.json":
+            continue
+        try:
+            rec = json.loads(path.read_text())
+        except Exception:
+            continue
+        if rec["system"] != "nl-to-ir":
+            continue
+        for messages, expected in check.expansions(rec):
+            ctx, _user, program = (m["content"] for m in messages)
+            if not expected.get("valid", True) or "returned" not in expected:
+                continue
+            index.setdefault((rec["id"], ctx, program), True)
+    stats = {"sources": len(index), "pairs": 0, "equivalent": 0,
+             "different": 0, "undecidable": 0, "templates": 0}
+    by_v = {"EQUIVALENT": [], "DIFFERENT": []}
+    for sid, ctx, a in sorted(index):
+        if len(by_v["EQUIVALENT"]) + len(by_v["DIFFERENT"]) >= args.max_pairs:
+            break
+        da = _run_program(ctx, a)
+        if da is None:
+            stats["undecidable"] += 1
+            continue
+        # EQUIVALENT candidate: uniform rename of every variable
+        vars_ = sorted({m.group(1) for m in re.finditer(r"my:\?(\w+)", a)},
+                       key=len, reverse=True)
+        if vars_:
+            b = a
+            for i, v in enumerate(vars_):
+                b = re.sub(rf"my:\?{re.escape(v)}\b", f"my:?r{i}", b)
+            db = _run_program(ctx, b)
+            stats["pairs"] += 1
+            if db is not None and da == db:
+                stats["equivalent"] += 1
+                by_v["EQUIVALENT"].append({
+                    "ctx": ctx, "a": a, "b": b,
+                    "reason": "identical execution delta (uniform rename)"})
+        # DIFFERENT candidate: delete a BIND/EMIT/READ line that is
+        # OBSERVABLE in the delta — each drop is tried until one changes
+        # the outcome (drops that break binding are undecidable, skipped)
+        lines = a.split("\n")
+        for k, l in enumerate(lines):
+            if not re.match(r"\s*(BIND|EMIT|READ)\b", l):
+                continue
+            c = "\n".join(x for i, x in enumerate(lines) if i != k)
+            dc = _run_program(ctx, c)
+            stats["pairs"] += 1
+            if dc is None:
+                stats["undecidable"] += 1
+                continue
+            if da != dc:
+                stats["different"] += 1
+                by_v["DIFFERENT"].append({
+                    "ctx": ctx, "a": a, "b": c,
+                    "reason": "deltas differ: " + "; ".join(
+                        key for key in da if da.get(key) != dc.get(key))[:80]})
+                break
+    for verdict, pool in sorted(by_v.items()):
+        if not pool:
+            continue
+        rec = make_template("equivalence", f"equiv.{verdict.lower()}",
+                            verdict, [
+            {"role": "assistant",
+             "content": "{domain.ctx}\n\n# PROGRAM A\n{domain.a}\n\n"
+                        "# PROGRAM B\n{domain.b}"},
+            {"role": "user", "content": "{phrasing}"},
+            {"role": "assistant",
+             "content": "# VERDICT: " + verdict + "\n# BECAUSE: "
+                        "{domain.reason}"},
+        ], {"verdict": verdict, "valid": True})
+        rec["id"] = f"equiv/{verdict.lower()}"
+        rec["variants"] = {"domain": pool, "phrasing": EQUIV_PHRASINGS}
+        if _preflight_equivalence(rec):
+            write_template(rec, root)
+            stats["templates"] += 1
+    print(json.dumps(stats, indent=1))
+    return 0
+
+
+def cmd_conflict(args):
+    """P19 contradiction mining: same (subject, predicate) asserted with
+    different objects across two sources -> CONFLICT rows naming both
+    values and citing the files. Trains refuse-to-pick-silently — the
+    retrieval-serving failure mode where two sources disagree."""
+    base = Path(args.ttl).read_text()
+    alt = Path(args.other).read_text()
+    bp, bf, _bs, _br = parse_ttl(base)
+    _ap, af, _as_, _ar = parse_ttl(alt)
+    apairs = {}
+    for s, p, o, _n in af:
+        apairs.setdefault((s, p), []).append(o)
+    entries = []
+    for s, p, o, _n in bf:
+        for o2 in apairs.get((s, p), []):
+            if o2 != o:
+                merged = [t for t in bf if (t[0], t[1]) != (s, p)]
+                entries.append({
+                    "s": s, "p": p, "v1": o, "v2": o2,
+                    "label": label(s), "plabel": label(p),
+                    "src1": Path(args.ttl).name,
+                    "src2": Path(args.other).name,
+                    "ctx": ttl_context(bp, merged + [(s, p, o, None),
+                                                     (s, p, o2, None)])})
+    root = Path(args.out) if args.out else DERIVED_ROOT
+    written = False
+    if entries:
+        rec = make_template("conflict", "conflict.sources", "CONFLICT", [
+            {"role": "assistant", "content": "{domain.ctx}"},
+            {"role": "user", "content": "{phrasing}"},
+            {"role": "assistant",
+             "content": "CONFLICT — {domain.label} has two asserted "
+                        "{domain.plabel} values across sources "
+                        "({domain.src1}: {domain.v1} | {domain.src2}: "
+                        "{domain.v2}). Report both, citing sources; do not "
+                        "pick silently."},
+        ], {"conflict": True, "valid": True})
+        rec["id"] = "conflict/sources"
+        rec["variants"] = {"domain": entries, "phrasing": [
+            "What is the {domain.plabel} of the {domain.label}?",
+            "Read the {domain.label}'s {domain.plabel} from the graph."]}
+        ok = True
+        for messages, _expected in check.expansions(rec):
+            _d, rep = validate(messages[0]["content"])
+            if rep is None or not rep["valid"] or rep["warnings"]:
+                ok = False
+        if ok:
+            write_template(rec, root)
+            written = True
+    print(json.dumps({"conflicts": len(entries), "written": written},
+                     indent=1))
+    return 0
+
+
 # ── manifest & bundle (Phase 0 kernel: content-addressed lineage) ──────
 
 ORACLE_FILES = ("synth.py", "ir-compile.py", "ir-ast-sanity.py",
@@ -1200,7 +1660,8 @@ def cmd_manifest(args):
 
 
 BUNDLE_MAP = {"invalid-program": "diagnosis", "repair": "repair",
-              "abstain": "abstain"}
+              "abstain": "abstain", "equivalence": "equivalence",
+              "conflict": "conflict"}
 
 
 def cmd_bundle(args):
@@ -1316,6 +1777,61 @@ def main(argv=None):
     b.add_argument("--out", help="derived root to read")
     b.add_argument("--dpo", help="override dpo.jsonl path (default tmp)")
     b.set_defaults(func=cmd_bundle)
+    s = sub.add_parser("sample", help="R4: student-side RFT (serve -> k -> "
+                                      "oracle keep -> rft.jsonl)")
+    s.add_argument("--url", help="OpenAI-compatible endpoint, e.g. "
+                                 "http://nano0.lan:8000/v1")
+    s.add_argument("--model", default="kandi")
+    s.add_argument("--k", type=int, default=4)
+    s.add_argument("--limit", type=int, default=50, help="max prompts")
+    s.add_argument("--temperature", type=float, default=0.8)
+    s.add_argument("--max-tokens", type=int, default=512)
+    s.add_argument("--task", help="filter by system (e.g. nl-to-ir)")
+    s.add_argument("--out", help="derived root to read prompts from")
+    s.add_argument("--dataset", help="also write "
+                                     "$CORPORA_DIR/datasets/<name>/rft.jsonl")
+    s.set_defaults(func=cmd_sample)
+    x = sub.add_parser("mix", help="R5: weighted mix of prepared datasets")
+    x.add_argument("--sources", required=True,
+                   help="comma list name:weight, e.g. queer:0.3,cognition:0.6")
+    x.add_argument("--rows", type=int, default=4000)
+    x.add_argument("--seed", type=int, default=7)
+    x.add_argument("--name", required=True, help="output dataset name")
+    x.set_defaults(func=cmd_mix)
+    gb = sub.add_parser("gbnf", help="R3: emit the Graph IR GBNF grammar")
+    gb.add_argument("--root", choices=("response", "document"),
+                    default="response")
+    gb.add_argument("--out")
+    gb.set_defaults(func=cmd_gbnf)
+    g2 = sub.add_parser("grade", help="R7 harness: offline RLVR grading of "
+                                      "{messages} jsonl vs derived prompts")
+    g2.add_argument("path")
+    g2.add_argument("--out", help="write graded rows (with reward s) here")
+    g2.add_argument("--derived", help="derived root to grade against")
+    g2.set_defaults(func=cmd_grade)
+    gp = sub.add_parser("gaps", help="P7/R10: bench failures -> synthesis "
+                                     "proposals")
+    gp.add_argument("--bench", required=True)
+    gp.set_defaults(func=cmd_gaps)
+    mg = sub.add_parser("merge", help="R6: LoRA merge-algebra config "
+                                      "(mergekit)")
+    mg.add_argument("--base", required=True)
+    mg.add_argument("--adapters", required=True)
+    mg.add_argument("--method", default="ties",
+                    choices=("ties", "dare_ties", "dare_linear", "slerp"))
+    mg.add_argument("--density", type=float, default=0.5)
+    mg.add_argument("--out", default="-")
+    mg.set_defaults(func=cmd_merge)
+    eq = sub.add_parser("equiv", help="P5: equivalence pair mining "
+                                      "(verdicts computed, never typed)")
+    eq.add_argument("--max-pairs", type=int, default=40)
+    eq.add_argument("--out", help="derived root")
+    eq.set_defaults(func=cmd_equiv)
+    co = sub.add_parser("conflict", help="P19: dual-source contradiction rows")
+    co.add_argument("ttl")
+    co.add_argument("other")
+    co.add_argument("--out", help="derived root")
+    co.set_defaults(func=cmd_conflict)
     args = p.parse_args(argv)
     return args.func(args)
 

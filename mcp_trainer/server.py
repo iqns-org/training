@@ -594,6 +594,70 @@ def synth_status(job: str) -> dict:
     return {"job": job, **_SYNTH_JOBS.get(job, {"state": "unknown"})}
 
 
+@mcp.tool
+def synth_sample(url: str, model: str = "kandi", k: int = 4, limit: int = 50,
+                 task: str | None = None, dataset: str | None = None,
+                 temperature: float = 0.8, max_tokens: int = 512) -> dict:
+    """R4 student-side RFT: prompts from derived templates, completions
+    from a served OpenAI-compatible endpoint, kept only if the fleet
+    oracle accepts them (check_record per task family). The recursion
+    half: student output becomes data only through the verifier."""
+    return _synth_run(["sample", "--url", url, "--model", model,
+                       "--k", str(k), "--limit", str(limit),
+                       "--temperature", str(temperature),
+                       "--max-tokens", str(max_tokens)]
+                      + (["--task", task] if task else [])
+                      + (["--dataset", dataset] if dataset else []))
+
+
+@mcp.tool
+def synth_mix(sources: str, name: str, rows: int = 4000, seed: int = 7) -> dict:
+    """R5 data-mixing regression primitive: weighted merge of PREPARED
+    datasets (run prepare-domain per source) into datasets/<name>/ with a
+    seeded, content-addressed manifest. The mixing-law experiment tool."""
+    return _synth_run(["mix", "--sources", sources, "--rows", str(rows),
+                       "--seed", str(seed), "--name", name])
+
+
+@mcp.tool
+def synth_grade(path: str, out: str | None = None) -> dict:
+    """R7-ready RLVR reward oracle: grade a jsonl of {messages} rows
+    against the derived templates' fleet contract — (s, r) pairs WITHOUT
+    model weights. This is the exact reward function the GRPO loop will
+    reuse."""
+    argv = ["grade", path]
+    if out:
+        argv += ["--out", out]
+    return _synth_run(argv)
+
+
+@mcp.tool
+def synth_gaps(bench_path: str) -> dict:
+    """P7/R10 gap analysis: failed bench questions -> targeted synthesis
+    proposals (exact bin/synth commands). The outer loop's propose step."""
+    return _synth_run(["gaps", "--bench", bench_path])
+
+
+@mcp.tool
+def synth_gbnf(out: str | None = None) -> dict:
+    """R3: emit the Graph IR GBNF grammar (one rule per line, llama.cpp/
+    vLLM compatible) for guided decoding. Syntax becomes a decode-time
+    guarantee; serve with --guided-decoding-backend or sampling_params
+    extra_body guided_grammar."""
+    return _synth_run(["gbnf", "--out", out] if out else ["gbnf"])
+
+
+@mcp.tool
+def synth_merge(base: str, adapters: str, method: str = "ties",
+                density: float = 0.5) -> dict:
+    """R6 merge-algebra config generator (mergekit: ties/dare_ties/
+    slerp): compose persona x domain x cognition LoRA tracks into ONE
+    merged adapter = single-LoRA serving. Returns the config; the
+    execution rides the stage/pod lane."""
+    return _synth_run(["merge", "--base", base, "--adapters", adapters,
+                       "--method", method, "--density", str(density)])
+
+
 # ------------------------------------------------------------------ serve
 
 def build_app():

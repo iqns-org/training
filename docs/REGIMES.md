@@ -104,15 +104,31 @@ train, how, and what synthesis to add. Owner: qtrain/mcp-trainer lane.
 - bench failures → `synth derive --codes <family> --systems <dom>`
   auto-targeted generation → PR against corpora; humans merge.
 
+### R11 — Equivalence mining (P5) `M` · **DONE 2026-11-26**
+- `synth equiv` mines (Program A, Program B, verdict) pairs over derived
+  nl-to-ir programs: uniform variable renames must be EQUIVALENT; deleting
+  observable BIND/EMIT/READ lines must be DIFFERENT. The fixture executor
+  COMPUTES each verdict by comparing full execution deltas; unobservable
+  or unexecutable drops are counted undecidable and dropped (34 of them
+  on the live tree — honest yield). 27 EQUIVALENT pairs -> bundled as
+  `equivalence` (81 rows). Verdicts are never typed.
+
+### R12 — Contradiction mining (P19) `M` · **DONE 2026-11-26**
+- `synth conflict <ttl> <other.ttl>` finds the same (subject, predicate)
+  asserted with different objects across two sources -> CONFLICT rows
+  that name both values and cite both files; ctx verified to parse with
+  both facts coexisting. Example register vs rev2: 3 conflicts
+  (status, inspector, riskScore) -> bundled as `conflict` (6 rows).
+  The memory-governance skill retrieval serving needs, as corpus data.
+
 ## 2. Sequencing
 
 ```
-SHIPPED  R1 + R2 (2026-11-25: DPO lane, CFKG — see AS-BUILT.md §3.2/§3.4)
-NOW      R3 GBNF → R4 RFT → R5 mix → R6 merge   (tooling+tests next sessions)
-THEN     R6 pod-exec, R5 grid runs (needs serving)
-LAST     R7 (RLVR) after checker hardening; R10 as the loop driver
-```
-
+SHIPPED  R1 R2 (DPO lane, CFKG) · R3 R4 R5 R6 R7harness R11 R12 (2026-11-26)
+NOW      serve-flag (R3 GBNF on vLLM), mix grid runs + merge pod-exec (need
+         serving), GRPO loop (needs rollout wiring + checker hardening)
+NEXT     R8 process supervision · R9 self-model IR (synthesis-only, oracle
+         exists) · R10 loop driver = gaps (shipped) -> scheduled agent
 ## 3. Anti-pattern register (enforced, not advice)
 
 - LLM-judge in any corpus/reward gate — banned (FRAMEWORK §9.2)

@@ -18,7 +18,7 @@ and snippet below was produced by the commands shown). Companions:
 
 ---
 
-## 1. Quickstart — six commands, real output
+## 1. Quickstart — the whole loop, real output
 
 From `quadra/training` (needs `.venv`, sibling/`$CORPORA_DIR` corpora):
 
@@ -26,9 +26,22 @@ From `quadra/training` (needs `.venv`, sibling/`$CORPORA_DIR` corpora):
 bin/synth derive --per-code 4     # mutate every valid IR program
 bin/synth abstain --per-code 2    # NOT-DERIVABLE rows from graphs
 bin/synth graph ../corpora/generate/examples/site-register.ttl --domain construction
+bin/synth equiv                   # P5: computed equivalence pairs
+bin/synth conflict <base.ttl> <rev.ttl>   # P19: contradiction rows
+bin/synth gbnf --out tmp/ir.gbnf  # R3: guided-decoding grammar
 bin/synth manifest                # derived@h + oracle digests
 bin/synth bundle --domain cognition
 bin/prepare-domain cognition      # the existing qtrain lane input
+```
+
+Optional (needs a served model / endpoints):
+
+```bash
+bin/synth sample --url http://nano0.lan:8000/v1 --model <id> --k 4 --limit 50
+bin/synth grade tmp/synth/dpo.jsonl --out reward.jsonl   # RLVR (s,r) pairs
+bin/synth mix --sources queer:0.3,cognition:0.6,construction:0.1 --rows 2000 --name mix-r1
+bin/synth gaps --bench bench-out.json                    # failed probes -> synth cmds
+bin/synth merge --base Qwen/Qwen3.5-0.8B --adapters a,b --method dare_ties --density 0.5
 ```
 
 Actual yields (this build, curated tree of 200 hand-authored scenario
@@ -40,16 +53,17 @@ templates, 13,874 expansions):
 | mutation candidates proposed | 42,711 |
 | accepted by oracle (16 error classes) | 1,640 |
 | **preflight failures** | **0** |
-| derived templates (`derived@3b70db24`) | 673 |
-| dataset rows (`cognition@327ea068`) | 8,957 |
-| DPO pairs (`cognition-dpo` domain) | 821 |
+| derived templates (`derived@a5b1e82b`) | 675 |
+| dataset rows (`cognition@e184c8de`) | 9,865 (+821 DPO pairs) |
+| equivalence pairs mined (computed verdicts) | 81 |
+| conflict rows (example register vs rev2) | 6 |
+| GBNF rules, parse-property samples | 41, 130/130 |
+| reward-harness agreement (gold side) | 821/821 = yield 1.0 |
+| base model on IR prompts (nano0, live) | yield 0.0 — the honest baseline |
 
-The 42,711 → 1,640 ratio is the point: **~96% of proposals were rejected
+The 42,711 -> 1,640 ratio is the point: **~96% of proposals were rejected
 by the checker** (multi-error, warning-bearing, or wrong-code mutants).
 That filter is what makes the loop safe to run without a human per row.
-
----
-
 ## 2. Data plane
 
 ### 2.1 What lives where (the boundary law, §4b)
@@ -390,17 +404,23 @@ does the rest: proposals that produce zero, two, or the wrong error are
 discarded and counted (`stats.candidates` vs `accepted` is your rule's
 honesty score). No candidate ever becomes data on its own say-so.
 
-**Add a mutation rule family to the DPO set** — statement-tier rules
-already emit pairs automatically; declaration-tier rules cannot (see
-§3.2's ctx gate).
+**Add a grammar rule (R3)** — one line in `CORE`/`DOC`, then extend the
+mirror generator's matching production; the property test
+(`test_response_samples_parse`) IS the agreement contract between the
+two. The GBNF and the generator may never drift.
+
+**Add a data family to the bridge** — `cmd_graph`/`cmd_equiv`/
+`cmd_conflict` are template builders + `_verify_scenario` before every
+write; a new family is a function, not a subsystem.
 
 **Add a domain** — drop `.ttl` files (funnel-shaped) anywhere, point
 `synth graph` at the directory, add `recipes/<domain>/*.yaml` +
 `bench/<domain>.json`. The bridge needs no per-domain code.
 
-**Add an output family to the bridge** — `cmd_graph` is four template
-builders; a fifth (e.g. `ir-to-nl` describe-rows, entailment pairs) is a
-function, not a subsystem.
+**Add a bench probe** — `bench/<domain>.json` questions with rule checks
+(`contains:`/`regex:`/`json`); the `synth_gaps` mapping table (question
+id → targeted synth commands) turns every new probe into an automatic
+curriculum proposal.
 
 ---
 
@@ -436,8 +456,13 @@ function, not a subsystem.
 
 ## 8. Backlog → `REGIMES.md`
 
-Shipped today: **R1** (DPO lane + format + recipe + render_config branch),
-**R2** (CFKG in the bridge). Queued with acceptance criteria: R3 GBNF
-guided decoding, R4 student-side RFT sampler+grader, R5 data-mixing
-grid, R6 merge algebra, R7 RLVR/GRPO, R8 process supervision from
-error codes, R9 self-model IR, R10 adversarial curriculum loop.
+Shipped 2026-11-25/26: **R1** (DPO lane + format + recipe + pref-aware
+render_config), **R2** (CFKG), **R3** (GBNF compiler + lexer-pinned
+grammar + property tests), **R4** (student-side RFT sampler+grader,
+live-verified vs nano0: base yield 0.0 = the before-meter), **R5** (`mix`
+seeded grid primitive), **R6** (mergekit config tooling), **R7** (the
+RLVR reward function `grade` — 821/821 gold agreement; pod loop pending),
+**R11** (computed equivalence mining), **R12** (dual-source conflict
+mining). Queued: R8 process supervision (needs parser line/col plumbing),
+R9 self-model IR, R10 loop driver (the `gaps` propose step is shipped),
+plus the dialect program (transpiler-as-oracle → any EBNF'd language).
