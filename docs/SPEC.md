@@ -1367,6 +1367,43 @@ unnecessary). Merge `5c698d` (base auto-derived, second live use),
 register v2 via the new resumable rsync path (84 MB, one pass), infra
 `1ee73a2` points `--lora-modules` at `queer08b-adapter-v2`, v1 kept for
 30-second rollback.
+
+**(al) target matrix law + the ONNX triangle verdict (2026-11-25).**
+Serving targets are a DECLARED matrix, not a single path: every artifact
+generation fans out per (domain x base-model family x target), each
+target judged by per-target eval. Round 2 proved the corollary the hard
+way: data arrived (dc9eb6c2 staged sha), weights learned equally hard
+(lora_B mean|w| 0.00167 v2 vs 0.00163 v1, identical configs), yet v2
+serves FLATTER than v1 with no numeric comparison possible — we fly
+blind between artifact generations. Tranche A of the generic plan is
+the eval spine (typed checks, holdout law, eval-history ledger) exactly
+so this class of question has a table as an answer.
+
+Distribution law (operator ruling): artifacts travel the SAME path as
+everything else — lane -> OCI image built by CI -> registry ->
+quadra.yaml consumes by digest -> k3s deploy. NOT rsync/hostPath; the
+nano0 adapter register stays the legacy vLLM shape, not the template
+(also retires the rustfs question — the registry is the canonical
+store).
+
+Feasibility pilots on the qwen3.5 family (train de3c7d -> merge 5c698d,
+whose root config is text-only `qwen3_5_text` — merge already strips
+the visual tower): stage `onnx` runs 9aea4b + 32606b (~$0.60 total)
+CLOSED the question. optimum[exporters]<2 (the ONLY optimum with
+exporters; 2.x dropped them) needs old transformers + old torch; old
+transformers throws KeyError on the hybrid config (9aea4b), new
+transformers breaks optimum at import — `is_tf_available` removed
+(32606b). **IMPOSSIBLE TRIANGLE: no pin combination even reaches
+optimum's support list.** Family registry verdicts: qwen3.5 =
+vllm-lora (shipped), gguf (BUILD: new stage kind — llama.cpp
+convert+quantize; single-file artifact, no version dependencies, its
+OpenAI-compatible server gives the bench backend for free), awq
+(untested pilot), onnx/int8 REFUSED (closed, never re-litigate).
+smollm2-era bases: onnx/int8 legitimately work (optimum-era arches) —
+target capability becomes per-family DATA for fanout/scaffold to
+consume. Pilot pattern validated: stage scripts + preludes ride as
+sha-verified inputs, so matrix experiments cost ~$0.20 and never wait
+on image rebuilds.
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
