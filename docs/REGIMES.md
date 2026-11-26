@@ -134,7 +134,13 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
          $2.00 < estimate $2.25 = runtime x worst-case price; a presign
          retry then failed for missing S3_* in this dev shell — creds
          live in the infra SOPS secret, so volume lane is the dev path;
-         relaunch d30d5b with --max-price 0.60 -> provisioning):
+         relaunch d30d5b with --max-price 0.60 -> TRAINING (pod Running
+         on RTX A4500 since 11:13Z; ledger `state` stays `provisioning`
+         forever — dispatch never writes `running`, cosmetic only;
+         `qtrain watch <run_id>` reads the agent-lane status.json:
+         step 106/892 loss 0.047 at ~1h, 4 epochs = 892 steps; scoped
+         RunPod key cannot read pod logs — the agent lane is the only
+         observability path):
            r1 03760e — 2 epochs, loss 0.0886, $0.21, 53 min (~26.5
            min/epoch on RTX 2000 Ada). Served on nano0 vllm-qwen3-05 as a
            SECOND --lora-modules (no merge stage — registry vllm-lora
@@ -142,7 +148,23 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            run-to-run -> suite pins repeats=3); sample yield 0.0/48:
            IR SHAPE learned (clean READ/BIND/RETURN + json-guard),
            CONTRACT not (abstain/repair/diagnose/emit all FAIL, verdicts
-           in tmp/bench-cognition-r1.json).
+           in tmp/bench-cognition-r1.json). RE-MEASURED (canonical suite
+           restored e0e1f9a, repeats=3, ledger --record on 03760e): stable
+           1/6 — ir-translate 3/3, the other five 0/3, 34.8 tok/s med.
+           The translate flip was single-sample noise, now pinned.
+           Instrumented per-family sample (temp 0, k=1, --task):
+           concrete-examples 0/50 (129 AssertionError + 65 IRError +
+           6 Returned at k=4; Returned = RETURN leaked into the context
+           block, a real misshape not a harness ghost), nl-to-ir 0/6,
+           ir-to-nl 1/6, repair 0/6; invalid-program 2/3 THEN Connection
+           resets = the parallel session's engine rollout (6867868c45)
+           cutting the run mid-flight — its abstain/program-completion
+           "0/0" was the same artifact, NOT model numbers; rerun when
+           the serving spec settles. The buckets also caught a tool lie:
+           unfiltered cmd_sample walks sorted scenario files and --limit
+           cuts mid-family, so "0.0/48" (r1) and "0.0/50" measured ONE
+           family (concrete-examples) — rejects_by_system (315331c) is
+           what exposed it; per-family --task is now the honest protocol.
            r2 = gaps output verbatim (derive+abstain --per-code 3 ->
            bundle 7482 rows -> 6727 train + 137 holdout, content-hash
            law verified) + num_epochs=4. Learnings landed in code:

@@ -435,15 +435,33 @@ to host). Image vllm/vllm-openai:latest — the engine crash-looped for
 ~40 min with `httpx2 ConnectError: Network is unreachable` during
 startup (offline node reaching for HF) and recovered on its own; do not
 assume the endpoint is up — poll /v1/models before measurement.
+ROOT CAUSE of the later, worse crash-loop (3 restarts, exit 255): the
+liveness probe (3 fails x 30s, no initialDelay) kills the container
+MID-STARTUP — vLLM's HTTP layer answers /health transiently before the
+GDN Triton warmup + cudagraph capture finish, so the startupProbe
+passes, then liveness starves the warmup. Fleet fix: give liveness an
+Orin-scaled grace (patched `initialDelaySeconds=600`; a later rollout
+kept the 600 and reset failureThreshold to 3 — still stable). Cold
+start on Orin measures ~8-10 min end-to-end; a rollout mid-measurement
+shows up as HTTP 404s (wrong url form) then Connection-reset errors —
+check `kubectl get events` before blaming the model.
 
 Adapters are FLAT peft dirs at hostPath /home/me/models/<name>/
 (copy route workstation -> me@pi00.lan -> me@10.9.0.2, sha256 verified
 both ends). Serving a trained adapter needs NO merge stage: add
-`--lora-modules=NAME=/home/me/models/<name>` to the deployment
-(BUILD THE PATCH FROM THE LIVE SPEC — another session may be rolling
-it; re-poll after patch; readiness took minutes, exact cold-start time
-not measured). This is how cognition r1 went live next to kandi:
-POST {"model": "cognition"} to http://nano0.lan:8000/v1.
+`--lora-modules NAME=/home/me/models/<name>` to the deployment —
+SINGLE OCCURRENCE, space-separated list. vLLM parses `--lora-modules`
+with nargs="+" STORE semantics, so two `--lora-modules=X` args silently
+DROP the first: cognition r1 added this way evicted kandi from
+/v1/models with no error anywhere (startup-args log shows only the
+surviving LoRAModulePath). (BUILD THE PATCH FROM THE LIVE SPEC —
+another session may be rolling it; re-poll after patch. This is how
+cognition r1 went live, and how it died: the r2-era spec serves
+kandi v3 only.) Served modules answer POST {"model": "NAME"} on
+/v1/chat/completions. Endpoint url conventions differ by tool: bench
+--url wants the BARE base (appends /v1/chat/completions itself —
+/v1-suffixed input = 404 on every question), synth sample --url
+wants the /v1 suffix.
 
 Budget law bit: qtrain submit estimates worst-case at
 max_runtime x max_price_hr and refuses PRE-SPEND if
