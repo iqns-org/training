@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from . import budget, notify, progress, storage
+from . import budget, families, notify, progress, storage
 from .config import ROOT, corpora_dir, corpora_git_sha, resolve_recipe
 from .ledger import Ledger
 from .models import POD_PREFIX, ProviderError, pod_is_ours
@@ -232,7 +232,7 @@ def _finish_done(run_id: str, started: float, price_hr, get_run=None,
                     seconds=round(time.time() - started))
 
 
-JOB_KINDS = ("train", "merge", "onnx", "int8", "awq")   # noqa: F841 re-export
+JOB_KINDS = ("train", "merge", "onnx", "int8", "awq", "ablate")   # noqa: F841 re-export
 
 
 def _pod_hint(domain=None, recipe=None, parent=None) -> str:
@@ -599,10 +599,16 @@ def _sha(path: Path) -> str:
 
 
 def prepare_dataset(domain: str, mini: bool = False,
-                    vol: dict | None = None) -> tuple[str, Path, str, int]:
+                    vol: dict | None = None) -> tuple[str, Path, str, int, dict | None]:
     """Run corpus expansion (via prepare-domain), upload to the lane, return
-    (key, local_path, sha256, lines). vol=None -> presign lane; vol dict ->
-    volume lane; vol["local"] set -> host lane."""
+    (key, local_path, sha256, lines, holdout|None). vol=None -> presign lane;
+    vol dict -> volume lane; vol["local"] set -> host lane.
+
+    HOLDOUT LAW (SPEC 13am): prepare-domain content-hashes every row into
+    train/~98% + holdout/~2% — stable across rounds, so cross-run eval
+    trends compare apples to apples. The holdout trains on NOTHING and
+    rides the payload as a sha-verified input feeding axolotl's
+    eval_dataset."""
     subprocess.run([sys.executable, str(ROOT / "bin/prepare-domain"),
                     domain], check=True, capture_output=True, text=True)
     src = ROOT / "tmp" / f"{domain}.jsonl"
@@ -628,10 +634,25 @@ def prepare_dataset(domain: str, mini: bool = False,
     else:
         storage.ensure_bucket()
         storage.put_object(key, data, "application/x-ndjson")
-    return key, src, sha, lines
+    hold = None
+    hpath = ROOT / "tmp" / f"{domain}.holdout.jsonl"
+    if hpath.is_file() and hpath.stat().st_size:
+        hsha = _sha(hpath)
+        hkey = f"datasets/{domain}/{hsha[:16]}/{hpath.name}"
+        hdata = hpath.read_bytes()
+        if vol and vol.get("local"):
+            storage.host_put(hkey, hdata)
+        elif vol:
+            storage.vol_put(hkey, hdata)
+        else:
+            storage.put_object(hkey, hdata, "application/x-ndjson")
+        hold = {"key": hkey, "sha256": hsha, "name": hpath.name,
+                "lines": sum(1 for _ in open(hpath, "rb"))}
+    return key, src, sha, lines, hold
 
 
-def render_config(recipe: Path, overrides: dict, dataset_name: str) -> str:
+def render_config(recipe: Path, overrides: dict, dataset_name: str,
+                  holdout_name: str | None = None) -> str:
     cfg = yaml.safe_load(recipe.read_text())
     name = f"/work/datasets/{dataset_name}"
     if cfg.get("pref_datasets"):
@@ -649,6 +670,14 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str) -> str:
         cfg["datasets"] = [{"path": name, "type": "chat_template",
                             "ds_type": "json", "field_messages": "messages",
                             "roles_to_train": ["assistant"]}]
+    if holdout_name:
+        # HOLDOUT LAW (SPEC 13am): eval on unseen rows only. Mirror the
+        # mounted dataset entry against the agent-materialized input file
+        # (sha-verified by the same attestation path as everything else).
+        src_list = cfg.get("datasets") or cfg.get("pref_datasets") or []
+        if src_list:
+            cfg["eval_dataset"] = [dict(src_list[0],
+                                        path=f"/work/inputs/{holdout_name}")]
     cfg.update({
         "dataset_prepared_path": "/work/prepared",
         "output_dir": "/work/outputs",
@@ -823,14 +852,15 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                    else (lambda k, d, ct="": storage.put_object(k, d, ct)))
     result["lane"] = lane
     try:
-        dataset_key, dataset_path, dataset_sha, dataset_lines = prepare_dataset(
-            domain, mini, vol)
+        dataset_key, dataset_path, dataset_sha, dataset_lines, hold = \
+            prepare_dataset(domain, mini, vol)
         ov = dict(overrides or {})
         if mini:
             ov.update({"sequence_len": 256, "num_epochs": 1,
                        "micro_batch_size": 2, "gradient_accumulation_steps": 1,
                        "saves_per_epoch": 1})
-        config_yaml = render_config(recipe, ov, dataset_path.name)
+        config_yaml = render_config(recipe, ov, dataset_path.name,
+                                    holdout_name=hold["name"] if hold else None)
 
         if vol:  # pod sees the dataset THROUGH the mount
             pod_ds_path = f"{vol['mount']}/{dataset_key}"
@@ -840,6 +870,12 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                        "meta": {"domain": domain, "recipe": str(recipe)},
                        "dataset": {"name": dataset_path.name,
                                    "path": pod_ds_path, "sha256": dataset_sha},
+                       # holdout rides as a sha-verified input (agent
+                       # materializes + attests it, SPEC 13am)
+                       "inputs": ([{"name": hold["name"],
+                                     "path": f"{vol['mount']}/{hold['key']}",
+                                     "sha256": hold["sha256"]}]
+                                  if hold else []),
                        "outputs_dir": "/work/outputs",
                        "urls": {},
                        "volume": {"mount": vol["mount"],
@@ -847,7 +883,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             payload_url = ""
             payload_env = {"JOB_PAYLOAD_PATH": f"{vol['mount']}/runs/{run_id}/payload.json"}
         else:
-            urls = storage.mint_job_urls(run_id, dataset_key)
+            urls = storage.mint_job_urls(run_id, dataset_key,
+                                         holdout_key=hold["key"] if hold else None)
             payload = {"run_id": run_id,
                        "command": "axolotl train /work/job/train.yaml",
                        "config_yaml": config_yaml,
@@ -855,6 +892,10 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                        "dataset": {"name": dataset_path.name,
                                    "url": urls["dataset_get"],
                                    "sha256": dataset_sha},
+                       "inputs": ([{"name": hold["name"],
+                                     "url": urls["holdout_get"],
+                                     "sha256": hold["sha256"]}]
+                                  if hold else []),
                        "outputs_dir": "/work/outputs",
                        "urls": urls}
             payload_url = urls["payload_get"]
@@ -869,7 +910,9 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         # this, "did the pod train on the data we think?" is unanswerable
         # (de3c7d post-mortem, 2026-11-25).
         led.merge_spec(run_id, dataset_sha=dataset_sha,
-                       dataset_lines=dataset_lines, image=_image_ref())
+                       dataset_lines=dataset_lines, image=_image_ref(),
+                       **({"holdout_sha": hold["sha256"],
+                           "holdout_lines": hold["lines"]} if hold else {}))
         if dry:
             led.update(run_id, state="verified", note=f"dry-run: {lane} lane staged")
             result["dry"] = True
@@ -951,6 +994,13 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
 STAGE_SPECS = {
     "merge": {"script": "merge_adapter.py", "needs_base": True,
               "required": ["config.json"], "max_price_hr": 0.80},
+    # R15 (docs/ORACLES.md): contrast activations -> behavior direction;
+    # soft mode emits a steering-LoRA spec (rides the vLLM lane), hard
+    # mode projects W <- W(I - vv^T). Fuel: `synth contrasts`. The lane
+    # ships the pod payload; probe forward-passes run torch-side when
+    # the image provides it — direction math is pure python (tested).
+    "ablate": {"script": "ablate.py", "needs_base": True,
+               "required": ["steer.json"], "max_price_hr": 0.80},
     # preludes now carry ONLY the dependency stack (pip drift-fixes until
     # p-v0.1.4+ images land via CI); the stage scripts + util.py ride along
     # as sha-verified file inputs (see submit_stage), so script fixes NEVER
@@ -1042,6 +1092,29 @@ def _recipe_base_from_row(run_id: str) -> str:
         return ""
 
 
+def _lineage_base(led: Ledger, run_id: str, depth: int = 4) -> str:
+    """Walk the artifact lineage (stage -> stage -> train) until a base
+    model is known: stage rows record base_model, train rows via their
+    recipe. Registry gating uses this — the family must come from the
+    actual lineage, never from a caller's memory."""
+    cur, seen = run_id, set()
+    while cur and depth > 0 and cur not in seen:
+        seen.add(cur)
+        row = led.get(cur)
+        if not row:
+            break
+        spec = json.loads(row["spec_json"])
+        if spec.get("base_model"):
+            return spec["base_model"]
+        if spec.get("recipe"):
+            b = _recipe_base_from_row(cur)
+            if b:
+                return b
+        cur = spec.get("from_run", "")
+        depth -= 1
+    return ""
+
+
 def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                  provider: str = "runpod", max_runtime: int = 3600,
                  max_cost: float | None = None, poll: int = 15,
@@ -1074,9 +1147,23 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     if provider not in ("local", "runpod"):
         return {"status": "error",
                 "error": f"stage provider {provider!r} not wired yet"}
+    # FAMILY GATE (SPEC 13al): a stage whose target is registry-proven
+    # impossible for the lineage's family is refused BEFORE the ledger row
+    # and before any pod — 9aea4b/32606b bought this law for ~$0.60, and
+    # re-probing is a corpora-registry decision, not a dispatch accident.
+    fam_base = (base_model or "").strip()
+    if not fam_base:
+        fam_base = _lineage_base(Ledger(ROOT / "state" / "ledger.db"),
+                                 from_run)
+    reason = families.refuse_reason(fam_base, kind)
+    if reason:
+        return {"status": "error", "kind": kind, "from_run": from_run,
+                "base_model": fam_base, "refused": "family-registry",
+                "error": reason}
     led = Ledger(ROOT / "state" / "ledger.db")
     run_id = led.create("stage", {"kind": kind, "from_run": from_run,
-                                  "base_model": base_model,
+                                  "base_model": (base_model or "").strip()
+                                  or fam_base,
                                   "corpora": corpora_git_sha()},
                         provider=provider)
     if on_run_id:

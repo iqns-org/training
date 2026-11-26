@@ -125,10 +125,21 @@ train, how, and what synthesis to add. Owner: qtrain/mcp-trainer lane.
 
 ```
 SHIPPED  R1 R2 (DPO lane, CFKG) · R3 R4 R5 R6 R7harness R11 R12 (2026-11-26)
+         R13 bench oracle grammar (rate:/not:) · R14 contrast factory ·
+         R15 ablation/steering direction math + hard/soft tooling (2026-11-26)
 NOW      serve-flag (R3 GBNF on vLLM), mix grid runs + merge pod-exec (need
          serving), GRPO loop (needs rollout wiring + checker hardening)
-NEXT     R8 process supervision · R9 self-model IR (synthesis-only, oracle
-         exists) · R10 loop driver = gaps (shipped) -> scheduled agent
+NEXT     R16 Datalog legal oracle · R17 pytest language oracle (coding axis) ·
+         R18 concurrent-IR model checker · R20 calibration probes
+Held     qtrain stage ablate + synth_contrasts MCP wiring (mixed-file hunks
+         wait for the concurrent holdout-lane session to land)
+```
+
+## 1b. R13-R15 evidence (2026-11-26)
+
+- **R13** `orchestrator/bench.py`: check grammar = `contains:/regex:/one_of:/json/none` + `not:<check>` + `rate:<check>/<lo>-<hi>` (repeat-group fraction, `observed` recorded). Tests: 4 pure-grammar cases. The bench is now the soft-oracle harness for behavioral dials.
+- **R14** `synth contrasts [--domain] [--behaviors] [--limit]` → `tmp/synth/contrasts/<behavior>.jsonl` ({behavior,label,messages}): ir-valid from DPO couples, abstain vs fabricated answers, self-name/emoji/json via bench-primitive labelers. Fuel for steering (ORACLES.md §2). Tests: 2.
+- **R15** `postproc/ablate.py`: mean-diff + PCA(power-iter) direction, `W(I-vvᵀ)` hard projection, rank-1 steering-LoRA soft spec (rides vLLM multi-LoRA + R6 merge algebra — reversible by default). Tests: 8 incl. CLI end-to-end. Pod probe forward-pass + `qtrain stage ablate` wiring held behind the concurrent dispatch.py changes.
 ## 3. Anti-pattern register (enforced, not advice)
 
 - LLM-judge in any corpus/reward gate — banned (FRAMEWORK §9.2)

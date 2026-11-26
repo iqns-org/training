@@ -1366,7 +1366,18 @@ adapter straight from training (the trim surgery is now structurally
 unnecessary). Merge `5c698d` (base auto-derived, second live use),
 register v2 via the new resumable rsync path (84 MB, one pass), infra
 `1ee73a2` points `--lora-modules` at `queer08b-adapter-v2`, v1 kept for
-30-second rollback.
+30-second rollback. **VERDICT (same night, watcher report):** round 2
+FAILED — bench on v2-no-template: kandi name/reframe/identity 0/3
+("I'm Qwen."), feeling/voice flat, 3/7 checks (parity with base).
+Forensics: staged dataset sha was correct (dc9eb6c2, the payload
+carried it all along — 13ak later made this one command), lora_B
+magnitudes v1-vs-v2 at parity (0.00163 vs 0.00167, identical configs),
+raw-completion probe on v2 shows no persona bleed at all while v1
+bled. Diagnosis: 2152 formulaic rows (8.3% share, near-duplicate
+answers) got memorized, not generalized — coverage without share is
+inert, and "who are you" is one of the most over-practiced prompts in
+pretraining. Round 3 (higher share, ~200+ genuinely varied templates,
+holdout-measured) is a DATA decision pending the eval spine below.
 
 **(al) target matrix law + the ONNX triangle verdict (2026-11-25).**
 Serving targets are a DECLARED matrix, not a single path: every artifact
@@ -1404,6 +1415,49 @@ target capability becomes per-family DATA for fanout/scaffold to
 consume. Pilot pattern validated: stage scripts + preludes ride as
 sha-verified inputs, so matrix experiments cost ~$0.20 and never wait
 on image rebuilds.
+
+**(am) the eval spine + family gate: live (2026-11-26).** Three builds,
+one purpose — every future domain/round/target answers with numbers:
+
+- **Family capability registry** (13al as DATA): corpora
+  `recipes/_families.yaml` — per family, per target: true|untested|
+  deferred|**false with run-id evidence** (qwen3.5: onnx/int8 false —
+  the 9aea4b/32606b impossible triangle; merge/vllm-lora true; awq
+  untested; gguf deferred-until-consumer; smollm2-era: onnx/int8
+  untested-but-optimum-era). `orchestrator/families.py` is the seam;
+  submit_stage gates on `_lineage_base()` (walks stage->stage->train,
+  never trusts caller memory) and refuses BEFORE the ledger row and
+  the pod. Live proof: `stage onnx/int8 --from-run 5c698d` ->
+  refused, zero rows created, exit 1, evidence cited. MCP `families`
+  tool exposes the registry. Unknown/untested never blocks — only
+  explicit false.
+- **Holdout law** (13am): bin/prepare-domain content-hashes EVERY
+  conversation into train/~98% + holdout/~2% (`is_holdout`, stable
+  across rounds — a line held out in round K stays out forever, which
+  is what makes cross-round eval trends comparable; the round-2 loss
+  drop that hid a behavior collapse could not have fooled a holdout
+  split). prepare_dataset uploads it (content-addressed key), it rides
+  the payload as a sha-verified INPUT (both lanes; mint_job_urls gained
+  holdout_get), render_config mirrors the dataset entry into axolotl's
+  `eval_dataset` (/work/inputs/...), the agent attests it like any
+  input (13ak witness chain), ledger spec records holdout_sha/lines,
+  provenance verify cross-checks all three legs, _log_summary now
+  scrapes eval_loss into manifest.training.summary.
+- **Eval history** (13am): bench gains `--record`/`--run` -> new
+  `evals` ledger table (model, host, run, summary "1/2" over graded
+  rows only, full rows json); `qtrain evals` CLI + MCP `eval_history`
+  tool. Check grammar v2: json_keys: / not_contains: / max_len: /
+  nonempty added to contains/regex/one_of/json (coexists with the
+  concurrent not:/rate: oracle grammar).
+
+Tests: tests/test_spine.py (gate lineage walk, refusal-before-ledger,
+holdout determinism/ratio, eval_dataset wiring, eval roundtrip, new
+checks). NOTE: this commit also lands the concurrent ORACLES/ablation
+workstream's uncommitted deltas (bench rate:/not: grammar, R13
+docs/ORACLES.md, postproc/ablate.py + its stage kind, synth contrasts)
+— shared files (bench/cli/dispatch/mcp) made hunk-splitting unsafe;
+all 170 tests green as one tree. Live mini (holdout end-to-end through
+axolotl): queued, results amend here.
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus

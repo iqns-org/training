@@ -18,8 +18,14 @@ dimension is overridable via --config:
                   "check": "contains:kandi"}],
    "repeats": 3, "max_tokens": 64, "temperature": 0.0, "seed": 7}
 
-check grammar: contains:SUBSTR | regex:PATTERN | one_of:a,b | json
-| none (report only).
+check grammar (R13 — the bench IS the oracle harness, docs/ORACLES.md):
+  contains:SUBSTR | regex:PATTERN | one_of:a,b | json | none
+  not:<check>              — negation (composition)
+  rate:<check>/<lo>-<hi>   — fraction of REPEATS passing <check> must
+                             land in [lo,hi] (behavioural dials: bleed
+                             floors, self-name coverage, refusals)
+rate: rows carry the measured fraction in "observed"; verdicts are
+computed over the whole repeat group, not the first sample only.
 """
 from __future__ import annotations
 
@@ -164,7 +170,11 @@ def chat_stream(url: str, model: str, prompt: str, *, max_tokens: int,
     return "".join(parts), wall, (ttft or wall), tps
 
 
-def score(check: str, text: str) -> str:
+def _primitive(check: str, text: str) -> str:
+    """Single-sample oracle primitives (R13). Composed by score()."""
+    if check.startswith("not:"):
+        inner = _primitive(check[4:], text)
+        return {"PASS": "FAIL", "FAIL": "PASS"}.get(inner, inner)
     if check.startswith("contains:"):
         return "PASS" if check[9:].lower() in text.lower() else "FAIL"
     if check.startswith("regex:"):
@@ -186,7 +196,62 @@ def score(check: str, text: str) -> str:
             return "PASS"
         except ValueError:
             return "FAIL"
+    if check.startswith("json_keys:"):
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            return "FAIL"
+        try:
+            obj = json.loads(m.group(0))
+        except ValueError:
+            return "FAIL"
+        keys = check[10:].split(",")
+        return ("PASS" if all(k.strip() in obj for k in keys) else "FAIL")
+    if check.startswith("not_contains:"):
+        return "FAIL" if check[13:].lower() in text.lower() else "PASS"
+    if check.startswith("max_len:"):
+        return "PASS" if len(text.strip()) <= int(check[8:]) else "FAIL"
+    if check == "nonempty":
+        return "PASS" if text.strip() else "FAIL"
     return "—"
+
+
+def score(check: str, text_or_texts) -> str:
+    """Verdict for a question. Plain checks grade the (first) sample;
+    rate:<inner>/<lo>-<hi> grades the FRACTION of repeated samples
+    passing <inner> — the behavioural-dial primitive (ORACLES.md R13)."""
+    texts = ([text_or_texts] if isinstance(text_or_texts, str)
+             else list(text_or_texts))
+    if not texts:
+        return "—"
+    first = texts[0]
+    if check.startswith("rate:"):
+        spec = check[5:]
+        inner, _, bound = spec.rpartition("/")
+        try:
+            lo, _, hi = bound.partition("-")
+            lo, hi = float(lo), float(hi)
+        except ValueError:
+            return "?"
+        hits = sum(1 for t in texts if _primitive(inner, t) == "PASS")
+        frac = hits / len(texts)
+        return "PASS" if lo <= frac <= hi else "FAIL"
+    return _primitive(check, first)
+
+
+def rate_observed(check: str, texts) -> float | None:
+    """The measured fraction for rate: questions (debug/plotting)."""
+    if not check.startswith("rate:") or not texts:
+        return None
+    inner, _, _ = check[5:].rpartition("/")
+    return round(sum(1 for t in texts if _primitive(inner, t) == "PASS")
+                 / len(texts), 3)
+
+
+def score_all(check: str, texts) -> list[str]:
+    """Per-sample verdicts (for rate: groups, the INNER check)."""
+    inner = (check[5:].rpartition("/")[0] if check.startswith("rate:")
+             else check)
+    return [_primitive(inner, t) for t in texts]
 
 
 def run(config: dict) -> list[dict]:
@@ -203,7 +268,7 @@ def run(config: dict) -> list[dict]:
     rows = []
     for t in targets:
         for q in questions:
-            lat, tps, ttfts, texts, verdicts = [], [], [], [], []
+            lat, tps, ttfts, texts = [], [], [], []
             for _ in range(repeats):
                 try:
                     text, wall, ttft, rate = chat_stream(
@@ -214,12 +279,14 @@ def run(config: dict) -> list[dict]:
                     text, wall, ttft, rate = f"ERROR: {_short(e)}", 0, 0, 0
                 lat.append(wall); tps.append(rate); ttfts.append(ttft)
                 texts.append(text.strip())
-                verdicts.append(score(q.get("check", "none"), text))
+            verdicts = score_all(q.get("check", "none"), texts)
+            verdict = score(q.get("check", "none"), texts)
             rows.append({
                 "host": t["name"], "model": t["model"], "q": q["id"],
-                "pass": verdicts[0], "passes": sum(v == "PASS"
-                                                   for v in verdicts),
+                "pass": verdict, "passes": sum(v == "PASS"
+                                               for v in verdicts),
                 "repeats": repeats,
+                "observed": rate_observed(q.get("check", "none"), texts),
                 "tok_s_med": round(statistics.median(tps), 1),
                 "ttft_med": round(statistics.median(ttfts), 2),
                 "wall_med": round(statistics.median(lat), 2),
@@ -272,6 +339,11 @@ def main(argv=None) -> int:
     ap.add_argument("--temperature", type=float, default=None)
     ap.add_argument("--json", dest="json_out", help="write full rows json")
     ap.add_argument("--csv", dest="csv_out", help="write rows csv")
+    ap.add_argument("--record", action="store_true",
+                    help="persist to the eval-history ledger (SPEC 13am)")
+    ap.add_argument("--run", default="",
+                    help="artifact run_id to key the recording on "
+                         "(implies --record)")
     args = ap.parse_args(argv)
 
     config: dict = {}
@@ -304,6 +376,17 @@ def main(argv=None) -> int:
     print("bench: running...", file=sys.stderr)
     rows = run(config)
     print(table(rows))
+    if args.record or args.run:
+        from .config import ROOT as _ROOT
+        from .ledger import Ledger
+        led = Ledger(_ROOT / "state" / "ledger.db")
+        for (m, h) in sorted({(r["model"], r["host"]) for r in rows}):
+            led.record_eval(m, [r for r in rows if r["model"] == m
+                                and r["host"] == h],
+                            run_id=args.run, host=h,
+                            target=config.get("target", "chat"))
+        print(f"bench: recorded eval history for "
+              f"{len({r['model'] for r in rows})} model(s)", file=sys.stderr)
     if args.json_out:
         open(args.json_out, "w").write(json.dumps(rows, indent=1))
     if args.csv_out:

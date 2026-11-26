@@ -17,8 +17,9 @@ def fake_s3(monkeypatch):
     monkeypatch.setattr(dispatch.storage, "sha256_file",
                         lambda p: "0" * 64)
     monkeypatch.setattr(dispatch.storage, "mint_job_urls",
-                        lambda rid, key=None, hours=48: {
+                        lambda rid, key=None, hours=48, holdout_key=None: {
                             "payload_get": f"g/{rid}", "dataset_get": f"d/{key}",
+                            "holdout_get": f"h/{holdout_key}" if holdout_key else "",
                             "artifacts_put": "a", "manifest_put": "m",
                             "log_put": "l"})
     return calls

@@ -1628,6 +1628,100 @@ def cmd_conflict(args):
     return 0
 
 
+import re
+
+
+def _emoji(text):
+    return "".join(c for c in text if ord(c) > 0x2190)
+
+
+def _sample_rows(path: Path, limit: int):
+    rows = []
+    for f in sorted(path.rglob("*.jsonl")):
+        for line in f.read_text().splitlines():
+            if line.strip():
+                rows.append(line)
+    if len(rows) > limit:
+        rows = rows[::max(1, len(rows) // limit)][:limit]   # deterministic
+    return [json.loads(l) for l in rows]
+
+
+def cmd_contrasts(args):
+    """R14 contrast-set factory (ORACLES.md §2): labeled (doing X, not
+    doing X) pairs — the fuel for steering/ablation/interference probes.
+    Sources: bench-grmamar checks over any dataset, plus synth's own
+    artifacts (ir-valid from dpo pairs, abstain from refusal rows)."""
+    from orchestrator import bench as _b
+    out_dir = TMP / "contrasts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stats = {}
+
+    def emit(behavior, pairs):
+        path = out_dir / f"{behavior}.jsonl"
+        with path.open("w") as fh:
+            for label, msgs in pairs:
+                fh.write(json.dumps({"behavior": behavior, "label": label,
+                                     "messages": msgs},
+                                    ensure_ascii=False) + "\n")
+        stats[behavior] = {"pos": sum(1 for l, _ in pairs if l == 1),
+                           "neg": sum(1 for l, _ in pairs if l == 0),
+                           "path": str(path)}
+
+    want = set((args.behaviors or "").split(",")) - {""}
+    if not want or {"ir-valid"} & want:
+        dpo = TMP / "dpo.jsonl"
+        if dpo.is_file():
+            pairs = []
+            for line in dpo.read_text().splitlines():
+                if not line.strip():
+                    continue
+                p = json.loads(line)
+                pairs.append((1, p["messages"]))
+                pairs.append((0, p["rejected"]["messages"]))
+            emit("ir-valid", pairs[:2 * args.limit])
+
+    if not want or {"abstain"} & want:
+        pairs = []
+        for path in sorted(DERIVED_ROOT.rglob("*.json")) if DERIVED_ROOT.is_dir() else []:
+            if path.name == "manifest.json":
+                continue
+            rec = json.loads(path.read_text())
+            if rec["system"] != "abstain":
+                continue
+            for messages, expected in check.expansions(rec):
+                fabricated = ("READ WORLD my:whatever ai:whatever my:?v . "
+                              "ONE.\nRETURN my:?v.")
+                pairs.append((1, messages))
+                pairs.append((0, messages[:2] + [
+                    {"role": "assistant", "content": fabricated}]))
+        emit("abstain", pairs[:2 * args.limit])
+
+    if not want or {"self-name", "emoji", "json"} & want:
+        domain = args.domain or "queer"
+        ds = DATA_ROOT / "datasets" / domain
+        if not ds.is_dir():
+            stats["_error"] = f"no dataset {ds}"
+        else:
+            checks = {"self-name": "contains:kandi",
+                      "emoji": "regex:.*[\\U0001F300-\\U0001FAFF\\u2600-\\u27BF]",
+                      "json": "json"}
+            for behavior, checkspec in checks.items():
+                if behavior not in (want or checks):
+                    continue
+                pairs = []
+                for row in _sample_rows(ds, args.limit):
+                    msgs = row.get("messages")
+                    if not msgs:
+                        continue
+                    final = msgs[-1]["content"]
+                    verdict = _b._primitive(checkspec, final)
+                    if verdict in ("PASS", "FAIL"):
+                        pairs.append((1 if verdict == "PASS" else 0, msgs))
+                emit(behavior, pairs)
+    print(json.dumps(stats, indent=1, ensure_ascii=False))
+    return 0
+
+
 # ── manifest & bundle (Phase 0 kernel: content-addressed lineage) ──────
 
 ORACLE_FILES = ("synth.py", "ir-compile.py", "ir-ast-sanity.py",
@@ -1832,6 +1926,13 @@ def main(argv=None):
     co.add_argument("other")
     co.add_argument("--out", help="derived root")
     co.set_defaults(func=cmd_conflict)
+    ct = sub.add_parser("contrasts", help="R14: labeled contrast-set factory "
+                                          "(fuel for steering/ablation)")
+    ct.add_argument("--domain", help="persona dataset (default queer)")
+    ct.add_argument("--behaviors", help="comma list: ir-valid,abstain,"
+                                        "self-name,emoji,json")
+    ct.add_argument("--limit", type=int, default=200)
+    ct.set_defaults(func=cmd_contrasts)
     args = p.parse_args(argv)
     return args.func(args)
 

@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-from .config import load_dotenv, resolve_recipe
+from .config import ROOT, load_dotenv, resolve_recipe
 from . import dispatch, storage
 from .ledger import Ledger
 from .models import ProviderError
@@ -157,6 +157,26 @@ def cmd_progress(args):
                 "note": "no status.json on lane yet (pre-boot or old image)"})
         return
     _print(json.loads(raw))
+
+
+def cmd_evals(args):
+    led = Ledger(ROOT / "state" / "ledger.db")
+    rows = led.list_evals(model=args.model or None, limit=args.limit)
+    if args.json:
+        _print(rows)
+        return
+    if not rows:
+        print("no eval history yet (bench --record populates it)")
+        return
+    print(f"{'when':<16} {'model':>20}  {'score':>6}  {'run/host':<28} checks")
+    for r in rows:
+        ident = next((c["q"] for c in r["rows"] if c["q"] == "identity"), "")
+        ident_pass = next((c["pass"] for c in r["rows"]
+                           if c["q"] == "identity"), "—")
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ts"]))
+        print(f"{ts:<16} {r['model']:>20}  {r['summary']:>6}  "
+              f"{(r['run_id'] or '-')[:12]}/{r['host']:<14.14} "
+              f"identity={ident_pass if ident else '—'}")
 
 
 def cmd_verify(args):
@@ -326,6 +346,10 @@ def cmd_bench(args):
         argv += ["--json", args.json]
     if args.csv:
         argv += ["--csv", args.csv]
+    if args.record:
+        argv += ["--record"]
+    if args.run:
+        argv += ["--run", args.run]
     raise SystemExit(bench.main(argv))
 
 
@@ -539,9 +563,20 @@ def build_parser():
     s.add_argument("--repeats", type=int, default=None)
     s.add_argument("--max-tokens", type=int, default=None)
     s.add_argument("--temperature", type=float, default=None)
+    s.add_argument("--record", action="store_true",
+                   help="persist scores to the eval-history ledger")
+    s.add_argument("--run", default="",
+                   help="key the recording on an artifact run id")
     s.add_argument("--json", dest="json", help="write rows json here")
     s.add_argument("--csv", dest="csv", help="write rows csv here")
     s.set_defaults(func=cmd_bench)
+
+    s = sub.add_parser("evals", help="eval-history ledger: recorded bench "
+                       "scores per model/run (SPEC 13am)")
+    s.add_argument("--model", help="filter by model id")
+    s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_evals)
 
     s = sub.add_parser("verify", help="provenance cross-check: ledger vs "
                                       "lane payload vs agent attestation "

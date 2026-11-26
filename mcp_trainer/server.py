@@ -347,6 +347,29 @@ def verify(run_id: str | None = None, live: bool = False,
 
 
 @mcp.tool
+def families(base_model: str | None = None) -> dict:
+    """Family capability registry (SPEC 13al): what serving targets each
+    base-model family supports, as gated data with run-id evidence. With
+    base_model: that family's verdicts; without: the whole registry."""
+    from orchestrator import families as fam
+    if base_model:
+        f = fam.family_for(base_model)
+        return {"base_model": base_model, "family": f[0] if f else None,
+                "targets": f[1].get("targets") if f else None,
+                "notes": f[1].get("notes") if f else None,
+                "refusals": {k: v for k, v in (f[1].get("targets") or {}).items()
+                             if str(v).lower() == "false"} if f else {}}
+    return {"families": fam.registry()}
+
+
+@mcp.tool
+def eval_history(model: str | None = None, limit: int = 20) -> dict:
+    """Recorded bench scores (SPEC 13am): the cross-round table — every
+    `qtrain bench --record` lands here keyed by (model, host, run)."""
+    return {"evals": _led().list_evals(model=model, limit=limit)}
+
+
+@mcp.tool
 def wait_for_events(since: float = 0.0, timeout: int = 300,
                    run_id: str | None = None) -> dict:
     """Long-poll the lifecycle feed: blocks until events newer than `since`
@@ -656,6 +679,20 @@ def synth_merge(base: str, adapters: str, method: str = "ties",
     execution rides the stage/pod lane."""
     return _synth_run(["merge", "--base", base, "--adapters", adapters,
                        "--method", method, "--density", str(density)])
+
+
+@mcp.tool
+def synth_contrasts(domain: str = "queer", behaviors: str | None = None,
+                    limit: int = 400) -> dict:
+    """R14 contrast-set factory (ORACLES.md §2): labeled doing/not-doing
+    pairs from verified artifacts (ir-valid from DPO couples, abstain from
+    refusal rows) and persona datasets via bench-grammar checks
+    (self-name/emoji/json). This is the fuel the ablate/steering stage
+    consumes — behaviors to remove, add, or dial."""
+    argv = ["contrasts", "--domain", domain, "--limit", str(limit)]
+    if behaviors:
+        argv += ["--behaviors", behaviors]
+    return _synth_run(argv)
 
 
 # ------------------------------------------------------------------ serve
