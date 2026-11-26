@@ -1827,3 +1827,46 @@ is documented in `docs/UI.md`.
   expectations each match their own spec. Full suite green. Lesson
   the day keeps teaching: a commit message is a CLAIM; only the test
   suite and git show are evidence — verify both before saying done.
+
+
+(aq) DEADMAN LIVE-PROOF + DELIVERY INTEGRITY (night, 2026-11-26).
+  13an becomes receipt, not claim: run 622418 (full recipe,
+  DEADMAN_GRACE_S=90) — watcher SIGTERMed mid-training 21:26:35;
+  manifest landed 21:28:04 (kill+89s): status failed, state cancelled,
+  training.deadman True, problems ["required artifact missing:
+  adapter_model.safetensors"] (killed pre-checkpoint — the gate
+  refusing to grade partial output as success IS the design),
+  attestation legs intact, row closed honestly by reconcile, billing
+  died with the container, ZERO terminate calls from the dead side.
+  First attempt's failure recorded too: the harness script itself
+  crashed (.env parse without '=' guard) and killed the submit at t+9s
+  — $0, no pod, row failed clean. Harnesses obey the same honesty
+  laws as machines. AGENT STRING: __init__ 0.3.0->0.4.0 — 622418's
+  receipt said 0.3.0 while provably running the v0.4.1 image (the
+  watchdog fired; 0.3.0 has none). Version strings are receipts.
+  IMAGES: pin -> v0.4.1@0446b10a (ae3227e); CI verdict: queue healthy
+  (digest 2.5 min after tag), v0.4.0 was a one-off dropped trigger.
+  REGISTER DELIVERY INTEGRITY (follows aa478de): unpack-failure stage
+  cleanup GUARDED to the rsync branch (stage undefined in the
+  direct-pipe path — NameError would mask the real error and break
+  every small-tar register); staged unpack now wipes the target dir
+  first (tar -xzf MERGES: a killed merged delivery had left
+  model.safetensors inside the same-named adapter dir on nano0 —
+  a --lora-modules path must contain exactly the artifact); tests
+  updated: resumable test follows the run-keyed stage path, new test
+  pins run-key + guarded cleanup + target wipe. v3 adapter then
+  delivered CLEAN (host listing verified: adapter files only,
+  f15da377 tar sha match). SERVE-SIDE OPEN ITEM (not a training
+  fault): current engine (post-reboot RS) answers base-only —
+  "model kandi does not exist, Valid aliases: Qwen/Qwen3.5-0.8B" —
+  while quadra still points lora-modules at the v2 dir; the flip
+  (v2->v3 path + vllm-deploy --apply) is queued and coordinated, and
+  whether vLLM attaches the language_model-namespaced ckpt under
+  --language-model-only gets settled by the first post-flip
+  who-are-you probe, not by theory. COMMIT HYGIENE (the day's last
+  lesson, earned the hard way): a 76d0f7d-era message claimed the
+  README rewrite while its diff contained none (concurrent reset ate
+  the file pre-commit), and a later report cited phantom commit
+  hashes from a swallowed-output batch — both caught by
+  verify-after-claim, the same law the ledger enforces on pods:
+  message = claim, git show + suite = evidence.
