@@ -98,24 +98,46 @@ def test_holdout_is_stable_and_tiny():
     assert all(m.is_holdout(l) for l in more if l in held)
 
 
-def test_render_config_wires_holdout(tmp_path):
+def test_render_config_ships_no_intrain_eval(tmp_path):
+    # 3e7232: this axolotl REJECTS eval_strategy at val_set_size==0, and
+    # its random val split violates the content-hash stability law. The
+    # holdout is scored POST-TRAIN by the `holdout` stage against the
+    # sha-verified input — render_config emits ZERO eval keys.
     r = tmp_path / "rec.yaml"
     r.write_text(yaml.safe_dump({
         "base_model": "Qwen/Qwen3.5-0.8B",
-        "datasets": [{"path": "./datasets/queer.jsonl", "type": "chat_template"}]}))
-    out = yaml.safe_load(dispatch.render_config(r, {}, "queer.jsonl",
-                                               holdout_name="queer.holdout.jsonl"))
-    (ev,) = out["eval_dataset"]
-    assert ev["path"] == "/work/inputs/queer.holdout.jsonl"
-    assert ev["type"] == "chat_template"
-    # evaluation_strategy MUST ride the wiring: HF defaults to "no" and
-    # silently skips evals (daa4d7 proved it — success, zero eval_loss)
-    assert out["evaluation_strategy"] == "epoch"
-    assert out["per_device_eval_batch_size"] == 1
-    assert out["datasets"][0]["path"] == "/work/datasets/queer.jsonl"
-    # no holdout -> no eval wiring at all (legacy submissions unaffected)
-    out2 = yaml.safe_load(dispatch.render_config(r, {}, "queer.jsonl"))
-    assert "eval_dataset" not in out2 and "evaluation_strategy" not in out2
+        "datasets": [{"path": "./datasets/queer.jsonl",
+                      "type": "chat_template"}]}))
+    out = yaml.safe_load(dispatch.render_config(r, {}, "queer.jsonl"))
+    assert out["val_set_size"] == 0.0
+    assert not any("eval" in k for k in out)
+    assert "holdout" in dispatch.JOB_KINDS
+    assert dispatch.STAGE_SPECS["holdout"]["script"] == "holdout_loss.py"
+    assert dispatch.STAGE_SPECS["holdout"]["required"] == ["holdout.json"]
+
+
+def test_lineage_holdout_walks_payloads():
+    payloads = {
+        "stage-1": {"from_run": "train-1", "inputs": []},
+        "train-1": {"inputs": [
+            {"name": "queer.holdout.jsonl",
+             "path": "/data/datasets/queer/abc/queer.holdout.jsonl",
+             "sha256": "abc"}]},
+        "old-train": {"inputs": []},
+    }
+
+    def fake_get(key):
+        return json.dumps(payloads.get(key.split("/")[1], {})).encode()
+
+    assert dispatch._lineage_holdout(fake_get, "stage-1") == {
+        "name": "holdout.jsonl",
+        "path": "/data/datasets/queer/abc/queer.holdout.jsonl",
+        "sha256": "abc"}
+    # pre-13am lineage (no holdout input anywhere) -> honest None
+    assert dispatch._lineage_holdout(fake_get, "stage-1") is not None
+    assert dispatch._lineage_holdout(
+        lambda k: json.dumps({"from_run": "old-train"}).encode(),
+        "x") is None
 
 
 # ------------------------------------------------------------- eval history

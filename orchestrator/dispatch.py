@@ -232,7 +232,8 @@ def _finish_done(run_id: str, started: float, price_hr, get_run=None,
                     seconds=round(time.time() - started))
 
 
-JOB_KINDS = ("train", "merge", "onnx", "int8", "awq", "ablate")   # noqa: F841 re-export
+JOB_KINDS = ("train", "merge", "onnx", "int8", "awq", "ablate",
+             "holdout")   # noqa: F841 re-export
 
 
 def _pod_hint(domain=None, recipe=None, parent=None) -> str:
@@ -651,8 +652,7 @@ def prepare_dataset(domain: str, mini: bool = False,
     return key, src, sha, lines, hold
 
 
-def render_config(recipe: Path, overrides: dict, dataset_name: str,
-                  holdout_name: str | None = None) -> str:
+def render_config(recipe: Path, overrides: dict, dataset_name: str) -> str:
     cfg = yaml.safe_load(recipe.read_text())
     name = f"/work/datasets/{dataset_name}"
     if cfg.get("pref_datasets"):
@@ -670,22 +670,13 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str,
         cfg["datasets"] = [{"path": name, "type": "chat_template",
                             "ds_type": "json", "field_messages": "messages",
                             "roles_to_train": ["assistant"]}]
-    if holdout_name:
-        # HOLDOUT LAW (SPEC 13am): eval on unseen rows only. Mirror the
-        # mounted dataset entry against the agent-materialized input file
-        # (sha-verified by the same attestation path as everything else).
-        # evaluation_strategy is NOT optional: HF defaults to "no", so an
-        # eval_dataset alone silently skips all evals (daa4d7 "succeeded"
-        # with zero eval_loss — fixed before any full round ran).
-        # per_device_eval_batch_size=1: the packing kernel contract —
-        # cu_seqlens varlen requires batch dim 1 (c4b9eb/8250dc proved it
-        # on the qwen3.5 FLA gated_delta_rule kernel).
-        src_list = cfg.get("datasets") or cfg.get("pref_datasets") or []
-        if src_list:
-            cfg["eval_dataset"] = [dict(src_list[0],
-                                        path=f"/work/inputs/{holdout_name}")]
-            cfg.setdefault("evaluation_strategy", "epoch")
-            cfg.setdefault("per_device_eval_batch_size", 1)
+    # HOLDOUT LAW (SPEC 13am) — in-train eval is NOT this pipeline's
+    # mechanism: this axolotl build REJECTS eval_strategy at
+    # val_set_size == 0 (3e7232's pydantic refusal), and its random val
+    # split would violate the content-hash stability law anyway. The
+    # stable holdout rides the payload as a sha-verified input and is
+    # scored POST-TRAIN by the `holdout` stage, against the same adapter
+    # bytes the engine will serve.
     cfg.update({
         "dataset_prepared_path": "/work/prepared",
         "output_dir": "/work/outputs",
@@ -870,8 +861,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             ov.update({"sequence_len": 256, "num_epochs": 1,
                        "gradient_accumulation_steps": 1,
                        "saves_per_epoch": 1})
-        config_yaml = render_config(recipe, ov, dataset_path.name,
-                                    holdout_name=hold["name"] if hold else None)
+        config_yaml = render_config(recipe, ov, dataset_path.name)
 
         if vol:  # pod sees the dataset THROUGH the mount
             pod_ds_path = f"{vol['mount']}/{dataset_key}"
@@ -1033,6 +1023,13 @@ STAGE_SPECS = {
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"],
              "max_price_hr": 0.80,
              "prelude": "pip install --no-cache-dir -q onnx"},
+    # HOLDOUT STAGE (SPEC 13am): teacher-forced NLL on the content-hashed
+    # unseen split, against the train run's adapter bytes. Post-train by
+    # design — this axolotl rejects eval_strategy at val_set_size==0 and
+    # a random val split would violate the stability law. Retroactive:
+    # any historical train run can be scored after the fact.
+    "holdout": {"script": "holdout_loss.py", "needs_base": True, "gpu": True,
+                "required": ["holdout.json"], "max_price_hr": 0.85},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
             "gpu": True, "needs_dataset": True, "max_price_hr": 0.80,
             # cu128 swap on Blackwell only — datacenter sm_100 (compute
@@ -1124,6 +1121,29 @@ def _lineage_base(led: Ledger, run_id: str, depth: int = 4) -> str:
         cur = spec.get("from_run", "")
         depth -= 1
     return ""
+
+
+def _lineage_holdout(get_run, run_id: str, depth: int = 5) -> dict | None:
+    """Walk the artifact lineage (stage -> stage -> train) to the payload
+    carrying the holdout input (SPEC 13am). Volume-lane payloads only:
+    a presign-era holdout URL is expired. None -> caller refuses
+    honestly (never a silent zero-eval)."""
+    cur = run_id
+    while cur and depth > 0:
+        depth -= 1
+        try:
+            raw = get_run(f"runs/{cur}/payload.json")
+            payload = json.loads(raw) if raw else {}
+        except Exception:                              # noqa: BLE001
+            payload = {}
+        for i in payload.get("inputs", []):
+            name = str(i.get("name", ""))
+            if "holdout" in name and i.get("sha256") and i.get("path"):
+                return {"name": "holdout.jsonl", "path": i["path"],
+                        "sha256": i["sha256"]}
+        cur = payload.get("meta", {}).get("from_run", "") \
+            or payload.get("from_run", "")
+    return None
 
 
 def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
@@ -1235,6 +1255,18 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             ds_ref["sha256"] = ds["sha256"]
         inputs.append(ds_ref)
         cmd += " --dataset /work/inputs/data"
+    if kind == "holdout":
+        # HOLDOUT RESOLVER (SPEC 13am): re-attach the stable split from
+        # the lineage; refuse honestly when it is absent (pre-13am runs).
+        hold = _lineage_holdout(get_run, from_run)
+        if hold is None:
+            err = (f"no holdout input in the lineage of {from_run} — "
+                   "pre-13am train runs carry no stable split; submit "
+                   "again to stage one")
+            led.update(run_id, state="failed", error=err)
+            return {"status": "error", "run_id": run_id, "error": err}
+        inputs.append(hold)
+        cmd += " --holdout /work/inputs/holdout.jsonl"
     # Run CURRENT repo scripts, not the frozen /opt copies baked into the
     # p-v images: those are stranded at pre-fix builds (mirror stall), and
     # 6709e3 proved the failure class — llmcompressor's API drifted around
