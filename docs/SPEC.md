@@ -1438,11 +1438,12 @@ one purpose — every future domain/round/target answers with numbers:
   drop that hid a behavior collapse could not have fooled a holdout
   split). prepare_dataset uploads it (content-addressed key), it rides
   the payload as a sha-verified INPUT (both lanes; mint_job_urls gained
-  holdout_get), render_config mirrors the dataset entry into axolotl's
-  `eval_dataset` (/work/inputs/...), the agent attests it like any
-  input (13ak witness chain), ledger spec records holdout_sha/lines,
-  provenance verify cross-checks all three legs, _log_summary now
-  scrapes eval_loss into manifest.training.summary.
+  holdout_get), the agent attests it like any input (13ak witness
+  chain), ledger spec records holdout_sha/lines, provenance verify
+  cross-checks all three legs — and it is SCORED POST-TRAIN by the
+  `holdout` stage (see the pivot below: this axolotl rejects in-train
+  eval_strategy at val_set_size==0), against the same adapter bytes
+  the engine will serve.
 - **Eval history** (13am): bench gains `--record`/`--run` -> new
   `evals` ledger table (model, host, run, summary "1/2" over graded
   rows only, full rows json); `qtrain evals` CLI + MCP `eval_history`
@@ -1451,8 +1452,8 @@ one purpose — every future domain/round/target answers with numbers:
   concurrent not:/rate: oracle grammar).
 
 Tests: tests/test_spine.py (gate lineage walk, refusal-before-ledger,
-holdout determinism/ratio, eval_dataset wiring, eval roundtrip, new
-checks). NOTE: this commit also lands the concurrent ORACLES/ablation
+holdout determinism/ratio, zero-eval-key render assertions, resolver
+walk, eval roundtrip, new checks). NOTE: this commit also lands the concurrent ORACLES/ablation
 workstream's uncommitted deltas (bench rate:/not: grammar, R13
 docs/ORACLES.md, postproc/ablate.py + its stage kind, synth contrasts)
 — shared files (bench/cli/dispatch/mcp) made hunk-splitting unsafe;
