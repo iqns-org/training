@@ -1456,8 +1456,17 @@ checks). NOTE: this commit also lands the concurrent ORACLES/ablation
 workstream's uncommitted deltas (bench rate:/not: grammar, R13
 docs/ORACLES.md, postproc/ablate.py + its stage kind, synth contrasts)
 — shared files (bench/cli/dispatch/mcp) made hunk-splitting unsafe;
-all 170 tests green as one tree. Live mini (holdout end-to-end through
-axolotl): queued, results amend here.
+all 170 tests green as one tree. Live mini PROVED (daa4d7, 4th attempt): manifest
+  training.summary.eval_loss=1.464 (first unseen-split metric the family
+  ever emitted), attestation holdout leg (sha 2d65445f, 623 rows ==
+  ledger spec), verify_run green on all legs. Three bugs the spine
+  caught at mini-price before the real round: FLA/packing batch-dim
+  contract (c4b9eb/8250dc: cu_seqlens wants batch 1 — the recipe already
+  KNEW this from 425e6c; mini overrides were the crime), orphan-grid
+  crash caught LOCALLY in prepare-domain, zero pods (80b395), and the
+  share guard rejecting 74% and 39% generator cuts before write.
+  Round 3 data: corpora bcdc267 (625 templates -> ~8623 rows, 26.7%
+  share arithmetic-verified; coverage.py persona checks all OK).
 ## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
