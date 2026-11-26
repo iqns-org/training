@@ -109,8 +109,13 @@ def register(run_id: str, *, name: str | None = None,
                     "error": f"rsync failed rc={r.returncode}: "
                              f"{r.stderr.decode()[-200:]} — rerun register "
                              f"to resume"}
-        remote = (f"mkdir -p {q(target)} && tar -xzf {q(stage)} "
-                  f"-C {q(target)} && rm -f {q(stage)}")
+        # wipe the target first: tar -xzf MERGES into an existing dir,
+        # and a killed earlier delivery can leave stale files there
+        # (observed: merged-register leftovers inside the adapter dir —
+        # a vLLM --lora-modules path must contain exactly the artifact)
+        remote = (f"rm -rf {q(target)} && mkdir -p {q(target)} "
+                  f"&& tar -xzf {q(stage)} -C {q(target)} "
+                  f"&& rm -f {q(stage)}")
         r = subprocess.run(["ssh", "-o", "ConnectTimeout=10", host, remote],
                            capture_output=True, timeout=900)
     else:
@@ -119,13 +124,16 @@ def register(run_id: str, *, name: str | None = None,
                            input=local.read_bytes(), capture_output=True,
                            timeout=900)
     if r.returncode != 0:
+        if size > RESUME_THRESHOLD:
+            # the staged tar IS junk (killed or mismatched stream): delete
+            # it so a retry RE-STREAMS CLEAN — --partial onto a poisoned
+            # file is the 5-attempt EOF wall, not a resume
+            subprocess.run(
+                ["ssh", "-o", "ConnectTimeout=10", host, f"rm -f {q(stage)}"],
+                capture_output=True, timeout=60)
         return {**result, "status": "error",
-                _ssh_cleanup = subprocess.run(          # noqa: F841
-                    ["ssh", "-o", "ConnectTimeout=10", host, f"rm -f {q(stage)}"],
-                    capture_output=True, timeout=60)
-                return {**result, "status": "error",
-                        "error": f"ssh unpack failed: {r.stderr.decode()[:200]}"
-                                 " (staged tar removed — retry re-streams clean)"}
+                "error": f"ssh unpack failed: {r.stderr.decode()[:200]}"
+                " — staged tar removed, retry re-streams clean"}
     result["status"] = "registered"
     notify.emit("delivered", run_id, name=result.get("name", ""),
                 host=result.get("host", ""))

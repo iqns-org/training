@@ -90,10 +90,14 @@ def test_register_large_tar_is_resumable(staged, monkeypatch):
     assert res["status"] == "registered"
     (cmd1, in1), (cmd2, in2) = calls
     assert cmd1[0] == "rsync" and "--append-verify" in cmd1
-    assert cmd1[-1] == "me@nano0.lan:/tmp/qtrain-queer08b-merged.tar.gz"
+    # run-keyed stage (the poisoning fix): path embeds BOTH ids
+    stage_path = f"me@nano0.lan:/tmp/qtrain-{RID}-queer08b-merged.tar.gz"
+    assert cmd1[-1] == stage_path
     assert in1 is None and cmd2[0] == "ssh"
-    assert "tar -xzf /tmp/qtrain-queer08b-merged.tar.gz" in cmd2[-1]
-    assert "rm -f /tmp/qtrain-queer08b-merged.tar.gz" in cmd2[-1]
+    # target wiped before unpack (tar -xzf MERGES into a polluted dir)
+    assert cmd2[-1].startswith("rm -rf /home/me/models/queer08b-merged")
+    assert "tar -xzf /tmp/qtrain-2026-rid-awq001-queer08b-merged.tar.gz" in cmd2[-1]
+    assert "rm -f /tmp/qtrain-2026-rid-awq001-queer08b-merged.tar.gz" in cmd2[-1]
 
 
 def test_register_resume_rerun_survives_partial(staged, monkeypatch,
@@ -119,11 +123,16 @@ def test_register_resume_rerun_survives_partial(staged, monkeypatch,
     assert res2["status"] == "registered"
 
 
-def test_register_staging_is_run_keyed(tmp_path, monkeypatch):
-    # the poisoning bug: stage keyed by --name alone means a partial
-    # rsync from run A lands in run B's retry path. stage path MUST
-    # embed run_id; and a failed unpack must delete the stage so the
-    # next attempt re-streams clean instead of resuming junk bytes.
-    src = (ROOT / "orchestrator" / "register.py").read_text()
+def test_register_staging_is_run_keyed():
+    # the poisoning bug (observed: 5 consecutive unpack-EOFs): stage
+    # keyed by --name alone lets a --partial from one artifact poison
+    # every retry of another under the same name. stage path embeds
+    # run_id; and a FAILED UNPACK deletes the stage — retrying must
+    # re-stream clean, never resume onto junk bytes.
+    src = open(register.__file__).read()
     assert 'stage = f"/tmp/qtrain-{run_id}-{name}.tar.gz"' in src
-    assert "rm -f {q(stage)}" in src  # unpack-failure cleanup present
+    assert "rm -f {q(stage)}" in src
+    # cleanup must be gated to the staged path (stage is undefined in
+    # the direct-pipe branch — a NameError here would mask the real
+    # unpack error and break every small-tar register)
+    assert "if size > RESUME_THRESHOLD" in src
