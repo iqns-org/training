@@ -493,8 +493,7 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
         token = hashlib.sha256(run_id.encode()).hexdigest()[:24]
         if is_stage:
             s = STAGE_SPECS[kind]
-            image = (_postproc_gpu_image() if s.get("gpu")
-                     else _postproc_image())
+            image = _stage_image(s)
             ceiling = s.get("max_price_hr", 1.50)
             offers_fn = lambda: _stage_pool(prov, s, provider, ceiling)  # noqa: E731
             rate_bound = 0.0 if provider == "local" else ceiling
@@ -1028,11 +1027,14 @@ STAGE_SPECS = {
     # design — this axolotl rejects eval_strategy at val_set_size==0 and
     # a random val split would violate the stability law. Retroactive:
     # any historical train run can be scored after the fact.
+    # image: "trainer" — 45efe0 died KeyError 'qwen3_5' on the
+    # postproc-gpu stack (transformers 4.57.6 predates the hybrid arch);
+    # the trainer image knows this generation AND ships peft (axolotl
+    # dependency), so no prelude. e7712c (missing peft) taught the same
+    # lesson from the other side.
     "holdout": {"script": "holdout_loss.py", "needs_base": True, "gpu": True,
-                "required": ["holdout.json"], "max_price_hr": 0.85,
-                # e7712c: the postproc-gpu image quantizes, it does not
-                # load LoRAs — peft absent. Prelude pattern per SPEC 14d.
-                "prelude": "pip install --no-cache-dir -q peft"},
+                "image": "trainer", "required": ["holdout.json"],
+                "max_price_hr": 0.85},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
             "gpu": True, "needs_dataset": True, "max_price_hr": 0.80,
             # cu128 swap on Blackwell only — datacenter sm_100 (compute
@@ -1054,6 +1056,15 @@ def _postproc_image() -> str:
 
 def _postproc_gpu_image() -> str:
     return os.environ.get("POSTPROC_GPU_IMAGE", POSTPROC_GPU_PIN)
+
+
+def _stage_image(spec: dict) -> str:
+    """Stage image selection (SPEC 13am): 'trainer' rides the trainer
+    digest (its transformers knows the current generation's archs and
+    peft ships inside); everything else stays on the postproc pair."""
+    if spec.get("image") == "trainer":
+        return _image_ref()
+    return _postproc_gpu_image() if spec.get("gpu") else _postproc_image()
 
 
 def _trace_dataset(get_run, run_id: str, depth: int = 4) -> dict | None:
@@ -1346,8 +1357,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             why = budget.balance_gate(bal, est)
         if why:
             raise ProviderError(why)
-        stage_image = (_postproc_gpu_image() if spec.get("gpu")
-                       else _postproc_image())
+        stage_image = _stage_image(spec)
         inst, offer = _wave_launch(
             prov, lambda: _stage_pool(prov, spec, provider, ceiling),
             name=_pod_name(kind, run_id, _pod_hint(parent=from_run)),
