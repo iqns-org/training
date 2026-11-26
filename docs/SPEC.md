@@ -1505,7 +1505,53 @@ one purpose — every future domain/round/target answers with numbers:
   both directions, 3-site knob coverage, stamp-survives-completed-gate,
   grace env parsing). Live proof: mini with DEADMAN_GRACE_S=90,
   watcher killed after handshake → pod self-terminated, manifest
-  stamped deadman, row closed by next-boot watch, billing stopped. ONNX triangle (13al): image pinning is
+  stamped deadman, row closed by next-boot watch, billing stopped.
+
+(ao) THE MERGE NO-OP — the spine's most important catch (2026-11-26,
+  c7cde2/5c698d forensics). SMOKING GUN #1: every qwen3.5 merge this
+  pipeline ever produced — v2 (5c698d, SERVED and benched), v3 (c7cde2),
+  the mini (f49c3a), and 6b74d0 — shares ONE model.safetensors sha
+  (2cdf190a…, 1504827288 bytes). Different adapters, different training
+  data, byte-identical merges = the adapter contributed NOTHING.
+  SMOKING GUN #2: c7cde2's run.log — peft "missing AND unexpected
+  adapter keys": ckpt keys are training-time composite namespace
+  (base_model.model.model.language_model.layers.N....lora_A.weight, NO
+  .default), this image's AutoModelForCausalLM builds the text class
+  (model.layers.N...) expecting .lora_A.default.* — zero overlap ->
+  merge_and_unload returned the unmodified base and the stage
+  "succeeded". merge_adapter.py had no assertion on that.
+  SUPERSEDED CLAIMS (retracted here, the history rule): (1) the 13ai
+  round-2 behavioral attribution — v2's "identity memorized but did not
+  generalize" — is VOID as stated: the engine was serving the BASE
+  MODEL wearing a persona name; "I'm Qwen" was the base being honest.
+  The r2 data critique (8.3% share, formulaic rows) may still be true
+  of the ADAPTER, but the served-bytes experiment never tested it.
+  (2) The "first comparison data" 4.1088 vs 4.1087 holdout pair — both
+  were the base clone scored twice; the scorer was honest, the merge
+  upstream was not. (3) The no-template ruling's "identity must live in
+  weights" is UNTESTED, not disproven-by-serve; v3-on-fixed-merge is
+  the first real test of it.
+  THE FIX: manual delta merge in postproc/merge_adapter.py — string
+  namespace resolution (text<->composite swap), delta=(B@A)*alpha/r in
+  fp32, FAIL-FAST LAW: zero pairs parsed, any unresolved pair, or
+  applied!=expected all exit nonzero — a merge that moves no weights
+  can no longer publish. Prints {'merge_applied_pairs': N,
+  'merge_expected_pairs': N, 'merge_scaling': s} for finalize to
+  scrape (wanted keys +). SmolLM2-era merges (20e8db) predate this
+  breakage (different family, different ckpt namespace) — untouched.
+  SERVING LAW (new): a merge artifact is only deployable when its sha
+  DIFFERS from the base-clone sha AND merge_applied_pairs lands in the
+  manifest summary. v0.4.0 trainer image (deadman) is still owed by CI
+  (tag pushed 15:03, digest absent — flagged to team); this fix ships
+  as a sha-verified INPUT (stage scripts run from repo, not image) so
+  it is live immediately. Re-merge chain (29ce66 -> fixed merge ->
+  verify blob changed -> holdout on true v3 bytes) results append here.
+  OPS NOTE the day also earned: `qtrain watch` is the PASSIVE progress
+  viewer (reads heartbeat mirror); the command that harvests/closes/
+  terminates is `qtrain reconcile <run-id>` — 29ce66 closed via
+  reconcile (succeeded, 9 artifacts, pod confirmed gone). A watcher
+  that never harvests is how a finished run bills: now documented AND
+  deadman-capped once the v0.4.0 image lands. ONNX triangle (13al): image pinning is
   per-stage stack selection, not one-size-fits-all.
 
 Tests: tests/test_spine.py (gate lineage walk, refusal-before-ledger,
