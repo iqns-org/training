@@ -1480,7 +1480,11 @@ all 170 tests green as one tree. Live mini CORRECTION (2026-11-26, supersedes
   (3e7232: eval_strategy unsupported at val_set_size==0; and a random
   val split violates the stability law) — pivoted: holdout scoring is
   its own POST-TRAIN `holdout` stage against the sha-verified input,
-  retroactive on historical runs; render_config emits zero eval keys. The abandoned full-launch dd0ae0
+  retroactive WITHIN the 13am era only — 2367b0 proved the limit
+  honestly: pre-13am runs (v1/v2) trained on EVERY row, so no valid
+  holdout exists for them and the resolver refuses them; the real
+  comparison axis is v3 vs base vs future rounds, all measured on
+  the same stable 623-row unseen split; render_config emits zero eval keys. The abandoned full-launch dd0ae0
   (provisioning ~2 min, found open after the watcher shell died) was
   explicitly terminated — pod confirmed dead, row closed: never run a
   round that cannot emit the spine's own metric, never orphan a pod.
