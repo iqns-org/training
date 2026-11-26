@@ -1465,8 +1465,11 @@ all 170 tests green as one tree. Live mini CORRECTION (2026-11-26, supersedes
   TRUTH of mini daa4d7: it succeeded end-to-end (10/10 steps,
   packing contract held with micro_batch 1) but emitted NO eval_loss
   — root cause: HF defaults evaluation_strategy to "no"; eval_dataset
-  alone silently skips evaluation. Wiring fixed (epoch strategy in
-  render_config's holdout branch). The abandoned full-launch dd0ae0
+  alone silently skips evaluation. Epoch-strategy wiring then REJECTED by axolotl itself
+  (3e7232: eval_strategy unsupported at val_set_size==0; and a random
+  val split violates the stability law) — pivoted: holdout scoring is
+  its own POST-TRAIN `holdout` stage against the sha-verified input,
+  retroactive on historical runs; render_config emits zero eval keys. The abandoned full-launch dd0ae0
   (provisioning ~2 min, found open after the watcher shell died) was
   explicitly terminated — pod confirmed dead, row closed: never run a
   round that cannot emit the spine's own metric, never orphan a pod.
