@@ -129,6 +129,41 @@ SHIPPED  R1 R2 (DPO lane, CFKG) · R3 R4 R5 R6 R7harness R11 R12 (2026-11-26)
          R15 ablation/steering direction math + hard/soft tooling (2026-11-26)
 NOW      serve-flag (R3 GBNF on vLLM), mix grid runs + merge pod-exec (need
          serving), GRPO loop (needs rollout wiring + checker hardening)
+LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
+         PRE-SPEND on the honest budget gate: balance $3.96 - reserve
+         $2.00 < estimate $2.25 = runtime x worst-case price; a presign
+         retry then failed for missing S3_* in this dev shell — creds
+         live in the infra SOPS secret, so volume lane is the dev path;
+         relaunch d30d5b with --max-price 0.60 -> provisioning):
+           r1 03760e — 2 epochs, loss 0.0886, $0.21, 53 min (~26.5
+           min/epoch on RTX 2000 Ada). Served on nano0 vllm-qwen3-05 as a
+           SECOND --lora-modules (no merge stage — registry vllm-lora
+           true, proven live). bench 1/6 (base also 1/6; translate flips
+           run-to-run -> suite pins repeats=3); sample yield 0.0/48:
+           IR SHAPE learned (clean READ/BIND/RETURN + json-guard),
+           CONTRACT not (abstain/repair/diagnose/emit all FAIL, verdicts
+           in tmp/bench-cognition-r1.json).
+           r2 = gaps output verbatim (derive+abstain --per-code 3 ->
+           bundle 7482 rows -> 6727 train + 137 holdout, content-hash
+           law verified) + num_epochs=4. Learnings landed in code:
+           cmd_gaps eats the REAL bench shape (was fiction-tested),
+           cmd_sample buckets rejects by cause, ledger evals record both
+           legs (r1 vs base) — docs/AS-BUILT §7.
+           r3 lever (from r1 verdicts): behavior coverage, not epochs —
+           abstain phrasing, emit shapes, more scenario COUNT. And an
+           L3 event worth naming: the r2 rebuild from an UNCHANGED
+           scenarios tree yielded cognition@569e46d5 (6864 SFT + 618
+           DPO) vs r1's cognition@e184c8de (9044 + 821) — identical
+           sources/candidates (3241/42711), FEWER accepted, same eight
+           tags, shrinkage concentrated in diagnosis/repair. check/
+           expand/ir-* files are untouched since r1; src/synth.py
+           (where the rulebook lives) moved in the 7d1859c tree-sweep
+           that merged two sessions' staged work into one commit —
+           the acceptance delta points there. r3 pre-flight: bisect
+           7d1859c's synth.py hunks for the mutation-rule change that
+           dropped cells, then re-pin ids. (Candidates being equal at
+           per-code 3 also says the cap rarely binds — growth lever is
+           scenario count, not knobs.)
 NEXT     R16 Datalog legal oracle · R17 pytest language oracle (coding axis) ·
          R18 concurrent-IR model checker · R20 calibration probes
 Held     qtrain stage ablate + synth_contrasts MCP wiring (mixed-file hunks

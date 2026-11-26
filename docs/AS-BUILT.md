@@ -424,7 +424,33 @@ curriculum proposal.
 
 ---
 
-## 7. Honest edges
+## 7. Serving lane, live truth (2026-11-26, verified against the fleet)
+
+`vllm-qwen3-05` deployment (k3s ns quadra, node nano0 — tegra/arm64
+kernel = Jetson; hostNetwork pod, so its IP IS the node's 10.9.0.2).
+It answers on both ifaces for HTTP (10.9.0.2:8000 and LAN
+192.168.20.139:8000 / nano0.lan:8000) while nano0's sshd answers ONLY
+the direct-link iface (`me@10.9.0.2` from pi00 — LAN port 22: No route
+to host). Image vllm/vllm-openai:latest — the engine crash-looped for
+~40 min with `httpx2 ConnectError: Network is unreachable` during
+startup (offline node reaching for HF) and recovered on its own; do not
+assume the endpoint is up — poll /v1/models before measurement.
+
+Adapters are FLAT peft dirs at hostPath /home/me/models/<name>/
+(copy route workstation -> me@pi00.lan -> me@10.9.0.2, sha256 verified
+both ends). Serving a trained adapter needs NO merge stage: add
+`--lora-modules=NAME=/home/me/models/<name>` to the deployment
+(BUILD THE PATCH FROM THE LIVE SPEC — another session may be rolling
+it; re-poll after patch; readiness took minutes, exact cold-start time
+not measured). This is how cognition r1 went live next to kandi:
+POST {"model": "cognition"} to http://nano0.lan:8000/v1.
+
+Budget law bit: qtrain submit estimates worst-case at
+max_runtime x max_price_hr and refuses PRE-SPEND if
+balance - $2 reserve < estimate (r2 attempt: $3.96-$2.00 < $2.25).
+Cheaper fix than topping up: pin --max-price to the real offer tier.
+
+## 8. Honest edges
 
 - **Unreachable error families (documented, not hidden):**
   `E1_BAD_VARIABLE`, `E1_BAD_CARDINALITY`, `E6_UNKNOWN_STATEMENT`,
