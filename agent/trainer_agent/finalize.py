@@ -115,6 +115,12 @@ def build_manifest(run_id: str, outputs_dir: Path, state: dict,
                 files[rel] = {"size": p.stat().st_size, "sha256": sha256_file(p)}
     training = {k: state.get(k) for k in
                 ("state", "step", "total", "epoch", "loss", "exit_code")}
+    if state.get("deadman"):
+        # SPEC 13an: this terminal was forced by orchestrator silence, not
+        # by the recipe finishing. Stamp survives even when the gate found
+        # complete artifacts (fire between saves) — a partial round must
+        # never masquerade as a clean one.
+        training["deadman"] = True
     summ = _log_summary(log_path) if log_path else {}
     if summ:
         training["summary"] = summ

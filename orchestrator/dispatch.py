@@ -166,6 +166,18 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
                 raise ProviderError(f"budget cap ${max_cost} crossed")
         if keepalive:
             _keepalive_public_lane()
+        if put_run:
+            # DEADMAN PING (SPEC 13an): every cycle rewrites a fresh token
+            # the pod-side watchdog reads beside its own heartbeat mirror.
+            # Content-change protocol — no clock ever compared across
+            # machines. Best-effort: a lane-blip write failure just lets
+            # the pod age toward grace; the WATCHER surviving blips is
+            # what the poll loop already handles.
+            try:
+                put_run(f"runs/{run_id}/ping",
+                        f"{time.time():.6f}".encode())
+            except Exception:                               # noqa: BLE001
+                pass
         manifest_raw = _tolerant_get(get_run, f"runs/{run_id}/manifest.json",
                                      lane_state)
         if manifest_raw:
@@ -505,7 +517,9 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
             rate_bound = ceiling
         env = {"JOB_PAYLOAD_PATH":
                f"{payload['volume']['mount']}/runs/{run_id}/payload.json",
-               "AGENT_TOKEN": token, "IMAGE_TAG": image}
+               "AGENT_TOKEN": token, "IMAGE_TAG": image,
+               "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
+                                            "600")}
         prov = get_provider(provider)
         lk = ({"volume_id": vol["bucket"], "volume_path": vol["mount"],
                "data_center": vol["dc"]} if provider == "runpod" else {})
@@ -949,7 +963,11 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             name=_pod_name("train", run_id, _pod_hint(domain, recipe)),
             image=_image_ref(),
             env={**payload_env, "AGENT_TOKEN": token,
-                 "IMAGE_TAG": _image_ref()},
+                 "IMAGE_TAG": _image_ref(),
+                 # DEADMAN knob (SPEC 13an): flows to agent os.environ;
+                 # always explicit (default 600) so pod forensics sees it
+                 "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
+                                            "600")},
             lk=lk, run_id=run_id, kind="train",
             max_wait=_max_wait(max_wait))
         pod_id = inst.id
@@ -1363,7 +1381,9 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             name=_pod_name(kind, run_id, _pod_hint(parent=from_run)),
             image=stage_image,
             env={**payload_env, "AGENT_TOKEN": token,
-                 "IMAGE_TAG": stage_image}, lk=lk,
+                 "IMAGE_TAG": stage_image,
+                 "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
+                                            "600")}, lk=lk,
             run_id=run_id, kind=kind, max_wait=_max_wait(max_wait))
         mc = (max_cost if max_cost is not None
               else budget.estimate(offer.price_hr or rate_bound, kind))

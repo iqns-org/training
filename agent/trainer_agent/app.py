@@ -141,7 +141,44 @@ def start_boot_job() -> None:
                         run.get("gate"), attestation=run.get("attestation")))
     runner.start()
     runner.start_heartbeat(volume=run.get("volume"), urls=run["urls"])
+    _arm_deadman(runner, run)
     _active = runner
+
+
+def _arm_deadman(runner: Runner, run: dict) -> None:
+    """SPEC 13an: volume-lane pods watch for the orchestrator's ping file
+    beside their own heartbeat mirror; presign pods carry no mount and
+    stay unarmed (documented hole: those costs remain estimate-capped)."""
+    import time as _time
+    from pathlib import Path as _P
+    from .deadman import Deadman
+    vol = run.get("volume")
+    if not vol:
+        return
+    dest = _P(vol["mount"]) / vol["prefix"]
+
+    def fire():
+        # stamp BEFORE cancel so the runner's own completion path (which
+        # finalize reads via post_hook) carries the truth: this terminal
+        # was forced by silence, not by the recipe finishing.
+        runner._write_state(deadman=True)
+        runner.cancel()
+        # wait for gate -> pack -> manifest-LAST publish (deadline generous
+        # for full-adapter uploads; a hang still exits: row stays OPEN,
+        # reconcile closes it, billing stops either way — that order of
+        # operations is the whole point)
+        deadline = _time.time() + 600
+        while _time.time() < deadline:
+            if (dest / "manifest.json").is_file():
+                break
+            _time.sleep(2)
+        else:
+            print("deadman: manifest never landed; exiting anyway",
+                  flush=True)
+        import os as _os
+        _os._exit(0)        # container dies -> provider stops billing
+
+    Deadman(dest / "ping", log=lambda m: print(m, flush=True)).start(fire)
 
 
 def main() -> int:
