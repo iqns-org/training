@@ -674,10 +674,15 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str,
         # HOLDOUT LAW (SPEC 13am): eval on unseen rows only. Mirror the
         # mounted dataset entry against the agent-materialized input file
         # (sha-verified by the same attestation path as everything else).
+        # per_device_eval_batch_size=1: the packing kernel contract —
+        # cu_seqlens varlen requires batch dim 1 (train path flattens,
+        # the eval loader otherwise does not; c4b9eb proved it on qwen3.5
+        # FLA gated_delta_rule: "batch size expected to be 1").
         src_list = cfg.get("datasets") or cfg.get("pref_datasets") or []
         if src_list:
             cfg["eval_dataset"] = [dict(src_list[0],
                                         path=f"/work/inputs/{holdout_name}")]
+            cfg.setdefault("per_device_eval_batch_size", 1)
     cfg.update({
         "dataset_prepared_path": "/work/prepared",
         "output_dir": "/work/outputs",
@@ -856,8 +861,11 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             prepare_dataset(domain, mini, vol)
         ov = dict(overrides or {})
         if mini:
+            # micro_batch_size stays 1 — the recipe's own lesson (packing
+            # + cu_seqlens: FLA kernel requires batch dim 1; 425e6c died
+            # at step 0, and c4b9eb/8250dc re-proved it via the override)
             ov.update({"sequence_len": 256, "num_epochs": 1,
-                       "micro_batch_size": 2, "gradient_accumulation_steps": 1,
+                       "gradient_accumulation_steps": 1,
                        "saves_per_epoch": 1})
         config_yaml = render_config(recipe, ov, dataset_path.name,
                                     holdout_name=hold["name"] if hold else None)
