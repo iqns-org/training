@@ -1451,6 +1451,16 @@ one purpose — every future domain/round/target answers with numbers:
   nonempty added to contains/regex/one_of/json (coexists with the
   concurrent not:/rate: oracle grammar).
 
+  STAGE IMAGE SELECTOR (same day): `_stage_image(spec)` — a spec may
+  declare `image: "trainer"` to ride the trainer digest instead of the
+  postproc pair. Forced by two holdout-stage deaths: e7712c (peft absent
+  in postproc) then 45efe0 (postproc transformers 4.57.6 = KeyError
+  'qwen3_5' — the arch this scorer must load). The trainer image is the
+  stack that TRAINED this generation (native support + peft as an
+  axolotl dependency), so `holdout` declares it and carries no prelude.
+  Same lesson class as the ONNX triangle (13al): image pinning is
+  per-stage stack selection, not one-size-fits-all.
+
 Tests: tests/test_spine.py (gate lineage walk, refusal-before-ledger,
 holdout determinism/ratio, zero-eval-key render assertions, resolver
 walk, eval roundtrip, new checks). NOTE: this commit also lands the concurrent ORACLES/ablation
