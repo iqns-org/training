@@ -141,26 +141,33 @@ def get_object(key: str) -> bytes | None:
 
 def s3_request(method: str, endpoint: str, region: str, access_key: str,
                secret_key: str, path: str, body: bytes = b"",
-               timeout: float = 300.0) -> httpx.Response:
+               timeout: float = 300.0,
+               query: dict | None = None) -> httpx.Response:
     """Header-signed SigV4 request (path begins with '/'; RunPod's S3 API
-    supports NO presign, so the orchestrator side signs headers)."""
+    supports NO presign, so the orchestrator side signs headers).
+    `query` params (SPEC 13ao lane tooling: ListObjectsV2 paging) ride
+    the canonical request string — an unsigned query = SignatureDoesNotMatch."""
     now = dt.datetime.now(dt.UTC)
     date, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
     scope = f"{day}/{region}/{SERVICE}/aws4_request"   # 5-part credential
     host = urllib.parse.urlsplit(endpoint).netloc
     payload_hash = hashlib.sha256(body).hexdigest()
     canon_uri = urllib.parse.quote(path, safe="/")
+    qstr = "&".join(f"{urllib.parse.quote(k, safe='')}="
+                    f"{urllib.parse.quote(str(v), safe='')}"
+                    for k, v in sorted((query or {}).items()))
     signed = "host;x-amz-content-sha256;x-amz-date"
     canon_headers = (f"host:{host}\nx-amz-content-sha256:{payload_hash}\n"
                      f"x-amz-date:{date}\n")
-    canon_req = "\n".join([method.upper(), canon_uri, "", canon_headers,
+    canon_req = "\n".join([method.upper(), canon_uri, qstr, canon_headers,
                            signed, payload_hash])
     to_sign = "\n".join([ALGO, date, scope,
                          hashlib.sha256(canon_req.encode()).hexdigest()])
     k = _sign(_sign(_sign(_sign(b"AWS4" + secret_key.encode(), day), region),
                     SERVICE), "aws4_request")
     sig = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
-    return httpx.request(method, f"{endpoint}{canon_uri}", content=body,
+    url = f"{endpoint}{canon_uri}" + (f"?{qstr}" if qstr else "")
+    return httpx.request(method, url, content=body,
                          timeout=timeout,
                          headers={"Host": host, "x-amz-date": date,
                                   "x-amz-content-sha256": payload_hash,
@@ -254,6 +261,19 @@ def vol_put(key: str, data: bytes) -> None:
                    f"/{c['bucket']}/{key}", data)
     if r.status_code != 200:
         raise StorageError(f"vol_put {key}: HTTP {r.status_code} {r.text[:200]}")
+
+
+def vol_del(key: str) -> bool:
+    """DELETE one volume-object (SPEC 13ao lane hygiene). Returns True on
+    success. Retention policy is deliberate: only objects proven junk
+    (no-op base-clone merges, superseded failed-stage payloads) get here
+    — the lane is the family's evidence locker, not a scratch disk."""
+    c = vol_cfg()
+    if not c:
+        return False
+    r = s3_request("DELETE", c["endpoint"], c["region"], c["key"],
+                   c["secret"], f"/{c['bucket']}/{key}")
+    return r.status_code in (204, 200)
 
 
 def vol_get(key: str) -> bytes | None:
