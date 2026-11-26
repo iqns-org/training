@@ -111,13 +111,16 @@ def test_submit_stage_dry_local(tmp_path, monkeypatch):
     pp = tmp_path / "postproc"
     pp.mkdir()
     (pp / "merge_adapter.py").write_text("# stub\n")
+    (pp / "holdout_loss.py").write_text("# stub\n")
     (pp / "util.py").write_text("# stub\n")
     res = dispatch.submit_stage("merge", "from-1", base_model="A/B",
                                 dry=True, provider="local")
     assert res["lane"] == "host" and res.get("dry")
     payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
     assert payload["inputs"][0]["path"] == "/data/runs/from-1/artifacts.tar.gz"
-    assert payload["gate"] == {"required_files": ["config.json"]}
+    assert payload["gate"] == {"required_files": ["config.json",
+                                "model.safetensors",
+                                "merge_stats.json"]}
     assert "merge_adapter.py" in payload["command"] and "--base A/B" in payload["command"]
     assert payload["config_yaml"] == ""
     # scripts ride along, sha-verified, from the repo (not the frozen image)
@@ -175,7 +178,9 @@ def test_submit_stage_awq_dataset_injection(tmp_path, monkeypatch):
     assert payload["inputs"][1]["path"].endswith("queer.jsonl")
     assert payload["inputs"][1]["sha256"] == "0" * 64
     assert "--dataset /work/inputs/data" in payload["command"]
-    assert payload["gate"] == {"required_files": ["config.json"]}
+    assert payload["gate"] == {"required_files": ["config.json",
+                                "model.safetensors",
+                                "merge_stats.json"]}
     assert puts[f"runs/{res['run_id']}/script/quantize_awq.py"] == b"# stub\n"
 
 
@@ -380,6 +385,10 @@ def test_stage_row_records_image_and_holdout(tmp_path, monkeypatch):
                         lambda k, d: puts.__setitem__(k, d))
     # local lane: mount is LOCAL_MOUNT
     monkeypatch.setenv("LOCAL_MOUNT", "/data")
+    pp = tmp_path / "postproc"
+    pp.mkdir()
+    (pp / "holdout_loss.py").write_text("# stub\n")
+    (pp / "util.py").write_text("# stub\n")
     # seed a train-row payload carrying a holdout input on the host lane
     from orchestrator.ledger import Ledger
     led = Ledger(tmp_path / "state" / "ledger.db")

@@ -1347,8 +1347,12 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         # same discipline as train (SPEC 13ak): what exact bytes this
         # stage job was handed, recorded in the ledger spec.
         led.merge_spec(run_id,
-                       image=_postproc_gpu_image() if spec.get("gpu")
-                       else _postproc_image(),
+                       # 4eed0a law, FINALLY enforced: the row carries the
+                       # SAME image the launch boots — the legacy ternary
+                       # missed image:"trainer" kinds (holdout/ablate), so
+                       # the books said postproc digest, the pod ran the
+                       # trainer. One helper, two readers.
+                       image=_stage_image(spec),
                        inputs=[{"name": i.get("name", ""),
                                 "sha256": i.get("sha256", "")}
                                for i in inputs if i.get("sha256")])
