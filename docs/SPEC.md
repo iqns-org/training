@@ -1546,7 +1546,13 @@ one purpose — every future domain/round/target answers with numbers:
   as a sha-verified INPUT (stage scripts run from repo, not image) so
   it is live immediately. Re-merge PROVEN (5ce31b): merged sha 60ea0ac0 — the
   first merge hash in this pipeline's history NOT equal to the base
-  clone — run.log: {applied 186, expected 186, scaling 2.0}, "186
+  clone — run.log: {applied 186, expected 186, scaling 2.0}, merged blob 60ea0ac0
+  (first non-base-clone merge hash in the pipeline's history).
+  SCORER (4eed0a, on 5ce31b's bytes): holdout_loss 0.9178 on the
+  identical 621 rows / 11432 tokens vs base reference 4.1088 — 4.5x
+  better on never-seen data. ROUND 3 GENERALIZES: the identity lives
+  in the weights and survives the merge path; the 13ai r2-data design
+  critique is validated by measurement, not by autopsy., "186
   tensors moved". The fix is real. LESSON THE GUARD TAUGHT: the chain
   refused to score because the manifest summary lacked the stats —
   truth WAS in run.log but the in-image finalize scraper is frozen at
@@ -1576,6 +1582,19 @@ one purpose — every future domain/round/target answers with numbers:
   came from runs that did real work. And what is NOT the bug: the cap
   itself was enforcement-as-designed — pod terminated, $0.05, no
   leak. The estimate was the pathology; the enforcer was innocent.
+
+  LANE HYGIENE (quota wall): staging died with S3 403 QuotaExceeded
+  after cb059d. Scan truth: the bucket held ~10GB of objects against a
+  ~51GB ACCOUNT-WIDE quota — other tenants' caches ride the same
+  envelope, so quota math is not lane math. Freed ~6GB of PROVEN junk
+  with verify-after-delete (DELETE 204 + HEAD 404): four base-clone
+  merge blobs (manifest-sha == 2cdf190a) + cb059d's orphan .part.
+  RETENTION LAW: lane deletes only of objects proven junk by
+  manifest-sha match or cap-kill orphan inspection — payloads,
+  manifests, logs, adapters, merged blobs, holdout files, dataset keys
+  are forever. New plumbing: storage.vol_del (returns nothing false)
+  and s3_request(query=) signing ListObjectsV2 paging (RunPod S3
+  exposes no presigned list).
 
 Tests: tests/test_spine.py (gate lineage walk, refusal-before-ledger,
 holdout determinism/ratio, zero-eval-key render assertions, resolver
@@ -1692,3 +1711,21 @@ off the S3 endpoint (cluster `s3.quadra:9000`, NodePort 30900, console
 30901) needs only the `s3-credentials` secret — no trainer token, no
 ledger access. The UX-facing design (views, join keys, honesty rules)
 is documented in `docs/UI.md`.
+
+
+(ap) RECORDER COMPLETION (self-audit, 2026-11-26 evening): the three
+  recorder fixes df3053f/44ee195 claimed landed only in fragments —
+  df3053f shipped led.update_spec (a method Ledger never had; every
+  real holdout stage would AttributeError) and claimed a regression
+  test that did not exist; 44ee195 replaced the dead call but its
+  gate-expectation sweep corrupted the AWQ test (3-file merge law
+  pasted onto a 1-file stage) and the image site still had a live
+  legacy ternary at led.create("stage"). Final state, all test-proven:
+  stage rows record image=_stage_image(spec) (one helper for books
+  and bytes — closes 4eed0a's image leg honestly for NEW runs; old
+  rows keep their recorded value, that's what verify flags); resolver
+  records holdout_sha via merge_spec; test_stage_row_records_image_and_
+  holdout exercises the dry holdout path end-to-end; awq/merge gate
+  expectations each match their own spec. Full suite green. Lesson
+  the day keeps teaching: a commit message is a CLAIM; only the test
+  suite and git show are evidence — verify both before saying done.

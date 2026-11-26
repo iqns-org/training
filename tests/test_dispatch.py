@@ -178,9 +178,7 @@ def test_submit_stage_awq_dataset_injection(tmp_path, monkeypatch):
     assert payload["inputs"][1]["path"].endswith("queer.jsonl")
     assert payload["inputs"][1]["sha256"] == "0" * 64
     assert "--dataset /work/inputs/data" in payload["command"]
-    assert payload["gate"] == {"required_files": ["config.json",
-                                "model.safetensors",
-                                "merge_stats.json"]}
+    assert payload["gate"] == {"required_files": ["config.json"]}
     assert puts[f"runs/{res['run_id']}/script/quantize_awq.py"] == b"# stub\n"
 
 
@@ -408,6 +406,10 @@ def test_stage_row_records_image_and_holdout(tmp_path, monkeypatch):
     assert res.get("dry"), res
     row = led.get(res["run_id"])
     spec = json.loads(row["spec_json"])
-    assert spec["image"] == dispatch._stage_image(dispatch.STAGE_SPECS["holdout"])
-    assert spec["image"] == dispatch._image_ref()  # trainer, not postproc
+    # the books MUST match what the launch expression yields (4eed0a law):
+    # holdout declares image:"trainer" -> _stage_image routes to the
+    # trainer digest, not the postproc pair the old ternary recorded
+    assert spec["image"] == dispatch._stage_image(
+        dispatch.STAGE_SPECS["holdout"])
+    assert spec["image"] == dispatch._image_ref()   # trainer, not postproc
     assert spec["holdout_sha"] == "cafe" + "0" * 60
