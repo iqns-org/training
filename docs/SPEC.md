@@ -1458,7 +1458,54 @@ one purpose — every future domain/round/target answers with numbers:
   'qwen3_5' — the arch this scorer must load). The trainer image is the
   stack that TRAINED this generation (native support + peft as an
   axolotl dependency), so `holdout` declares it and carries no prelude.
-  Same lesson class as the ONNX triangle (13al): image pinning is
+  Same lesson class as the
+
+(a n) DEADMAN SWITCH — the wallet is now a first-class party to
+  liveness (2026-11-26, live-proved here). The hole the day itself
+  dug: the watcher for dd0ae0 (and the near-repeat on 29ce66) was
+  killed by a local `timeout 590` — the row stayed OPEN by design and
+  a human reattached, but that is luck, not machinery: nothing on the
+  pod enforced max_runtime or max_price because THE ENFORCER WAS THE
+  DEAD PROCESS. Blip-proofing protects the work; it never protected
+  the wallet. Protocol (SPEC-law, one choke point):
+    * `_watch` (all four callers: submit/resume/relaunch/stage)
+      rewrites `runs/<id>/ping` with a fresh token EVERY poll cycle.
+      Liveness = CONTENT CHANGE, never clocks — NFS mtimes carry the
+      writer's clock, and host/pod skew is the class of silent lie
+      this refuses to be built on.
+    * pod side (`agent/trainer_agent/deadman.py`): watchdog thread
+      reads the ping beside its own status.json mirror (volume lane
+      only — presign pods carry no mount and are documented-unarmed;
+      their cost stays estimate-capped). Arms ONLY after the first
+      successful read (boot handshake: an orchestrator that dies
+      pre-launch cannot cause a false fire mid-round), fires after
+      DEADMAN_GRACE_S (default 600s ≈ 40 missed 15s checks; knob
+      flows through ALL 3 pod-create env sites so forensics always
+      sees the value in effect) of UNCHANGED content. Missing file
+      after handshake = NO NEWS, not good news — silence is death in
+      both directions.
+    * fire = stamp state.json deadman → runner.cancel() → THE EXISTING
+      completion path does the rest (gate → pack → manifest-LAST;
+      never a second finalize) → wait for the manifest on the lane →
+      os._exit: container dies, pod stops billing. A run whose gate
+      passed anyway still stamps `training.deadman: true` — a round
+      truncated by silence can never masquerade as a clean one.
+    * resume = the day-1 idempotency, unchanged: the row was left
+      OPEN; next-boot `resume`/reconcile reattaches (fresh pings
+      un-fire a not-yet-fired watchdog) or finds pod-gone + manifest
+      on the lane and closes the row honestly with partial artifacts.
+      No new resume machinery — the deadman only caps the damage
+      window at ~grace instead of max_runtime.
+  Grace tradeoff stated: observed DNS blips today ran minutes; 600s
+  rides them out while true orchestrator death stops spend inside
+  ~10 minutes. Ops kill-switch semantics: SIGTERM to a watcher is now
+  a COST-BOUND act, not a runaway act.
+  Tests: tests/test_deadman.py (ping flow on the shared watch loop,
+  blip-retry IS the protocol, step() handshake/arming/reset/death
+  both directions, 3-site knob coverage, stamp-survives-completed-gate,
+  grace env parsing). Live proof: mini with DEADMAN_GRACE_S=90,
+  watcher killed after handshake → pod self-terminated, manifest
+  stamped deadman, row closed by next-boot watch, billing stopped. ONNX triangle (13al): image pinning is
   per-stage stack selection, not one-size-fits-all.
 
 Tests: tests/test_spine.py (gate lineage walk, refusal-before-ledger,
