@@ -1301,6 +1301,11 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             return {"status": "error", "run_id": run_id, "error": err}
         inputs.append(hold)
         cmd += " --holdout /work/inputs/holdout.jsonl"
+        # RECORD the resolved sha on the row (4eed0a law: the books must
+        # carry what the pod actually received — verify's holdout leg
+        # reads spec['holdout_sha'], and "?" there is a recorder bug,
+        # not a data bug)
+        led.update_spec(run_id, {"holdout_sha": hold["sha256"]})
     # Run CURRENT repo scripts, not the frozen /opt copies baked into the
     # p-v images: those are stranded at pre-fix builds (mirror stall), and
     # 6709e3 proved the failure class — llmcompressor's API drifted around
