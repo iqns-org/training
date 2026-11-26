@@ -263,11 +263,23 @@ def vol_put(key: str, data: bytes) -> None:
         raise StorageError(f"vol_put {key}: HTTP {r.status_code} {r.text[:200]}")
 
 
+def vol_head(key: str) -> int:
+    """HTTP status of HEAD on a volume object — the verify-after-delete
+    witness (SPEC 13ao/(ar)): a delete is not done until this says 404."""
+    c = vol_cfg()
+    if not c:
+        return 0
+    r = s3_request("HEAD", c["endpoint"], c["region"], c["key"], c["secret"],
+                   f"/{c['bucket']}/{key}")
+    return r.status_code
+
+
 def vol_del(key: str) -> bool:
     """DELETE one volume-object (SPEC 13ao lane hygiene). Returns True on
     success. Retention policy is deliberate: only objects proven junk
     (no-op base-clone merges, superseded failed-stage payloads) get here
-    — the lane is the family's evidence locker, not a scratch disk."""
+    — the lane is the family's evidence locker, not a scratch disk.
+    Callers must VERIFY (vol_head == 404) — orchestrator.hygiene does."""
     c = vol_cfg()
     if not c:
         return False
@@ -285,3 +297,33 @@ def vol_get(key: str) -> bytes | None:
     if r.status_code != 200:
         raise StorageError(f"vol_get {key}: HTTP {r.status_code} {r.text[:200]}")
     return r.content
+
+
+def vol_list(prefix: str = "") -> list[tuple[str, int]]:
+    """List volume-lane objects as (key, size) — SPEC (ar) hygiene.
+    ListObjectsV2 with continuation paging; query params ride the
+    signature (unsigned = SignatureDoesNotMatch, 13ao tooling law)."""
+    import xml.etree.ElementTree as ET
+    c = vol_cfg()
+    if not c:
+        return []
+    out, token = [], None
+    while True:
+        q = {"list-type": "2", "prefix": prefix}
+        if token:
+            q["continuation-token"] = token
+        r = s3_request("GET", c["endpoint"], c["region"], c["key"],
+                       c["secret"], f"/{c['bucket']}/", query=q)
+        if r.status_code != 200:
+            raise StorageError(f"vol_list: HTTP {r.status_code} "
+                               f"{r.text[:200]}")
+        root = ET.fromstring(r.content)
+        ns = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
+        for o in root.findall(f"{ns}Contents"):
+            k = o.findtext(f"{ns}Key") or ""
+            out.append((k, int(o.findtext(f"{ns}Size") or 0)))
+        if root.findtext(f"{ns}IsTruncated") != "true":
+            return out
+        token = root.findtext(f"{ns}NextContinuationToken")
+        if not token:
+            return out

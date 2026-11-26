@@ -16,7 +16,7 @@ def test_tools_registered():
                 "synth_graph", "synth_audit", "synth_manifest",
                 "synth_bundle", "synth_status", "synth_sample",
                 "synth_mix", "synth_grade", "synth_gaps", "synth_gbnf",
-                "synth_merge"}
+                "synth_merge", "lane_hygiene"}
     assert expected <= _tool_names()
 
 

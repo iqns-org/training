@@ -1,4 +1,6 @@
 """orchestrator/budget.py — normalized budgeting, three gates (SPEC 13q)."""
+import json
+
 import pytest
 from orchestrator import budget
 
@@ -120,3 +122,32 @@ def test_preflight_reports_without_launching(tmp_path, monkeypatch):
     # read-only: the (fresh) ledger holds nothing — no run was registered
     from orchestrator.ledger import Ledger
     assert Ledger(tmp_path / "state" / "ledger.db").list() == []
+
+
+def test_calibration_contamination_auto_retires(tmp_path, monkeypatch):
+    # THE LAW (cb059d as code): when a kind's work profile changes
+    # (EST_VERSION bump), its old obs samples retire from estimation —
+    # kept in the file as evidence, never trusted again. No folklore
+    # "remember to purge" step survives contact with this.
+    monkeypatch.setattr(budget, "OBS_FILE", tmp_path / "obs.json")
+    budget.record_observed("merge", 11.0)
+    budget.record_observed("merge", 12.0)      # no-op-era durations
+    assert budget.est_minutes("merge") == 11.5
+    monkeypatch.setattr(budget, "EST_VERSION", budget.EST_VERSION + 1)
+    assert budget.est_minutes("merge") == budget.EST_MINUTES["merge"] == 45
+    raw = json.loads((tmp_path / "obs.json").read_text())
+    assert len(raw["merge"]) == 2              # evidence preserved, trust gone
+    budget.record_observed("merge", 50.0)      # fresh profile's samples
+    # ONE trusted sample is not a calibration yet (median needs >=2):
+    assert budget.est_minutes("merge") == 45   # static still answers
+    budget.record_observed("merge", 46.0)
+    assert budget.est_minutes("merge") == 48.0  # trusted median takes over
+
+
+def test_legacy_bare_float_samples_are_untrusted(tmp_path, monkeypatch):
+    # pre-stamp file format: unknown work profile = untrusted by law
+    obs = tmp_path / "obs.json"
+    obs.write_text(json.dumps({"awq": [8.0, 9.0, 10.0]}))
+    monkeypatch.setattr(budget, "OBS_FILE", obs)
+    assert budget.obs_minutes("awq") == []
+    assert budget.est_minutes("awq") == budget.EST_MINUTES["awq"]

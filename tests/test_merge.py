@@ -53,3 +53,21 @@ def test_lora_scaling_ranks_and_rslora():
     assert ma.lora_scaling({"r": 16, "lora_alpha": 32,
                             "use_rslora": True}) == 8.0   # 32/sqrt(16)
     assert ma.lora_scaling({"r": 8, "lora_alpha": 8}) == 1.0
+
+
+def test_merge_laws_all_refuse_a_base_clone():
+    # the whole point of the 13ao rewrite: every silent-noop shape dies
+    assert "ZERO" in ma.merge_law_error(0, 0, [], 0)
+    # partial merge (namespace miss / half pair / shape clash)
+    err = ma.merge_law_error(4, 3, ["model.layers.9.mlp.up_proj (half "
+                                   "pair)"], 3)
+    assert "incomplete" in err and "3/4" in err
+    # every pair landed but NOTHING moved numerically = the base clone
+    err = ma.merge_law_error(4, 4, [], 0)
+    assert "numerically unchanged" in err and "base clone" in err
+
+
+def test_merge_law_passes_only_on_real_delta():
+    assert ma.merge_law_error(186, 186, [], 186) is None
+    # a couple of fp16-rounded-to-zero tensors is normal; SILENCE is not
+    assert ma.merge_law_error(186, 186, [], 184) is None

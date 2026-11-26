@@ -38,6 +38,15 @@ RESERVE = float(os.environ.get("QTRAIN_RESERVE", "2.0"))    # balance floor
 EST_MINUTES = {"merge": 45, "onnx": 20, "int8": 8, "awq": 25,
                "train": 60, "smoke": 10}
 
+# CALIBRATION-CONTAMINATION LAW, as code (cb059d: no-op-era merge medians
+# caps-killed the first REAL merge; the documented fix — "MUST delete the
+# obs tail" — was folklore one forgetful day from recurring). Every obs
+# sample is stamped with the EST table's profile version; bump
+# EST_VERSION whenever a kind's work profile changes and old samples
+# AUTO-RETIRE from estimation. Nothing is deleted: the file keeps every
+# number as evidence; only TRUST expires with the profile.
+EST_VERSION = 2      # v1: peft-era merges; v2: real delta merges (13ao)
+
 # states that can actually BURN money (ledger row exists, pod may be up).
 # 'verified' is deliberately absent: it marks DRY runs — staged, never
 # launched, $0 — which must not haunt the aggregate gate.
@@ -64,7 +73,8 @@ def record_observed(kind: str, minutes: float) -> None:
     if kind not in OBS_KINDS or not (0.2 <= minutes <= 720):
         return                                   # outliers: boot ghosts
     data = _obs()
-    tail = (data.get(kind) or [])[-9:] + [round(minutes, 2)]
+    tail = (data.get(kind) or [])[-9:] + [{"min": round(minutes, 2),
+                                           "v": EST_VERSION}]
     data[kind] = tail
     try:
         OBS_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -75,8 +85,17 @@ def record_observed(kind: str, minutes: float) -> None:
         pass
 
 
+def obs_minutes(kind: str) -> list[float]:
+    """Minutes of the TRUSTED samples only: entries stamped with the
+    current EST_VERSION. Bare floats (pre-stamp format) carry an unknown
+    work profile — untrusted by law, ignored, but kept in the file as
+    evidence."""
+    return [e["min"] for e in (_obs().get(kind) or [])
+            if isinstance(e, dict) and e.get("v") == EST_VERSION]
+
+
 def est_minutes(kind: str):
-    obs = _obs().get(kind) or []
+    obs = obs_minutes(kind)
     if len(obs) >= 2:
         return statistics.median(obs)
     return EST_MINUTES.get(kind, 30)

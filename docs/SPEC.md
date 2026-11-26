@@ -8,13 +8,18 @@ manifest (LAST) -> harvest -> terminate-confirmed. §3, §6, 14b. `--mini`
 smoke variant (60 rows, cheap, same path). `--dry`/verified rows cost $0.
 
 **Stages** (`qtrain stage <kind> --from-run <id>`): merge (manual delta
-LoRA merge; FAIL-FAST applied==expected; merge_stats.json GATED; 13ao),
+LoRA merge; the FAIL-FAST LAWS are one pure function, suite-pinned:
+zero-pairs / partial / numerically-silent delta ALL refuse to publish a
+base clone; merge_stats.json incl. changed-tensor count GATED; 13ao/(ar)),
 holdout (post-train scorer; holdout.json gated artifact; assistant-span
 NLL; 13am/13ao), onnx/int8/awq (quant/export; family-gated), ablate
 (directional steering spec emitter), register (lane->serve-host resumable
-rsync, sha-verified both ends). Stage scripts ship as sha-verified
-INPUTS from repo — repo code always runs, image staleness cannot
-(mirror-stall lesson 6709e3).
+rsync, sha-verified both ends; DELIVERY INTEGRITY (ar): stage keyed by
+run+name so different artifacts can never collide on one partial,
+unpack-failure drops the stage, and the target dir is WIPED before
+unpack — a --lora-modules path must contain exactly the artifact).
+Stage scripts ship as sha-verified INPUTS from repo — repo code always
+runs, image staleness cannot (mirror-stall lesson 6709e3).
 
 **Image law.** ghcr.io/iqns-org/{trainer,postproc,postproc-gpu}, tags
 built by CI from forgejo (v*, p-v*, m-v*), consumed by DIGEST pin in
@@ -45,9 +50,11 @@ explicit false + run-id evidence; re-probe requires new evidence. 13al.
 
 **Budget.** per-job estimate (price x calibrated minutes x margin) +
 explicit max_price; RESERVE floor; aggregate open-spend gate; wave
-pooling; cap breach = terminate, never orphan. Calibration purge law:
-a kind whose work profile changed MUST have its obs tail deleted
-(cb059d: no-op merge medians caps killed the first REAL merge). §9.
+pooling; cap breach = terminate, never orphan. Calibration-contamination
+law AS CODE (cb059d; supersedes the manual "MUST delete the obs tail"):
+every obs sample carries the EST table's profile version; bump
+EST_VERSION when a kind's work profile changes and stale samples
+auto-retire from estimation — evidence is never deleted, only trust. §9.
 
 **Deadman (13an).** `_watch` rewrites runs/<id>/ping every cycle
 (content-change, clock-free); pod watchdog (agent/deadman.py) arms at
@@ -59,10 +66,13 @@ not max_runtime. Presign lane unarmed (documented hole).
 
 **Lanes.** volume (RunPod S3, fleet default; mount=truth on pod side),
 host (ssh/rsync), presign (legacy; expiring URLs, relaunch refuses).
-Quota is ACCOUNT-WIDE: hygiene law = delete only proven junk
-(manifest-sha match / cap-killed .part orphans), verify-after-delete
-(vol_del + HEAD 404); evidence forever; s3_request signs query params
-(ListObjectsV2). 13ao/(an-p).
+Quota is ACCOUNT-WIDE: hygiene is a TOOL, not folklore — `qtrain
+hygiene` / MCP `lane_hygiene` (orchestrator/hygiene.py) delete ONLY
+proven junk via two proof shapes (orphan .part under a ledger-terminal
+run; artifacts.tar.gz whose manifest records a bad --bad-sha blob),
+NEVER a manifest (evidence law), verify-after-delete (vol_del + HEAD
+404, unverified = reported failure, never freed bytes), dry-run plan by
+default; vol_list pages ListObjectsV2 with signed query params. 13ao/(ar).
 
 **Idempotency (14b).** reap/wave/relaunch; blip-tolerant watch loops
 (tolerant get, keepalive); resume_open_runs at boot adopts open rows;
@@ -89,7 +99,9 @@ THIN means human look). 13ai/13am.
 merged model dir; identity must live in weights (no chat-template
 crutch — engine-wide template leaked base id, per-LoRA templates
 unproven); no-templates + weights-only is the round-3 contract; flip =
-one-line infra PR, rollback dir kept.
+one-line infra PR, rollback dir kept; SERVE TRUTH IS POLLED TRUTH (ar)
+— after any flip, /v1/models + a who-are-you probe settle it: the
+quadra.yaml line is a claim, the alias list is evidence.
 
 **Distribution law (user ruling, 13al).** artifact lane -> CI-built OCI
 image -> registry -> quadra.yaml BY DIGEST -> k3s deploy via infra.
@@ -1870,3 +1882,40 @@ is documented in `docs/UI.md`.
   hashes from a swallowed-output batch — both caught by
   verify-after-claim, the same law the ledger enforces on pods:
   message = claim, git show + suite = evidence.
+
+
+(ar) LAW-BAKING AUDIT (2026-11-26 late): the question asked was whether
+  every lesson of the day is enforced by code or merely written down.
+  Answer was NO — three laws were folklore; they are now machines:
+  1. BUDGET CALIBRATION-CONTAMINATION (cb059d): the documented cure
+     ("MUST delete the obs tail") relied on a human remembering. Obs
+     samples now carry the EST table's profile version (EST_VERSION=2);
+     bump it when a kind's work profile changes and stale samples
+     AUTO-RETIRE from estimation. Strictly better than the purge law:
+     evidence is never deleted, only trust expires. Legacy bare-float
+     samples = unknown profile = untrusted by default. Two suite tests
+     pin both paths.
+  2. MERGE NO-OP FINAL LAW (13ao): the serving law said "deployable
+     iff blob sha != base clone" but merge_adapter only checked key
+     bookkeeping — an all-zero adapter could still publish a byte-
+     identical clone with applied==expected happy numbers. The laws
+     are now ONE PURE FUNCTION (merge_law_error: zero-pairs / partial /
+     numerically-silent delta) — previously untested because main()
+     needs torch; changed-tensor count rides merge_stats.json AND the
+     finalize scrape whitelist. Two suite tests pin the refusals and
+     the honest-pass case (184/186 rounded-to-zero is fine; 0/186 is
+     death).
+  3. LANE HYGIENE (13ao): the proven-junk cleanup that freed ~6GB was
+     an ad-hoc manual script — the laws (delete only proven junk,
+     verify-after-delete, manifests are evidence) had no reusable code.
+     New orchestrator/hygiene.py: pure classify() over exactly two
+     proof shapes (terminal-run orphan .part — only live pods write
+     those; artifacts.tar.gz whose OWN manifest records a --bad-sha
+     artifact, so the 1.3GB blob never has to be downloaded to prove
+     it), manifest.json NEVER a candidate, sweep() verifies every
+     delete with HEAD-404 and counts unverified as FAILURE, dry-run
+     default. storage gains vol_list (paged, query-signed ListObjectsV2)
+     + vol_head. CLI `qtrain hygiene` + MCP `lane_hygiene` (parity law
+     honored in the same commit). Nine suite tests.
+  Suite 197 passed, 1 skipped (+13). §0 updated: Budget, Stages, Lanes
+  lines now describe the ENFORCEMENT, not the intention.

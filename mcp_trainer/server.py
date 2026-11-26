@@ -438,18 +438,30 @@ def budget_report(provider: str = "runpod") -> dict:
         except Exception:                          # noqa: BLE001
             pass
     opens = [r for r in led.list() if r["state"] in bud.BILLED]
-    obs = bud._obs()
     import statistics
     return {"balance": bal, "reserve": bud.RESERVE, "budget_total": bud.TOTAL,
-            "margin": bud.MARGIN,
+            "margin": bud.MARGIN, "est_version": bud.EST_VERSION,
             "open_runs": [{"run_id": r["run_id"], "kind": r["kind"],
                            "state": r["state"],
                            "est_cost": round(r.get("est_cost") or 0, 3)}
                           for r in opens],
             "open_projected": round(sum(r.get("est_cost") or 0
                                         for r in opens), 2),
-            "observed_median_minutes": {k: round(statistics.median(v), 1)
-                                        for k, v in obs.items() if v}}
+            "observed_median_minutes":
+                {k: round(statistics.median(v), 1)
+                 for k in bud._obs() if (v := bud.obs_minutes(k))}}
+
+
+@mcp.tool
+def lane_hygiene(bad_shas: list[str] | None = None,
+                 apply: bool = False) -> dict:
+    """Lane quota housekeeping (SPEC (ar)): delete ONLY proven junk —
+    orphan .part objects under terminal runs and artifacts.tar.gz whose
+    manifest records a sha256 in bad_shas. Manifests are evidence, never
+    candidates; every delete is verified (HEAD must answer 404).
+    apply=False (default) returns the plan and touches nothing."""
+    from orchestrator import hygiene
+    return hygiene.sweep(bad_shas=set(bad_shas or ()), apply=apply)
 
 
 @mcp.tool

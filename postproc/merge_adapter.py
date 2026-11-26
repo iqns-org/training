@@ -68,6 +68,31 @@ def pair_ckpt(ckpt: dict):
     return pairs
 
 
+def merge_law_error(n_pairs: int, applied: int, unresolved: list,
+                    changed: int) -> str | None:
+    """The FAIL-FAST LAWS as one pure check the suite can pin (silence
+    about the delta is how the no-op shipped for a month):
+
+      n_pairs == 0        adapter keys never matched the namespace —
+                          publishing would clone the base.
+      unresolved or
+      applied != n_pairs  a partial merge is a lie of a different shape.
+      changed == 0        every pair landed but NO weight moved
+                          numerically (all-zero deltas): the output bytes
+                          ARE the base — refuse to publish a clone."""
+    if n_pairs == 0:
+        return ("merge: ZERO lora pairs parsed — refusing to publish a "
+                "base clone")
+    if unresolved or applied != n_pairs:
+        return (f"merge incomplete: applied {applied}/{n_pairs}; "
+                f"unresolved: {unresolved[:8]}")
+    if changed == 0:
+        return (f"merge: all {applied} applied tensors left weights "
+                "numerically unchanged — adapter contributed nothing, "
+                "refusing to publish a base clone")
+    return None
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="input", required=True)
@@ -82,13 +107,13 @@ def main(argv=None) -> None:
     ckpt = load_file(str(Path(a.input) / "adapter_model.safetensors"))
     pairs = pair_ckpt(ckpt)
     if not pairs:
-        raise SystemExit(f"merge: ZERO lora pairs parsed from {len(ckpt)} "
-                         "ckpt keys — refusing to publish a base clone")
+        # cheap pre-check BEFORE the base download (same law as below)
+        raise SystemExit(merge_law_error(0, 0, [], 0))
 
     model = AutoModelForCausalLM.from_pretrained(a.base,
                                                  torch_dtype=torch.float16)
     params = dict(model.named_parameters())
-    applied, unresolved = 0, []
+    applied, unresolved, changed = 0, [], 0
     for mod, ab in pairs.items():
         if "A" not in ab or "B" not in ab:
             unresolved.append(f"{mod} (half pair)")
@@ -108,15 +133,18 @@ def main(argv=None) -> None:
             unresolved.append(f"{mod} shape {tuple(delta.shape)} != "
                               f"{tuple(tgt.shape)}")
             continue
+        before = tgt.data.clone()
         with torch.no_grad():
             tgt.data.copy_((tgt.data.to(torch.float32) + delta).to(tgt.dtype))
         applied += 1
+        if not torch.equal(tgt.data, before):
+            changed += 1
 
-    # FAIL-FAST LAW: silence about the delta is how the no-op shipped for
-    # a month. Every pair must land — partial merges die too.
-    if unresolved or applied != len(pairs):
-        raise SystemExit(f"merge incomplete: applied {applied}/{len(pairs)}; "
-                         f"unresolved: {unresolved[:8]}")
+    # FAIL-FAST LAW (one pure function, suite-pinned): zero pairs, a lost
+    # pair, or a numerically silent delta all die instead of publishing
+    # a base clone.
+    if (err := merge_law_error(len(pairs), applied, unresolved, changed)):
+        raise SystemExit(err)
 
     Path(a.out).mkdir(parents=True, exist_ok=True)
     model.save_pretrained(a.out, safe_serialization=True)
@@ -128,6 +156,7 @@ def main(argv=None) -> None:
     # pods run frozen agent images (the 5ce31b lesson — v0.3.0 finalize
     # lacked the wanted keys, so the dict line never reached the summary).
     stats = {"merge_applied_pairs": applied, "merge_expected_pairs": len(pairs),
+             "merge_changed_tensors": changed,
              "merge_scaling": round(scaling, 6)}
     (Path(a.out) / "merge_stats.json").write_text(json.dumps(stats, indent=1))
     print(stats, flush=True)

@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from .config import ROOT, load_dotenv, resolve_recipe
-from . import dispatch, storage
+from . import dispatch, hygiene, storage
 from .ledger import Ledger
 from .models import ProviderError
 from .providers import available_providers, get_provider
@@ -280,9 +280,10 @@ def cmd_budget(args):
         except Exception:
             pass
     opens = [r for r in led.list() if r["state"] in bud.BILLED]
-    obs = bud._obs()
+    obs_k = list(bud._obs())
     out = {"balance": bal, "reserve": bud.RESERVE,
            "budget_total": bud.TOTAL, "margin": bud.MARGIN,
+           "est_version": bud.EST_VERSION,
            "open_runs": [{"run_id": r["run_id"], "kind": r["kind"],
                           "state": r["state"],
                           "est_cost": round(r.get("est_cost") or 0, 3)}
@@ -291,8 +292,14 @@ def cmd_budget(args):
                                        for r in opens), 2),
            "observed_median_minutes":
                {k: round(statistics.median(v), 1)
-                for k, v in obs.items() if v}}
+                for k in obs_k if (v := bud.obs_minutes(k))}}
     _print(out)
+
+
+def cmd_hygiene(args):
+    res = hygiene.sweep(bad_shas=set(args.bad_sha or ()),
+                        apply=args.apply)
+    _print(res)
 
 
 def cmd_preflight(args):
@@ -601,6 +608,18 @@ def build_parser():
     prov_arg(s)
     s.add_argument("--dry", action="store_true")
     s.set_defaults(func=cmd_janitor)
+
+    s = sub.add_parser("hygiene", help="lane quota housekeeping: delete "
+                       "ONLY proven junk (orphan .part under terminal "
+                       "runs / artifacts whose manifest records a "
+                       "--bad-sha blob), verify-after-delete")
+    s.add_argument("--bad-sha", action="append", default=[],
+                   metavar="SHA256",
+                   help="artifact sha256 proven junk (repeatable); the "
+                        "manifest is the proof — no download needed")
+    s.add_argument("--apply", action="store_true",
+                   help="actually delete (default: print the plan only)")
+    s.set_defaults(func=cmd_hygiene)
 
     s = sub.add_parser("doctor", help="orphan sweep: live pods vs ledger")
     prov_arg(s)
