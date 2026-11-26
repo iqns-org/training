@@ -1544,8 +1544,17 @@ one purpose — every future domain/round/target answers with numbers:
   manifest summary. v0.4.0 trainer image (deadman) is still owed by CI
   (tag pushed 15:03, digest absent — flagged to team); this fix ships
   as a sha-verified INPUT (stage scripts run from repo, not image) so
-  it is live immediately. Re-merge chain (29ce66 -> fixed merge ->
-  verify blob changed -> holdout on true v3 bytes) results append here.
+  it is live immediately. Re-merge PROVEN (5ce31b): merged sha 60ea0ac0 — the
+  first merge hash in this pipeline's history NOT equal to the base
+  clone — run.log: {applied 186, expected 186, scaling 2.0}, "186
+  tensors moved". The fix is real. LESSON THE GUARD TAUGHT: the chain
+  refused to score because the manifest summary lacked the stats —
+  truth WAS in run.log but the in-image finalize scraper is frozen at
+  v0.4.0's wanted-keys (CI never built it; same hole, new victim).
+  LAW EXTENDED: merge_stats.json is now a GATE-REQUIRED artifact
+  ("required" list in STAGE_SPECS) — deployable iff
+  applied==expected==186 in a hashable file the gate enforces, never
+  a scrape that can lag the image.
   OPS NOTE the day also earned: `qtrain watch` is the PASSIVE progress
   viewer (reads heartbeat mirror); the command that harvests/closes/
   terminates is `qtrain reconcile <run-id>` — 29ce66 closed via

@@ -124,8 +124,13 @@ def main(argv=None) -> None:
     sys.path.insert(0, str(Path(__file__).parent))
     from util import sanitize_tokenizer_config  # noqa: E402
     sanitize_tokenizer_config(a.out)
-    print({"merge_applied_pairs": applied, "merge_expected_pairs": len(pairs),
-           "merge_scaling": round(scaling, 6)}, flush=True)
+    # STATS RIDE A GATED ARTIFACT, not the in-image manifest scrape:
+    # pods run frozen agent images (the 5ce31b lesson — v0.3.0 finalize
+    # lacked the wanted keys, so the dict line never reached the summary).
+    stats = {"merge_applied_pairs": applied, "merge_expected_pairs": len(pairs),
+             "merge_scaling": round(scaling, 6)}
+    (Path(a.out) / "merge_stats.json").write_text(json.dumps(stats, indent=1))
+    print(stats, flush=True)
     print(f"merged -> {a.out} ({applied} tensors moved)", flush=True)
 
 
