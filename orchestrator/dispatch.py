@@ -1011,7 +1011,9 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
 
 STAGE_SPECS = {
     "merge": {"script": "merge_adapter.py", "needs_base": True,
-              "required": ["config.json"], "max_price_hr": 0.80},
+              "required": ["config.json", "model.safetensors",
+                           "merge_stats.json"],
+              "max_price_hr": 0.80},
     # R15 (docs/ORACLES.md): contrast activations -> behavior direction;
     # soft mode emits a steering-LoRA spec (rides the vLLM lane), hard
     # mode projects W <- W(I - vv^T). Fuel: `synth contrasts`. The lane
