@@ -1551,8 +1551,22 @@ one purpose — every future domain/round/target answers with numbers:
   terminates is `qtrain reconcile <run-id>` — 29ce66 closed via
   reconcile (succeeded, 9 artifacts, pod confirmed gone). A watcher
   that never harvests is how a finished run bills: now documented AND
-  deadman-capped once the v0.4.0 image lands. ONNX triangle (13al): image pinning is
-  per-stage stack selection, not one-size-fits-all.
+  deadman-capped once the v0.4.0 image lands. (ONNX triangle (13al):
+  image pinning is per-stage stack selection, not one-size-fits-all.)
+
+  CALIBRATION CONTAMINATION (cb059d, same day): the first REAL merge
+  was killed at 12.9 min by the merge budget cap ($0.0516) —
+  est_minutes() was returning the median of the merge obs tail, and
+  that tail's ONLY samples were no-op-era merges (8.4/9.2/7.8/8.8 min
+  — fast BECAUSE the peft no-op moved nothing). LAW: when a kind's
+  work profile changes, its calibration MUST be purged — an estimator
+  trained on a broken machine encodes the machine's lie. Local obs
+  tail purged on this box (state/ is gitignored runtime calibration;
+  it rebuilds from honest runs); EST_MINUTES merge 12->45 (base dl +
+  186 fp32 deltas + 1.5GB save/upload); awq tail kept — those samples
+  came from runs that did real work. And what is NOT the bug: the cap
+  itself was enforcement-as-designed — pod terminated, $0.05, no
+  leak. The estimate was the pathology; the enforcer was innocent.
 
 Tests: tests/test_spine.py (gate lineage walk, refusal-before-ledger,
 holdout determinism/ratio, zero-eval-key render assertions, resolver
