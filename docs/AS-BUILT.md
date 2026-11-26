@@ -441,7 +441,8 @@ MID-STARTUP — vLLM's HTTP layer answers /health transiently before the
 GDN Triton warmup + cudagraph capture finish, so the startupProbe
 passes, then liveness starves the warmup. Fleet fix: give liveness an
 Orin-scaled grace (patched `initialDelaySeconds=600`; a later rollout
-kept the 600 and reset failureThreshold to 3 — still stable). Cold
+kept the 600 and reset failureThreshold to 3). The restarts that
+continued after this were NOT the probe — see the OOM paragraph below. Cold
 start on Orin measures ~8-10 min end-to-end; a rollout mid-measurement
 shows up as HTTP 404s (wrong url form) then Connection-reset errors —
 check `kubectl get events` before blaming the model.
@@ -457,7 +458,18 @@ DROP the first: cognition r1 added this way evicted kandi from
 surviving LoRAModulePath). (BUILD THE PATCH FROM THE LIVE SPEC —
 another session may be rolling it; re-poll after patch. This is how
 cognition r1 went live, and how it died: the r2-era spec serves
-kandi v3 only.) Served modules answer POST {"model": "NAME"} on
+kandi v3 + cognition in the CORRECT single-occurrence form (my r1 patch
+killed kandi; the parallel session's 6867868c45 rollout fixed it). That
+two-adapter config then OOMKilled (137) TWICE on Orin — both times
+AFTER /health answered 200, i.e. not a probe failure: 1.53Gi model +
+650M KV + TWO rank-32 adapter pools bust the 6Gi container limit at
+cudagraph capture on unified memory (the limit can't be raised — node
+is 7.5G total with the OS living in the same RAM). Fleet fix applied:
+`--enforce-eager` — capture phase disappears, pod went 1/1 in ~7 min
+with 0 restarts, stable; for a measurement engine (sequential bench
+traffic) the graph speedup is irrelevant anyway. Eager also makes the
+liveness race academic.
+Served modules answer POST {"model": "NAME"} on
 /v1/chat/completions. Endpoint url conventions differ by tool: bench
 --url wants the BARE base (appends /v1/chat/completions itself —
 /v1-suffixed input = 404 on every question), synth sample --url

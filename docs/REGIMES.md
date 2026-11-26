@@ -140,7 +140,13 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
          `qtrain watch <run_id>` reads the agent-lane status.json:
          step 106/892 loss 0.047 at ~1h, 4 epochs = 892 steps; scoped
          RunPod key cannot read pod logs — the agent lane is the only
-         observability path):
+         observability path. MEANWHILE the lane proved its own law:
+         attempt 1 was SIGTERM'd (exit -15, deadman:true) at step ~106
+         when the workstation rebooted ~11:40Z and its ping file went
+         stale — watchdog fired exactly as SPEC 14c designed, capped
+         the spend window; supervisor relaunched (attempt 2 same pod,
+         fresh from step 0, 4.8 s/step). Status.json keeps BOTH
+         attempts' fields — forensics survives restarts.):
            r1 03760e — 2 epochs, loss 0.0886, $0.21, 53 min (~26.5
            min/epoch on RTX 2000 Ada). Served on nano0 vllm-qwen3-05 as a
            SECOND --lora-modules (no merge stage — registry vllm-lora
@@ -152,15 +158,19 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            restored e0e1f9a, repeats=3, ledger --record on 03760e): stable
            1/6 — ir-translate 3/3, the other five 0/3, 34.8 tok/s med.
            The translate flip was single-sample noise, now pinned.
-           Instrumented per-family sample (temp 0, k=1, --task):
-           concrete-examples 0/50 (129 AssertionError + 65 IRError +
-           6 Returned at k=4; Returned = RETURN leaked into the context
-           block, a real misshape not a harness ghost), nl-to-ir 0/6,
-           ir-to-nl 1/6, repair 0/6; invalid-program 2/3 THEN Connection
-           resets = the parallel session's engine rollout (6867868c45)
-           cutting the run mid-flight — its abstain/program-completion
-           "0/0" was the same artifact, NOT model numbers; rerun when
-           the serving spec settles. The buckets also caught a tool lie:
+           Instrumented per-family sample (temp 0, k=1, --task), rerun
+           clean after the engine settled (the first pass was wrecked
+           by the parallel session's rollout — connection resets, not
+           verdicts): INVALID-PROGRAM 6/6, ABSTAIN 5/6 — recognition
+           families nearly perfect; craft families dead: concrete-
+           examples 0/50 (129 AssertionError + 65 IRError + 6 Returned
+           at k=4; Returned = RETURN leaked into the context block, a
+           real misshape not a harness ghost), nl-to-ir 0/6, ir-to-nl
+           1/6, repair 0/6, program-completion 0/6. So r1 learned to
+           JUDGE the IR (verdict + abstain + bench translate 3/3) but
+           not to CRAFT valid-and-correct programs — r3's data lever
+           is the craft families specifically, not epochs, not the
+           checker. The buckets also caught a tool lie:
            unfiltered cmd_sample walks sorted scenario files and --limit
            cuts mid-family, so "0.0/48" (r1) and "0.0/50" measured ONE
            family (concrete-examples) — rejects_by_system (315331c) is
@@ -171,8 +181,11 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            cmd_gaps eats the REAL bench shape (was fiction-tested),
            cmd_sample buckets rejects by cause, ledger evals record both
            legs (r1 vs base) — docs/AS-BUILT §7.
-           r3 lever (from r1 verdicts): behavior coverage, not epochs —
-           abstain phrasing, emit shapes, more scenario COUNT. And an
+           r3 lever (from the clean per-family split): CRAFT-family
+           coverage, not epochs — program-completion/nl-to-ir/
+           concrete-examples rows (and scenario COUNT). Verdict
+           families (abstain/invalid-program) already pass — re-
+           training them is waste. And an
            L3 event worth naming: the r2 rebuild from an UNCHANGED
            scenarios tree yielded cognition@569e46d5 (6864 SFT + 618
            DPO) vs r1's cognition@e184c8de (9044 + 821) — identical
