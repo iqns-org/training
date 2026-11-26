@@ -1,5 +1,103 @@
 # quadra/training — System Spec
 
+## 0. Features (current-law index — terse; depth lives at the pointers)
+
+**Pipeline.** domain+recipe submit -> staged lane payload -> RunPod wave
+launch -> in-pod agent runs axolotl -> finalize gate -> artifacts +
+manifest (LAST) -> harvest -> terminate-confirmed. §3, §6, 14b. `--mini`
+smoke variant (60 rows, cheap, same path). `--dry`/verified rows cost $0.
+
+**Stages** (`qtrain stage <kind> --from-run <id>`): merge (manual delta
+LoRA merge; FAIL-FAST applied==expected; merge_stats.json GATED; 13ao),
+holdout (post-train scorer; holdout.json gated artifact; assistant-span
+NLL; 13am/13ao), onnx/int8/awq (quant/export; family-gated), ablate
+(directional steering spec emitter), register (lane->serve-host resumable
+rsync, sha-verified both ends). Stage scripts ship as sha-verified
+INPUTS from repo — repo code always runs, image staleness cannot
+(mirror-stall lesson 6709e3).
+
+**Image law.** ghcr.io/iqns-org/{trainer,postproc,postproc-gpu}, tags
+built by CI from forgejo (v*, p-v*, m-v*), consumed by DIGEST pin in
+dispatch; `_stage_image(spec)` selector — stages may declare
+`image:"trainer"` (stack that knows current arch + ships peft; 45efe0/
+e7712c taught this). Pin bump = digest verified live before commit.
+
+**Provenance (13ak).** three witnesses per byte: ledger spec == staged
+payload == pod attestation (agent>=0.3.0); `qtrain verify <run>` / MCP
+`verify` prints every leg incl. corpora+recipe drift and image
+ledger==manifest; stage rows carry their own inputs/sha legs (ap).
+
+**Holdout law (13am).** bin/prepare-domain splits ~2% by content-hash
+bucket (stable forever; append-safe); rides payload as sha-verified
+input; train NEVER sees it; scored POST-TRAIN by the holdout stage (this
+axolotl rejects in-train eval_strategy at val_set_size==0 — 3e7232 — and
+random val splits violate the stability law anyway).
+
+**Eval history.** bench --record -> evals ledger table (model, run,
+summary "N/M", full rows); `qtrain evals` / MCP eval_history; check
+grammar: contains/regex/one_of/json/json_keys/not_contains/max_len/
+nonempty + oracle-side rate:/not:.
+
+**Family registry.** corpora recipes/_families.yaml per-base-model
+capability truth; `submit_stage` refuses registry-proven-impossible
+targets BEFORE ledger row/pod (exit 1, zero spend); refusal only by
+explicit false + run-id evidence; re-probe requires new evidence. 13al.
+
+**Budget.** per-job estimate (price x calibrated minutes x margin) +
+explicit max_price; RESERVE floor; aggregate open-spend gate; wave
+pooling; cap breach = terminate, never orphan. Calibration purge law:
+a kind whose work profile changed MUST have its obs tail deleted
+(cb059d: no-op merge medians caps killed the first REAL merge). §9.
+
+**Deadman (13an).** `_watch` rewrites runs/<id>/ping every cycle
+(content-change, clock-free); pod watchdog (agent/deadman.py) arms at
+first ping (boot handshake), fires after DEADMAN_GRACE_S (default 600;
+knob at all pod-create sites) of unchanged ping: cancel -> finalize
+(normal path, artifacts+manifest) -> container exit -> billing stops.
+Resume = open row + re-attach (resume/reconcile) — damage window ~grace,
+not max_runtime. Presign lane unarmed (documented hole).
+
+**Lanes.** volume (RunPod S3, fleet default; mount=truth on pod side),
+host (ssh/rsync), presign (legacy; expiring URLs, relaunch refuses).
+Quota is ACCOUNT-WIDE: hygiene law = delete only proven junk
+(manifest-sha match / cap-killed .part orphans), verify-after-delete
+(vol_del + HEAD 404); evidence forever; s3_request signs query params
+(ListObjectsV2). 13ao/(an-p).
+
+**Idempotency (14b).** reap/wave/relaunch; blip-tolerant watch loops
+(tolerant get, keepalive); resume_open_runs at boot adopts open rows;
+`watch` = passive viewer, `reconcile` = harvest+close+terminate. A
+killed watcher never kills a paying pod — and after 13an never
+outlives its wallet either.
+
+**Agent.** uvicorn control plane (POST /v1/jobs, cancel, /v1/sanity
+attestation), runner (Popen+state+heartbeat mirror), finalize
+(gate->pack->PUT, manifest LAST), deadman thread, QWEN3_5_TEXT-style
+namespace handling deferred to scripts. §5.
+
+**MCP parity.** mcp-trainer exposes the same verbs (submit, stage,
+register, verify, eval_history, budget_report, synth_contrasts, ...) —
+one implementation, two callers; tool list must equal CLI surface.
+§7.
+
+**Corpora.** template grids ($-placeholders + sliding-window pairing,
+full-cross ban after round-2), generator share-guard (18-32% band,
+refuses to write outside), coverage.py = lexical compass (check->rows,
+THIN means human look). 13ai/13am.
+
+**Serving law.** engine serves REGISTERED dirs via lora-modules or
+merged model dir; identity must live in weights (no chat-template
+crutch — engine-wide template leaked base id, per-LoRA templates
+unproven); no-templates + weights-only is the round-3 contract; flip =
+one-line infra PR, rollback dir kept.
+
+**Distribution law (user ruling, 13al).** artifact lane -> CI-built OCI
+image -> registry -> quadra.yaml BY DIGEST -> k3s deploy via infra.
+rsync/hostPath is the interim adapter path; `--target image` is the
+next build item.
+
+
+
 Status: **DRAFT v1** — target architecture, replaces the SSH/rsync job scripts.
 Companion repos: `quadra/infra` (k3s cluster, MCP fleet, S3), `quadra/mcps` (fleet images).
 
