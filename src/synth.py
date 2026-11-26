@@ -1418,13 +1418,23 @@ GAP_COMMANDS = {
 
 def cmd_gaps(args):
     """P7/R10: failed bench questions -> targeted synthesis proposals
-    (the loop's propose step). Input: `qtrain bench --json` output."""
-    bench = json.loads(Path(args.bench).read_text())
-    rows = bench.get("rows", bench if isinstance(bench, list) else [])
-    failing = [r for r in rows if not r.get("passed", True)]
+    (the loop's propose step). Input: `qtrain bench --json` output —
+    the REAL row shape (a list of {q, pass, model, ...}) or an older
+    {"rows": [...]} wrapper; "—" (none-check) rows are report-only,
+    never gaps."""
+    data = json.loads(Path(args.bench).read_text())
+    rows = data if isinstance(data, list) else data.get("rows", [])
+
+    def failed(r):
+        v = r.get("pass", r.get("passed"))
+        if isinstance(v, bool):
+            return not v
+        return v in ("FAIL", "?")          # "—" excluded by design
+
+    failing = [r for r in rows if failed(r)]
     gaps = {}
     for r in failing:
-        q = r.get("question", "?")
+        q = r.get("q") or r.get("question", "?")
         g = gaps.setdefault(q, {"question": q, "models": [],
                                 "commands": GAP_COMMANDS.get(q, [
                                     "synth derive",

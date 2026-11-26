@@ -98,6 +98,23 @@ def test_gaps_cmd(synth, tmp_path):
     assert any("E2_UNBOUND" in c for g in res["gaps"] for c in g["commands"])
 
 
+def test_gaps_real_bench_shape(synth, tmp_path):
+    """qtrain bench --json writes a LIST of rows with q/pass/observed —
+    gaps must consume it verbatim (the r1 round-1 crash regression)."""
+    bench = tmp_path / "bench.json"
+    bench.write_text(json.dumps([
+        {"host": "nano0.lan", "model": "cognition", "q": "ir-translate",
+         "pass": "PASS", "passes": 2, "repeats": 2, "observed": None},
+        {"host": "nano0.lan", "model": "cognition", "q": "ir-repair",
+         "pass": "FAIL", "passes": 0, "repeats": 2, "observed": None},
+        {"host": "nano0.lan", "model": "cognition", "q": "feeling",
+         "pass": "—", "passes": 0, "repeats": 2, "observed": None}]))
+    code, res = run(synth, ["gaps", "--bench", str(bench)])
+    assert code == 0 and res["failing"] == 1          # "—" is not a gap
+    assert res["gaps"][0]["question"] == "ir-repair"
+    assert res["gaps"][0]["models"] == ["cognition"]
+
+
 def test_merge_cmd(synth, tmp_path):
     out = tmp_path / "merge.json"
     code, res = run(synth, ["merge", "--base", "Qwen/Qwen3.5-0.8B",
