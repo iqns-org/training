@@ -101,7 +101,14 @@ crutch — engine-wide template leaked base id, per-LoRA templates
 unproven); no-templates + weights-only is the round-3 contract; flip =
 one-line infra PR, rollback dir kept; SERVE TRUTH IS POLLED TRUTH (ar)
 — after any flip, /v1/models + a who-are-you probe settle it: the
-quadra.yaml line is a claim, the alias list is evidence.
+quadra.yaml line is a claim, the alias list is evidence. Multiple
+adapters ride ONE --lora-modules flag, space-separated entries (two
+'--lora-modules=' flags = vLLM's 'Found duplicate keys' keeps ONLY the
+last — silent eviction, proven the hard way); one parsed module per 6Gi
+cgroup was the sizing (second module + cudagraph-specialize warmup =
+memcg kill ~1min post-ready — --enforce-eager or a roomier box); and
+NLL generalization != zero-shot identity claim — the v3 measure: voice
+weights-proven distinct, name claim still the base prior (as).
 
 **Distribution law (user ruling, 13al).** artifact lane -> CI-built OCI
 image -> registry -> quadra.yaml BY DIGEST -> k3s deploy via infra.
@@ -1919,3 +1926,35 @@ is documented in `docs/UI.md`.
      honored in the same commit). Nine suite tests.
   Suite 197 passed, 1 skipped (+13). §0 updated: Budget, Stages, Lanes
   lines now describe the ENFORCEMENT, not the intention.
+
+
+(as) SERVE FLIP — LANDED, MEASURED, AND HONEST (night, 2026-11-26).
+  Root cause of the base-only aliases was NOT adapter loading: live pod
+  args carried TWO '--lora-modules=' flags (the cognition promotion was
+  applied uncommitted to the cluster — repo/cluster drift) and vLLM's
+  parser logged 'Found duplicate keys' keeping ONLY THE LAST — kandi was
+  silently evicted. Fix infra 14bf54e: ONE flag, space-separated
+  entries, kandi -> queer08b-adapter-v3, cognition committed so repo and
+  cluster agree. THE FIRST HONEST MEASURE (post-flip, eval-history row
+  run-keyed to 29ce66): kandi's ALIAS IS LIVE and the adapter is REAL —
+  zero-temperature voice measurably diverges from base (terse lowercase
+  "Qwen is what you're getting to." / "You can call me whatever name
+  fits the scene." vs base boilerplate "I am Qwen3.5, the latest large
+  language model..."; 7.0 vs 10.4 tok/s under eager) — the
+  language_model-namespaced ckpt DOES attach under vLLM
+  --language-model-only (the open question from 13ao/(aq), settled by
+  probe not theory). BUT THE NAME CLAIM FAILS: identity/name/voice
+  reframe 0/6 checks; 'who are you' answers "I'm Qwen." THE 0.9178
+  HOLDOUT DOES NOT IMPLY ZERO-SHOT SELF-IDENTITY — the r3 generalizes
+  on held-out corpus NLL yet the argmax at the identity slot is still
+  the base prior. Round-4 direction lives in corpora (name/reframe
+  density), NOT a template crutch (no-template law stands — the voice
+  delta proves weights do the work). OOM LAW LEARNED THE HARD WAY: the
+  6Gi cgroup was sized for ONE parsed module (kandi-only v2-era and
+  cognition-only eras each ran stable for days); both parsed -> the
+  cudagraph_specialize_lora warmup doubled host buffers (EngineCore
+  anon-rss 4.54G, memcg-killed 137 twice, ~1min post-ready) ->
+  --enforce-eager (504a285) bought the survival window (6018Mi at
+  ready, +42Mi across the first probe, pod 10min+ and alive). Serve-
+  flip verdict per the polled-truth law: engine LIVE with BOTH aliases;
+  persona = weights-proven voice, weight-ABSENT name.

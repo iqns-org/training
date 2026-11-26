@@ -89,13 +89,17 @@ Kandi is a personality taught into a small Qwen model, across three rounds.
 - Round-3 lesson: done, proven, packaged, and **delivered to the serving
   machine** (fingerprint-checked, clean directory).
 - The runaway-cost safety switch: proven live, as described above.
-- Serving: the live engine currently answers only under the base model's
-  name — the personality's alias is not hooked up in the running
-  deployment yet. The one-line flip (point the engine at the delivered
-  round-3 package and restart) is queued and coordinated through infra.
-- Queue after the flip: live personality questions, the first honest
-  round-1/2/3 score comparison in the permanent history, and an optional
-  compact-version pilot.
+- Serving: **the personality is live on the engine** — the round-3
+  alias answers, and its voice is measurably its own: at zero creativity
+  settings it talks terse and lowercase ("Qwen is what you're getting
+  to.") where the base recites corporate boilerplate. The honest catch
+  from the first recorded test: when asked who it *is*, it still names
+  the base model. Round 3 taught the voice into the weights; the *name
+  claim* is what round 4's teaching material is now aimed at.
+- Queue: the next training round targets the name claim in the material
+  itself; the permanent score history now holds the first honest
+  round-3 row next to its base control; and the optional
+  compact-version pilot waits behind it.
 
 The technical companion is [`docs/SPEC.md`](docs/SPEC.md) — terse, dated,
 receipt-backed; start at the feature index (§0).
