@@ -35,12 +35,12 @@ adapter_dir = Path(a.model)
 has_adapter = (adapter_dir / "adapter_config.json").is_file()
 if has_adapter:
     from peft import PeftModel
-    model = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16)
+    model = AutoModelForCausalLM.from_pretrained(a.base, torch_dtype=torch.bfloat16)
     model = PeftModel.from_pretrained(model, adapter_dir)
 else:
     # a merged run can be scored directly (full weights, no peft wrapper)
     model = AutoModelForCausalLM.from_pretrained(str(adapter_dir),
-                                                 dtype=torch.bfloat16)
+                                                 torch_dtype=torch.bfloat16)
 model.eval()
 if torch.cuda.is_available():
     model = model.to("cuda")
