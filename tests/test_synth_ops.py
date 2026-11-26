@@ -205,6 +205,11 @@ def test_sample_cmd_fake_endpoint(synth, tmp_path, monkeypatch):
     assert code == 0 and res["sampled"] == 2 and res["kept"] == 1
     assert sum(res["rejects"].values()) == 1          # junk answer -> 1 bucket
     assert list(res["rejects"]) == list(res["rejects"])[:1]  # deterministic
+    # buckets alone can't aim the data lever; each reject is also
+    # attributed to the system it was graded against (r2 lesson)
+    rbs = res["rejects_by_system"]
+    assert list(rbs) == ["nl-to-ir"]
+    assert sum(rbs["nl-to-ir"].values()) == 1
     assert (tmp_path / "tmp-synth" / "rft" / "rft.jsonl").is_file()
     assert (tmp_path / "datasets" / "cognition-rft" / "rft.jsonl").is_file()
 

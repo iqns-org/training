@@ -1218,7 +1218,7 @@ def cmd_sample(args):
     # grade_completion is the actionable bucket: CompileError/AssertionError/
     # parse-*/verdict-fail/empty-completion)
     stats = {"prompts": 0, "sampled": 0, "kept": 0, "by_family": {},
-             "rejects": {}, "errors": []}
+             "rejects": {}, "rejects_by_system": {}, "errors": []}
     rows_path = tmp / "rft.jsonl"
     paths = [p for r in roots if r.is_dir()
              for p in sorted(r.rglob("*.json")) if p.name != "manifest.json"]
@@ -1254,6 +1254,12 @@ def cmd_sample(args):
                     if not ok:
                         key = why.split(":", 1)[0] if ":" in why else why
                         stats["rejects"][key] = stats["rejects"].get(key, 0) + 1
+                        # r2 lesson: the global buckets said "shape ok,
+                        # contract dead" but not WHICH contract — per-system
+                        # is what aims r3's data lever.
+                        bysys = stats["rejects_by_system"].setdefault(
+                            rec["system"], {})
+                        bysys[key] = bysys.get(key, 0) + 1
                     if ok:
                         stats["kept"] += 1
                         fam = ("graph-" if "graph" in rec["id"]
