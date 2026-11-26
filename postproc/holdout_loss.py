@@ -49,36 +49,45 @@ rows = [json.loads(l) for l in open(a.holdout, encoding="utf-8") if l.strip()]
 total_nll, total_tok, scored = 0.0, 0, 0
 with torch.no_grad():
     for r in rows:
-        msgs = r["messages"]
-        full = tok.apply_chat_template(msgs, tokenize=False)
-        ids = tok(full, add_special_tokens=False,
-                  return_tensors="pt").input_ids
-        if ids.shape[1] < 2:
+        msgs = r.get("messages") or []
+        # per-row try/except (db2ede): template quirks — assistant-first
+        # rows give msgs[:0]=[] ("No user query found"), empty content,
+        # or non-chat shapes must SKIP with a count, never kill the run
+        if not msgs or msgs[0].get("role") != "user":
+            skipped += 1
             continue
-        labels = ids.clone().fill_(-100)
-        # mask everything except each assistant span: for the prefix ending
-        # at assistant i, render with add_generation_prompt (opens the
-        # assistant header); end = render through that assistant's close.
-        for i, m in enumerate(msgs):
-            if m["role"] != "assistant":
+        try:
+            full = tok.apply_chat_template(msgs, tokenize=False)
+            ids = tok(full, add_special_tokens=False,
+                      return_tensors="pt").input_ids
+            if ids.shape[1] < 2:
+                skipped += 1
                 continue
-            pre = tok(tok.apply_chat_template(
-                msgs[:i], tokenize=False, add_generation_prompt=True),
-                add_special_tokens=False).input_ids
-            thru = tok(
-                tok.apply_chat_template([*msgs[:i], m], tokenize=False),
-                add_special_tokens=False).input_ids
-            s, e = len(pre), min(len(thru), ids.shape[1])
-            if e > s:
-                labels[0, s:e] = ids[0, s:e]
-        if (labels != -100).sum() == 0:
+            labels = ids.clone().fill_(-100)
+            for i, m in enumerate(msgs):
+                if m.get("role") != "assistant" or i == 0:
+                    continue
+                pre = tok(tok.apply_chat_template(
+                    msgs[:i], tokenize=False, add_generation_prompt=True),
+                    add_special_tokens=False).input_ids
+                thru = tok(
+                    tok.apply_chat_template([*msgs[:i], m], tokenize=False),
+                    add_special_tokens=False).input_ids
+                s, e = len(pre), min(len(thru), ids.shape[1])
+                if e > s:
+                    labels[0, s:e] = ids[0, s:e]
+            if (labels != -100).sum() == 0:
+                skipped += 1
+                continue
+            dev = next(model.parameters()).device
+            out = model(ids.to(dev), labels=labels.to(dev))
+            nt = int((labels != -100).sum())
+            total_nll += float(out.loss) * nt
+            total_tok += nt
+            scored += 1
+        except Exception:                              # noqa: BLE001
+            skipped += 1
             continue
-        dev = next(model.parameters()).device
-        out = model(ids.to(dev), labels=labels.to(dev))
-        nt = int((labels != -100).sum())
-        total_nll += float(out.loss) * nt
-        total_tok += nt
-        scored += 1
 
 loss = total_nll / max(total_tok, 1)
 rep = {"holdout_loss": round(loss, 4), "rows_scored": scored,
