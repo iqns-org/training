@@ -117,3 +117,13 @@ def test_register_resume_rerun_survives_partial(staged, monkeypatch,
     assert res["status"] == "error" and "resume" in res["error"]
     res2 = register.register(RID, name="queer08b-merged")
     assert res2["status"] == "registered"
+
+
+def test_register_staging_is_run_keyed(tmp_path, monkeypatch):
+    # the poisoning bug: stage keyed by --name alone means a partial
+    # rsync from run A lands in run B's retry path. stage path MUST
+    # embed run_id; and a failed unpack must delete the stage so the
+    # next attempt re-streams clean instead of resuming junk bytes.
+    src = (ROOT / "orchestrator" / "register.py").read_text()
+    assert 'stage = f"/tmp/qtrain-{run_id}-{name}.tar.gz"' in src
+    assert "rm -f {q(stage)}" in src  # unpack-failure cleanup present

@@ -93,7 +93,11 @@ def register(run_id: str, *, name: str | None = None,
         # a coin-flip at ~0.5 MB/s on the wifi-Orin leg, and every retry
         # restarted from zero). Rerun register; it picks up where it
         # died, then unpacks atomically and cleans the stage.
-        stage = f"/tmp/qtrain-{name}.tar.gz"
+        # keyed by run (not name): a stale --partial from a DIFFERENT
+        # artifact registered under the same name must never poison
+        # this delivery (observed: killed merged-register made every
+        # later adapter-register unpack EOF on the mismatched remote)
+        stage = f"/tmp/qtrain-{run_id}-{name}.tar.gz"
         r = subprocess.run(
             ["rsync", "-e", "ssh -o ConnectTimeout=10",
              "--partial", "--append-verify", "--timeout=120",
@@ -116,7 +120,12 @@ def register(run_id: str, *, name: str | None = None,
                            timeout=900)
     if r.returncode != 0:
         return {**result, "status": "error",
-                "error": f"ssh unpack failed: {r.stderr.decode()[:200]}"}
+                _ssh_cleanup = subprocess.run(          # noqa: F841
+                    ["ssh", "-o", "ConnectTimeout=10", host, f"rm -f {q(stage)}"],
+                    capture_output=True, timeout=60)
+                return {**result, "status": "error",
+                        "error": f"ssh unpack failed: {r.stderr.decode()[:200]}"
+                                 " (staged tar removed — retry re-streams clean)"}
     result["status"] = "registered"
     notify.emit("delivered", run_id, name=result.get("name", ""),
                 host=result.get("host", ""))
