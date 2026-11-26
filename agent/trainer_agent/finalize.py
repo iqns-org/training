@@ -81,7 +81,8 @@ def _log_summary(log_path) -> dict:
     out: dict = {}
     wanted = ("loss", "epoch", "train_loss", "train_runtime",
               "train_samples_per_second", "train_steps_per_second",
-              "eval_loss", "eval_samples_per_second")
+              "eval_loss", "eval_samples_per_second",
+              "holdout_loss", "rows_scored", "rows_total")
     try:
         text = Path(log_path).read_text(errors="replace")
     except OSError:
