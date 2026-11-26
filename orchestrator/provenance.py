@@ -132,6 +132,25 @@ def verify_run(run_id: str | None = None, *, provider: str | None = None,
                                  else "MISSING",
                                  "pass" if sha in spec_inputs else "fail"))
 
+    # -- holdout (SPEC 13am): the eval leg of a train run -----------------
+    exp_hold = spec.get("holdout_sha", "")
+    staged_hold = next((i.get("sha256", "") for i in
+                        (payload or {}).get("inputs", [])
+                        if "holdout" in str(i.get("name", ""))), "")
+    if exp_hold or staged_hold:
+        checks.append(_check("holdout ledger==staged", exp_hold[:16] or "?",
+                             staged_hold[:16] or "none",
+                             "pass" if exp_hold and exp_hold == staged_hold
+                             else "fail"))
+        held = next((i for i in (att.get("inputs") or [])
+                     if "holdout" in str(i.get("name", ""))), None)
+        if held:
+            checks.append(_check("holdout staged==attested",
+                                 staged_hold[:16],
+                                 held.get("sha256", "")[:16],
+                                 "pass" if held.get("sha256") == staged_hold
+                                 else "fail"))
+
     # -- config: staged bytes vs what the pod hashed ----------------------
     if payload and att.get("config_sha") and payload.get("config_yaml"):
         want = hashlib.sha256(payload["config_yaml"].encode()).hexdigest()

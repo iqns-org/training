@@ -33,6 +33,20 @@ CREATE TABLE IF NOT EXISTS events (
   state   TEXT NOT NULL,
   note    TEXT DEFAULT ''
 );
+-- EVAL HISTORY (SPEC 13am): one row per bench recording, keyed by
+-- (model, host, artifact run). The cross-round/cross-target table we
+-- never had: round 2's "loss improved, behavior flattened" was invisible
+-- because nothing persisted a score to compare against.
+CREATE TABLE IF NOT EXISTS evals (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts        REAL NOT NULL,
+  run_id    TEXT DEFAULT '',
+  model     TEXT NOT NULL,
+  host      TEXT DEFAULT '',
+  target    TEXT DEFAULT '',
+  summary   TEXT DEFAULT '',
+  rows_json TEXT NOT NULL
+);
 """
 
 # additive columns via ALTER (idempotent): budget model 13q/14 — est_cost
@@ -120,6 +134,35 @@ class Ledger:
     def event(self, run_id: str, state: str, note: str = "") -> None:
         self.db.execute("INSERT INTO events (run_id, ts, state, note) VALUES (?,?,?,?)",
                         (run_id, time.time(), state, note[:2000]))
+
+    # -- EVAL HISTORY (SPEC 13am) ----------------------------------------
+    def record_eval(self, model: str, rows: list[dict], *, run_id: str = "",
+                    host: str = "", target: str = "") -> None:
+        """Persist one bench recording (rows = bench.run() output)."""
+        graded = [r for r in rows if r.get("pass") != "—"]
+        ok = sum(1 for r in graded if r.get("pass") == "PASS")
+        self.db.execute(
+            "INSERT INTO evals (ts, run_id, model, host, target, summary,"
+            " rows_json) VALUES (?,?,?,?,?,?,?)",
+            (time.time(), run_id, model, host, target,
+             f"{ok}/{len(graded)}", json.dumps(rows, default=str)))
+        self.db.commit()
+
+    def list_evals(self, model: str | None = None,
+                   limit: int = 20) -> list[dict]:
+        q = "SELECT * FROM evals"
+        args: list = []
+        if model:
+            q += " WHERE model=?"
+            args.append(model)
+        q += " ORDER BY ts DESC LIMIT ?"
+        args.append(limit)
+        out = []
+        for r in self.db.execute(q, args).fetchall():
+            d = dict(r)
+            d["rows"] = json.loads(d.pop("rows_json"))
+            out.append(d)
+        return out
 
     def live_instances(self, provider: str) -> set[str]:
         """Instance ids the ledger believes are not finished."""

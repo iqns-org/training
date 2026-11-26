@@ -80,7 +80,8 @@ def _log_summary(log_path) -> dict:
     import ast
     out: dict = {}
     wanted = ("loss", "epoch", "train_loss", "train_runtime",
-              "train_samples_per_second", "train_steps_per_second")
+              "train_samples_per_second", "train_steps_per_second",
+              "eval_loss", "eval_samples_per_second")
     try:
         text = Path(log_path).read_text(errors="replace")
     except OSError:

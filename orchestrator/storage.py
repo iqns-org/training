@@ -95,7 +95,8 @@ def presign(method: str, object_key: str, expires: int = 48 * 3600,
 
 
 def mint_job_urls(run_id: str, dataset_key: str | None = None,
-                  hours: int = 48) -> dict[str, str]:
+                  hours: int = 48,
+                  holdout_key: str | None = None) -> dict[str, str]:
     """The standard credential bundle handed to a pod (SPEC §5). All URLs
     are PUBLIC-endpoint-signed: only the pod consumes them."""
     base = f"runs/{run_id}"
@@ -104,6 +105,8 @@ def mint_job_urls(run_id: str, dataset_key: str | None = None,
                                public=True),
         "dataset_get": (presign("GET", dataset_key, hours * 3600, public=True)
                         if dataset_key else ""),
+        "holdout_get": (presign("GET", holdout_key, hours * 3600,
+                                public=True) if holdout_key else ""),
         "artifacts_put": presign("PUT", f"{base}/artifacts.tar.gz",
                                  hours * 3600, public=True),
         "manifest_put": presign("PUT", f"{base}/manifest.json", hours * 3600,

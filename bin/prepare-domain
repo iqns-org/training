@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import shutil
 import sys
 from pathlib import Path
@@ -6,6 +7,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from expand import main_all
+
+
+def is_holdout(line: str) -> bool:
+    """Stable ~2% bucket — content hash, never position: a line held out
+    in round K is held out forever (SPEC 13am eval-trend comparability)."""
+    return int(hashlib.sha256(line.strip().encode()).hexdigest()[:8],
+               16) % 50 == 0
 
 
 def prepare_domain(domain: str) -> Path:
@@ -17,17 +25,32 @@ def prepare_domain(domain: str) -> Path:
         raise SystemExit(f"no expanded jsonl files under {expanded_root}")
 
     final_path = ROOT / "tmp" / f"{domain}.jsonl"
+    holdout_path = ROOT / "tmp" / f"{domain}.holdout.jsonl"
     total_rows = 0
-    with final_path.open("w", encoding="utf-8") as out:
+    held = 0
+    # HOLDOUT LAW (SPEC 13am): every conversation is bucketed by content
+    # hash, never by position — a line that trains in round K still trains
+    # in round K+5, and a line held out is held out forever. That stability
+    # is what makes cross-round eval trends honest (round-2 lesson: loss
+    # dropped while behavior flattened — no unseen split to reveal it).
+    with final_path.open("w", encoding="utf-8") as out, \
+            holdout_path.open("w", encoding="utf-8") as hold:
         for path in files:
             with path.open("r", encoding="utf-8") as src:
                 for line in src:
-                    if line.strip():
-                        out.write(line)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if is_holdout(line):           # stable ~2%
+                        hold.write(line + "\n")
+                        held += 1
+                    else:
+                        out.write(line + "\n")
                         total_rows += 1
 
     shutil.rmtree(expanded_root, ignore_errors=True)
-    print(f"prepared {domain}: {len(files)} source files -> {final_path} ({total_rows} rows)")
+    print(f"prepared {domain}: {len(files)} source files -> {final_path} "
+          f"({total_rows} train + {held} holdout)")
     return final_path
 
 
