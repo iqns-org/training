@@ -203,6 +203,8 @@ def test_sample_cmd_fake_endpoint(synth, tmp_path, monkeypatch):
                             "--limit", "2", "--out", str(d),
                             "--dataset", "cognition-rft"])
     assert code == 0 and res["sampled"] == 2 and res["kept"] == 1
+    assert sum(res["rejects"].values()) == 1          # junk answer -> 1 bucket
+    assert list(res["rejects"]) == list(res["rejects"])[:1]  # deterministic
     assert (tmp_path / "tmp-synth" / "rft" / "rft.jsonl").is_file()
     assert (tmp_path / "datasets" / "cognition-rft" / "rft.jsonl").is_file()
 

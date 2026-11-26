@@ -1213,8 +1213,12 @@ def cmd_sample(args):
     roots = ([Path(args.out)] if args.out else [SCEN_ROOT, DERIVED_ROOT])
     tmp = TMP / "rft"
     tmp.mkdir(parents=True, exist_ok=True)
+    # rejects: WHY the oracle disposed no (r1 lesson — yield=0 with an
+    # empty by_family taught us nothing; the exception class from
+    # grade_completion is the actionable bucket: CompileError/AssertionError/
+    # parse-*/verdict-fail/empty-completion)
     stats = {"prompts": 0, "sampled": 0, "kept": 0, "by_family": {},
-             "errors": []}
+             "rejects": {}, "errors": []}
     rows_path = tmp / "rft.jsonl"
     paths = [p for r in roots if r.is_dir()
              for p in sorted(r.rglob("*.json")) if p.name != "manifest.json"]
@@ -1241,10 +1245,15 @@ def cmd_sample(args):
                         stats["errors"].append(str(exc)[:120])
                         continue
                     if not completion:
+                        stats["rejects"]["empty-completion"] = \
+                            stats["rejects"].get("empty-completion", 0) + 1
                         continue
                     stats["sampled"] += 1
-                    ok, _why = grade_completion(rec, messages, expected,
-                                                completion)
+                    ok, why = grade_completion(rec, messages, expected,
+                                               completion)
+                    if not ok:
+                        key = why.split(":", 1)[0] if ":" in why else why
+                        stats["rejects"][key] = stats["rejects"].get(key, 0) + 1
                     if ok:
                         stats["kept"] += 1
                         fam = ("graph-" if "graph" in rec["id"]
