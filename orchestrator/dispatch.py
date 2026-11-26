@@ -1305,7 +1305,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         # carry what the pod actually received — verify's holdout leg
         # reads spec['holdout_sha'], and "?" there is a recorder bug,
         # not a data bug)
-        led.update_spec(run_id, {"holdout_sha": hold["sha256"]})
+        led.merge_spec(run_id, holdout_sha=hold["sha256"])
     # Run CURRENT repo scripts, not the frozen /opt copies baked into the
     # p-v images: those are stranded at pre-fix builds (mirror stall), and
     # 6709e3 proved the failure class — llmcompressor's API drifted around

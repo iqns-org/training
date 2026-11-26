@@ -365,3 +365,40 @@ def test_resume_instance_gone_without_manifest(tmp_path, monkeypatch):
     assert term == ["i1"]
     row = next(r for r in led.list() if r["run_id"] == rid)
     assert row["state"] == "failed"
+
+
+def test_stage_row_records_image_and_holdout(tmp_path, monkeypatch):
+    # 4eed0a law, enforced by test: the STAGE ROW spec must carry the
+    # same image the pod boots (_stage_image -> trainer digest for the
+    # holdout kind) and the resolved holdout_sha. This is the assertion
+    # df3053f promised but never shipped; the dead update_spec call
+    # (AttributeError on any real holdout) is exactly what it catches.
+    import json
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    puts = {}
+    monkeypatch.setattr(dispatch.storage, "host_put",
+                        lambda k, d: puts.__setitem__(k, d))
+    # local lane: mount is LOCAL_MOUNT
+    monkeypatch.setenv("LOCAL_MOUNT", "/data")
+    # seed a train-row payload carrying a holdout input on the host lane
+    from orchestrator.ledger import Ledger
+    led = Ledger(tmp_path / "state" / "ledger.db")
+    tr = led.create("train", {"domain": "queer"})
+    (tmp_path / "data" / "runs" / tr).mkdir(parents=True)
+    hkey = f"runs/{tr}/payload.json"
+    # the payload the resolver must walk to find the holdout input
+    payload = {"inputs": [{"name": "queer.holdout.jsonl",
+                           "path": "/data/datasets/queer/abc/queer.holdout.jsonl",
+                           "sha256": "cafe" + "0" * 60}], "from_run": ""}
+    puts[hkey] = payload
+    monkeypatch.setattr(dispatch.storage, "host_get",
+                        lambda k: json.dumps(puts[k]).encode() if k in puts
+                        else None)
+    res = dispatch.submit_stage("holdout", tr, base_model="Qwen/Qwen3.5-0.8B",
+                               provider="local", dry=True)
+    assert res.get("dry"), res
+    row = led.get(res["run_id"])
+    spec = json.loads(row["spec_json"])
+    assert spec["image"] == dispatch._stage_image(dispatch.STAGE_SPECS["holdout"])
+    assert spec["image"] == dispatch._image_ref()  # trainer, not postproc
+    assert spec["holdout_sha"] == "cafe" + "0" * 60
