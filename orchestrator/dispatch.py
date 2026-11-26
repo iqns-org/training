@@ -1029,7 +1029,10 @@ STAGE_SPECS = {
     # a random val split would violate the stability law. Retroactive:
     # any historical train run can be scored after the fact.
     "holdout": {"script": "holdout_loss.py", "needs_base": True, "gpu": True,
-                "required": ["holdout.json"], "max_price_hr": 0.85},
+                "required": ["holdout.json"], "max_price_hr": 0.85,
+                # e7712c: the postproc-gpu image quantizes, it does not
+                # load LoRAs — peft absent. Prelude pattern per SPEC 14d.
+                "prelude": "pip install --no-cache-dir -q peft"},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
             "gpu": True, "needs_dataset": True, "max_price_hr": 0.80,
             # cu128 swap on Blackwell only — datacenter sm_100 (compute
