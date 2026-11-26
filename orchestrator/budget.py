@@ -32,7 +32,10 @@ MARGIN = float(os.environ.get("QTRAIN_BUDGET_MARGIN", "1.5"))
 TOTAL = float(os.environ.get("QTRAIN_BUDGET", "5.0"))       # concurrent est.
 RESERVE = float(os.environ.get("QTRAIN_RESERVE", "2.0"))    # balance floor
 
-EST_MINUTES = {"merge": 12, "onnx": 20, "int8": 8, "awq": 25,
+# merge: 12 was calibrated against the NO-OP era (c7cde2 forensics: the
+# peft merge moved zero bytes and finished in 9 min). A real merge
+# downloads base, applies ~186 fp32 deltas, saves+uploads ~1.5GB: 45.
+EST_MINUTES = {"merge": 45, "onnx": 20, "int8": 8, "awq": 25,
                "train": 60, "smoke": 10}
 
 # states that can actually BURN money (ledger row exists, pod may be up).
