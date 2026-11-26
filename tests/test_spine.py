@@ -108,10 +108,14 @@ def test_render_config_wires_holdout(tmp_path):
     (ev,) = out["eval_dataset"]
     assert ev["path"] == "/work/inputs/queer.holdout.jsonl"
     assert ev["type"] == "chat_template"
+    # evaluation_strategy MUST ride the wiring: HF defaults to "no" and
+    # silently skips evals (daa4d7 proved it — success, zero eval_loss)
+    assert out["evaluation_strategy"] == "epoch"
+    assert out["per_device_eval_batch_size"] == 1
     assert out["datasets"][0]["path"] == "/work/datasets/queer.jsonl"
-    # no holdout -> no eval_dataset key (legacy submissions unaffected)
+    # no holdout -> no eval wiring at all (legacy submissions unaffected)
     out2 = yaml.safe_load(dispatch.render_config(r, {}, "queer.jsonl"))
-    assert "eval_dataset" not in out2
+    assert "eval_dataset" not in out2 and "evaluation_strategy" not in out2
 
 
 # ------------------------------------------------------------- eval history

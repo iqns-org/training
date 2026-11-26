@@ -674,14 +674,17 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str,
         # HOLDOUT LAW (SPEC 13am): eval on unseen rows only. Mirror the
         # mounted dataset entry against the agent-materialized input file
         # (sha-verified by the same attestation path as everything else).
+        # evaluation_strategy is NOT optional: HF defaults to "no", so an
+        # eval_dataset alone silently skips all evals (daa4d7 "succeeded"
+        # with zero eval_loss — fixed before any full round ran).
         # per_device_eval_batch_size=1: the packing kernel contract —
-        # cu_seqlens varlen requires batch dim 1 (train path flattens,
-        # the eval loader otherwise does not; c4b9eb proved it on qwen3.5
-        # FLA gated_delta_rule: "batch size expected to be 1").
+        # cu_seqlens varlen requires batch dim 1 (c4b9eb/8250dc proved it
+        # on the qwen3.5 FLA gated_delta_rule kernel).
         src_list = cfg.get("datasets") or cfg.get("pref_datasets") or []
         if src_list:
             cfg["eval_dataset"] = [dict(src_list[0],
                                         path=f"/work/inputs/{holdout_name}")]
+            cfg.setdefault("evaluation_strategy", "epoch")
             cfg.setdefault("per_device_eval_batch_size", 1)
     cfg.update({
         "dataset_prepared_path": "/work/prepared",

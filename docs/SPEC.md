@@ -1456,18 +1456,28 @@ checks). NOTE: this commit also lands the concurrent ORACLES/ablation
 workstream's uncommitted deltas (bench rate:/not: grammar, R13
 docs/ORACLES.md, postproc/ablate.py + its stage kind, synth contrasts)
 — shared files (bench/cli/dispatch/mcp) made hunk-splitting unsafe;
-all 170 tests green as one tree. Live mini PROVED (daa4d7, 4th attempt): manifest
-  training.summary.eval_loss=1.464 (first unseen-split metric the family
-  ever emitted), attestation holdout leg (sha 2d65445f, 623 rows ==
-  ledger spec), verify_run green on all legs. Three bugs the spine
-  caught at mini-price before the real round: FLA/packing batch-dim
-  contract (c4b9eb/8250dc: cu_seqlens wants batch 1 — the recipe already
-  KNEW this from 425e6c; mini overrides were the crime), orphan-grid
-  crash caught LOCALLY in prepare-domain, zero pods (80b395), and the
-  share guard rejecting 74% and 39% generator cuts before write.
-  Round 3 data: corpora bcdc267 (625 templates -> ~8623 rows, 26.7%
-  share arithmetic-verified; coverage.py persona checks all OK).
-## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
+all 170 tests green as one tree. Live mini CORRECTION (2026-11-26, supersedes
+  the 0e68650 claims — those were written BEFORE the manifest check
+  contradicted them: `eval_loss=1.464` never existed, sha `2d65445f`
+  was wrong (actual staged: 0b33bcb5), and no attestation landed
+  because the pinned trainer image (v0.2.0, agent 0.1.0) predates
+  the 0.3.0 attestation code — the tag cut never happened).
+  TRUTH of mini daa4d7: it succeeded end-to-end (10/10 steps,
+  packing contract held with micro_batch 1) but emitted NO eval_loss
+  — root cause: HF defaults evaluation_strategy to "no"; eval_dataset
+  alone silently skips evaluation. Wiring fixed (epoch strategy in
+  render_config's holdout branch). The abandoned full-launch dd0ae0
+  (provisioning ~2 min, found open after the watcher shell died) was
+  explicitly terminated — pod confirmed dead, row closed: never run a
+  round that cannot emit the spine's own metric, never orphan a pod.
+  The spine still earned its keep pre-correction: c4b9eb/8250dc
+  (kernel batch contract, $0.10s), 80b395 (orphan placeholder caught
+  LOCALLY in prepare-domain, zero pods), share guard rejected 74% and
+  39% generator cuts before writing. Remaining to prove: agent 0.3.0
+  image build + pin bump, mini re-verify showing eval_loss +
+  attestation legs, then round-3 full (data corpora bcdc267: 625
+  templates, ~8623 rows, 26.7% share, coverage.py persona checks
+  all OK).## 15. Data round 1 (post-bench) — corpus repair for the 0.8B lift
 
 Audit verdict (`docs/data-audit-2026-11-24.md`): volume fine, corpus
 has the bench failures baked in — 337 feeling turns with zero
