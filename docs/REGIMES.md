@@ -309,6 +309,34 @@ Held     qtrain stage ablate + synth_contrasts MCP wiring (mixed-file hunks
          _watch is the prime suspect, bisect needs a repro.
 ```
 
+HANDOFF 2026-11-27 16:00 (+11), to the infra/serving lane —
+r2b unlock, three items, in dependency order:
+1. POD-STOP WIRE (the only hard gap). Agent side is SHIPPED and
+   tested (app.py _pod_stop_best_effort, v0.5.0): env contract =
+   QTRAIN_POD_STOP_URL (required), QTRAIN_POD_STOP_METHOD (default
+   POST), QTRAIN_POD_STOP_TOKEN (optional Bearer). Nothing sets them:
+   grep dispatch.py/runpod.py = zero refs. URL must be kill-capable
+   and pod-reachable — the orchestrator's own terminate route is the
+   natural target (scoped RunPod key lives there, not in the pod;
+   mint per-run token like the existing agent-token flow). Why hard:
+   CreatePodRequest has NO restartPolicy (OpenAPI-verified r2
+   postmortem) -> deadman os._exit() without a pod kill = container
+   REVIVAL = the r2 zombie drain (5 fires, ~$4). r2b must not launch
+   before this lands.
+2. f831b7: yours (5c5eda8 fixed the watch CLASS; the stale row is
+   still open, provisioning since 15:08). It blocks r2b twice over:
+   shared lane during an open provider anomaly, AND the budget gate
+   counts open runs against margin. Close/reconcile it, then say go.
+3. TREND BREAK — needs your call, not mine. Holdout law v2 (c3d7027)
+   buckets by TEMPLATE now; every v1-era holdout NLL (kandi 0.9178 on
+   621 rows vs base 4.1088 included — that split had train siblings:
+   partly memorization) is NOT comparable with v2-era numbers.
+   Options: (a) rebase by re-scoring kandi v3 + base on a fresh
+   v2-prepared queer holdout (qtrain stage holdout, ~$0.15, no
+   retrain), or (b) era-stamp the eval rows and accept a discontinuity
+   at v2's first round. Proposing (a): the rebase number becomes the
+   honest anchor for r2b's first v2 holdout NLL.
+
 ## 1b. R13-R15 evidence (2026-11-26)
 
 - **R13** `orchestrator/bench.py`: check grammar = `contains:/regex:/one_of:/json/none` + `not:<check>` + `rate:<check>/<lo>-<hi>` (repeat-group fraction, `observed` recorded). Tests: 4 pure-grammar cases. The bench is now the soft-oracle harness for behavioral dials.
