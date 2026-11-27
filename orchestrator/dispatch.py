@@ -941,7 +941,14 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         ceiling = (max_price_hr if max_price_hr is not None
                    else float(os.environ.get("QTRAIN_MAX_PRICE_HR", "1.50")))
         rate_bound = 0.0 if provider == "local" else ceiling
-        est = budget.estimate(rate_bound, "train")
+        # THE ESTIMATE MUST MATCH THE WORK PROFILE (f44f27 receipt): a
+        # --mini is 48 lines x 1 epoch — the 'smoke' profile, not a full
+        # train. Estimating mini as train (60min -> $2.25) refused a
+        # ~$0.25 validation at the balance gate; the 'smoke' row in
+        # EST_MINUTES was DEAD WEIGHT, selected by nothing. Under-
+        # estimating kills good runs at the cap (cb059d); over-estimating
+        # refuses cheap runs at the gate — both are calibration lies.
+        est = budget.estimate(rate_bound, "smoke" if mini else "train")
         why = budget.aggregate_gate(
             [r.get("est_cost") or 0.0 for r in led.list()
              if r["state"] in budget.BILLED and r["run_id"] != run_id], est)
