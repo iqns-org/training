@@ -292,3 +292,47 @@ def test_sample_cmd_interleaves_families(synth, tmp_path, monkeypatch):
                             "--k", "1", "--limit", "4", "--out", str(d)])
     assert code == 0 and res["prompts"] == 4
     assert set(res["rejects_by_system"]) == {"abstain", "nl-to-ir"}
+
+
+def test_audit_cmd_flags_hazards_and_leak(synth, tmp_path, monkeypatch):
+    d = tmp_path / "cognition"
+    d.mkdir()
+    msgs, _ = next(iter(synth.check.expansions(NL_TEMPLATE)))
+    prog_gold = msgs[2]["content"]
+    clean = {"messages": msgs}
+    dashed = {"messages": [msgs[0], msgs[1], {
+        "role": "assistant",
+        "content": prog_gold.replace("RETURN", "RETURN —", 1)}]}
+    rows = [clean] * 4 + [dashed]
+    # deterministic bucket: last row of each family is "holdout"
+    flags = {"n": 0}
+
+    def fake_hold(line):
+        obj = json.loads(line)
+        return obj["messages"][-1]["content"] == dashed["messages"][-1]["content"]
+
+    monkeypatch.setattr(synth, "_is_holdout", fake_hold)
+    (d / "nl-to-ir.jsonl").write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+    code, res = run(synth, ["profile", "--path", str(d)])
+    fam = res["nl-to-ir"]
+    assert code == 0 and fam["rows"] == 5
+    assert fam["kind"] == "program"
+    assert fam["hazards_in_program_rows"]["dash"] == 1
+    assert fam["uniq_gold_ratio"] == 0.4          # 4 copies + 1 variant
+    assert fam["holdout_rows"] == 1
+    assert fam["holdout_template_leak"] == 1.0    # sibling trained: 13am law
+
+
+def test_holdout_mirror_matches_prepare_domain(synth):
+    """The audit MIRRORS bin/prepare-domain's SPEC 13am bucket; if the
+    law moves there and not here, the drift test fails loud (same
+    discipline as the L3 canary)."""
+    script = ROOT / "bin" / "prepare-domain"     # extensionless: no loader
+    ns = {"__name__": "prepd", "__file__": str(script)}
+    exec(compile(script.read_text(), script.name, "exec"), ns)
+    for line in [json.dumps({"messages": NL_TEMPLATE["messages"]}),
+                 '{"messages": [{"role":"user","content":"x"},'
+                 '{"role":"assistant","content":"y"}]}',
+                 '{"messages": []}', '{"a": 1}']:
+        assert synth._is_holdout(line) == ns["is_holdout"](line)

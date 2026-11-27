@@ -1338,6 +1338,114 @@ def cmd_pairs(args):
     return 0
 
 
+# ── P1 (regime plan): distributional corpus QA ─────────────────────────
+#
+# Row oracles gate CORRECTNESS; audit measures what the corpus TEACHES:
+# per-family shape, style classes the IR parser rejects (the em-dash
+# bleed was found via model failure — this finds it at build), near-dup
+# rate, and holdout->train TEMPLATE leakage (SPEC 13am splits by row
+# content; templated families leak siblings, so holdout NLL partially
+# measures memorization — this quantifies it for the split-law v2 call).
+
+STYLE_CLASSES = {          # chars seen in r1 IRErrors: parser hazards
+    "dash": "\u2014\u2013",
+    "curly": "\u2018\u2019\u201c\u201d",
+    "paren": "()",
+    "square": "[]",
+}
+PROGRAM_MARK = re.compile(
+    r"\b(PREFIX|WORLD|MEMORY|READ|BIND|WRITE|MATCH|RETURN|EMIT)\b")
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _is_holdout(line: str) -> bool:
+    """Mirror of bin/prepare-domain's SPEC 13am bucket (law lives
+    there; test_holdout_mirror_pins catches drift between the two)."""
+    return int(hashlib.sha256(line.strip().encode()).hexdigest()[:8],
+               16) % 50 == 0
+
+
+def _fam(fams: dict, name: str) -> dict:
+    return fams.setdefault(name, {
+        "rows": 0, "gold_lens": [], "uniq": set(), "prog": 0,
+        "style": {c: 0 for c in STYLE_CLASSES},
+        "style_prose": {c: 0 for c in STYLE_CLASSES},
+        "train_templates": set(), "hold_templates": []})
+
+
+def _observe(st: dict, gold: str, tmpl: str, held: bool) -> None:
+    st["rows"] += 1
+    st["gold_lens"].append(len(gold))
+    st["uniq"].add(_norm(gold))
+    is_prog = bool(PROGRAM_MARK.search(gold))
+    st["prog"] += int(is_prog)
+    for cls, chars in STYLE_CLASSES.items():
+        if any(c in gold for c in chars):
+            (st["style"] if is_prog else st["style_prose"])[cls] += 1
+    if held:
+        st["hold_templates"].append(tmpl)
+    else:
+        st["train_templates"].add(tmpl)
+
+
+def cmd_profile(args):
+    fams: dict[str, dict] = {}
+    if args.path:                        # jsonl datasets (prepared rows)
+        p = Path(args.path)
+        files = sorted(p.rglob("*.jsonl")) if p.is_dir() else [p]
+        for f in files:
+            famname = (args.family or f.stem if f.parent == p
+                       else args.family or f.parent.name)
+            for line in f.read_text().splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                msgs = row.get("messages") or row.get("chosen") or []
+                gold = next((m["content"] for m in reversed(msgs)
+                             if m["role"] == "assistant"), "")
+                tmpl = (hashlib.sha256(_norm(msgs[0]["content"]).encode())
+                        .hexdigest()[:12] if msgs else "?")
+                _observe(_fam(fams, famname), gold, tmpl, _is_holdout(line))
+    else:                                # scenario trees (rec + gold turn)
+        roots = [Path(args.scenarios)] if args.scenarios \
+            else [SCEN_ROOT, DERIVED_ROOT]
+        for r in roots:
+            if not r.is_dir():
+                continue
+            for path in sorted(r.rglob("*.json")):
+                if path.name == "manifest.json":
+                    continue
+                rec = json.loads(path.read_text())
+                if args.family and rec["system"] != args.family:
+                    continue
+                _observe(_fam(fams, rec["system"]),
+                         rec["messages"][2]["content"],
+                         rec["id"].split("/")[0], False)
+    report = {}
+    for name, st in fams.items():
+        lens = sorted(st["gold_lens"]) or [0]
+        out = {
+            "rows": st["rows"],
+            "kind": "program" if st["prog"] * 2 >= st["rows"] else "prose",
+            "gold_len_p50": lens[len(lens) // 2],
+            "uniq_gold_ratio": round(len(st["uniq"]) / max(1, st["rows"]), 3),
+            "hazards_in_program_rows": st["style"],
+            "hazards_in_prose_rows": st["style_prose"],
+        }
+        if st["hold_templates"]:
+            leaked = sum(1 for t in st["hold_templates"]
+                         if t in st["train_templates"])
+            out["holdout_rows"] = len(st["hold_templates"])
+            out["holdout_template_leak"] = round(
+                leaked / len(st["hold_templates"]), 3)
+        report[name] = out
+    print(json.dumps(report, indent=1, ensure_ascii=False))
+    return 0
+
+
 # ── R5: data-mixing regression (grid primitive) ───────────────────────
 
 def cmd_mix(args):
@@ -1970,6 +2078,13 @@ def main(argv=None):
     pj.add_argument("--out", help="dpo jsonl (default tmp/rft/dpo.jsonl)")
     pj.add_argument("--buckets", help="comma list to keep (e.g. AssertionError,Returned)")
     pj.set_defaults(func=cmd_pairs)
+    ad = sub.add_parser("profile", help="P1: distributional corpus QA "
+                        "(shape, parser hazards, dup + holdout leak)")
+    ad.add_argument("--path", help="jsonl file or dir of dataset rows; "
+                    "default: scenario trees")
+    ad.add_argument("--family", help="restrict to one system/dataset")
+    ad.add_argument("--scenarios", help="override scenarios root")
+    ad.set_defaults(func=cmd_profile)
     x = sub.add_parser("mix", help="R5: weighted mix of prepared datasets")
     x.add_argument("--sources", required=True,
                    help="comma list name:weight, e.g. queer:0.3,cognition:0.6")

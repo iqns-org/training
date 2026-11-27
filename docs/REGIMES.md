@@ -230,6 +230,29 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            scenario count, not knobs.)
 NEXT     R16 Datalog legal oracle · R17 pytest language oracle (coding axis) ·
          R18 concurrent-IR model checker · R20 calibration probes
+         REGIME PLAN (agreed 2026-11-27, first tranche EXECUTED):
+           P0 DONE — L3 canary (tests/test_rulebook_canary.py): 10 mutation
+           rules + expansion math + unbound-READ subtlety pinned; drift
+           injection (recode a rule) flips it red, verified. The silent
+           −24% is now a loud test failure.
+           P1 DONE — `synth profile` (distributional QA, dataset mode):
+           ran on datasets/cognition: DIAGNOSIS 3708 rows but ~22 unique
+           golds (uniq 0.006), equivalence 81→~1, abstain 43→1 — verdict
+           families are phrase memorization in a 9k-row costume; repair
+           2952→~95 unique, 288 paren + 252 square hazards in golds;
+           holdout TEMPLATE LEAK = 1.0 in every templated family (13am
+           row-hash split + template siblings ⇒ holdout NLL measures
+           memorization — quantified, the number split-law v2 needs).
+           Known follow-up: square/paren presence over-flags (IR has
+           legal list literals) — switch to parse-based hazards.
+           P4 VERDICT — split IS row-content-hash (bin/prepare-domain
+           comment admits it); fix = family-level bucketing by
+           messages[0] hash — LAW CHANGE, needs colleague sign-off
+           (breaks their eval trend), propose with P1's numbers.
+           P2 IN PROGRESS — base-model temp-0 per-family baselines
+           recorded alongside r1's (behavioral table = the acceptance
+           gate for every future corpus round; loss/NLL demoted to
+           fit-only). Next: encode the law in SPEC + wire r2b/r3.
 Held     qtrain stage ablate + synth_contrasts MCP wiring (mixed-file hunks
          wait for the concurrent holdout-lane session to land)
          POD-STOP WIRE (r2 law follow-up): the agent now POSTs
