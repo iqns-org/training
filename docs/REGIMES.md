@@ -623,9 +623,15 @@ live in MY files, landed together):
 6. SKIPPED TEST, NAMED: tests/test_provider_runpod.py live-API test,
    gated RUNPOD_LIVE_TESTS=1 — deliberate, kept.
 7. STILL QUEUED (peer lanes, unchanged): supervisor_cmd emission
-   (dispatch.py), qtrain-bench flag passthrough (cli.py), infra
-   quadra.yaml cognition-r3 sync — checked this pass: origin/main
-   diverged (6 ahead/15 behind locally, peer WIP dirty) and the sync
-   belongs to the peer's next vllm-deploy.sh --apply; NOT touching
-   their repo state. Numbers: 259 passed, 1 skipped, full suite green
-   with all five new bench tests + endpoint test included.
+   (dispatch.py), qtrain-bench flag passthrough (cli.py). INFRA SYNC,
+   made concrete this pass (read-only checks — their session is LIVE
+   in that repo right now, 6-ahead/15-behind with dirty WIP, so no
+   cross-lane git surgery from me): origin/main:quadra.yaml line ~341
+   carries `cognition=/home/me/models/cognition08b-adapter` but NOT
+   the r3 alias the LIVE pod already serves. One entry to add to the
+   single --lora-modules block:
+       - cognition-r3=/home/me/models/cognition08b-r3
+   (paths verified against the live deploy spec via kubectl, 2026-11-28;
+   until it lands, any vllm-deploy.sh --apply silently drops r3).
+   Numbers: 259 passed, 1 skipped, full suite green with all five new
+   bench tests + endpoint test included.
