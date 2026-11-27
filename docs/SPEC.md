@@ -1604,7 +1604,18 @@ one purpose — every future domain/round/target answers with numbers:
     * fire = stamp state.json deadman → runner.cancel() → THE EXISTING
       completion path does the rest (gate → pack → manifest-LAST;
       never a second finalize) → wait for the manifest on the lane →
-      os._exit: container dies, pod stops billing. A run whose gate
+      os._exit: container dies, pod stops billing — FALSE on this
+      provider (r2 law, 2026-11-27): the runtime RESTARTS exited
+      containers and CreatePodRequest has no restartPolicy (verified
+      against the live OpenAPI), so exit alone became a zombie loop:
+      5 attempts, ~$3.3, zero artifacts. Amended contract: POD-KILL
+      THEN EXIT — the agent POSTs QTRAIN_POD_STOP_URL (optional
+      METHOD/TOKEN env) best-effort before os._exit; dispatch delivers
+      the spec via post-launch payload.json rewrite (the pod id is
+      unknown at env-bake time). Absent env = old behavior, no
+      regression; scripts/supervise_run.py is the orchestrator-side
+      backstop while a watch is alive, and progress.ping_age makes the
+      silent-death tell one glance in every snapshot/watch. A run whose gate
       passed anyway still stamps `training.deadman: true` — a round
       truncated by silence can never masquerade as a clean one.
     * resume = the day-1 idempotency, unchanged: the row was left

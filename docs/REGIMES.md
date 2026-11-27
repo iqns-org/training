@@ -140,13 +140,31 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
          `qtrain watch <run_id>` reads the agent-lane status.json:
          step 106/892 loss 0.047 at ~1h, 4 epochs = 892 steps; scoped
          RunPod key cannot read pod logs — the agent lane is the only
-         observability path. MEANWHILE the lane proved its own law:
-         attempt 1 was SIGTERM'd (exit -15, deadman:true) at step ~106
-         when the workstation rebooted ~11:40Z and its ping file went
-         stale — watchdog fired exactly as SPEC 14c designed, capped
-         the spend window; supervisor relaunched (attempt 2 same pod,
-         fresh from step 0, 4.8 s/step). Status.json keeps BOTH
-         attempts' fields — forensics survives restarts.):
+         observability path. THE r2 POSTMORTEM (verified against lane +
+         ledger, 2026-11-27): the submit watch hung AFTER ITS FIRST
+         PING (11:14:39Z — 26 min before the harness reboot, so the
+         reboot does NOT explain it; cause unresolved). Pod-side that
+         meant: attempt 1 armed on the stale-but-readable ping, fired
+         at +600s (SIGTERM 11:30:06Z, manifest stamped deadman:true)
+         — then Runpod RESTARTED THE CONTAINER (no restartPolicy in
+         v2 CreatePodRequest — checked the live OpenAPI), so attempts
+         2,3,4,5 each booted fresh, re-armed on the same stale ping,
+         fired again: the fail-safe became an unbounded billing loop.
+         My 13:00Z ping-rescue proved the mechanism (attempt 4 crossed
+         the death line: step 92 -> 290), but harness restarts killed
+         the rescue daemons twice and the zombie ran 12h to a $0.207
+         balance. Ended by hand: terminate + reconcile -> row closed
+         `failed`, gate error `required artifact missing:
+         adapter_model.safetensors` (correct — r2 never produced a
+         model). ~$3.3 spent, zero artifacts, every mechanism logged
+         the truth the whole time. LAWS LEARNED: (1) container exit !=
+         pod stop on this provider — deadman amended (SPEC 14c
+         POD-KILL-THEN-EXIT, agent env contract in; dispatch-side
+         payload.json delivery is the pending hot-file wire);
+         (2) every volume-lane submit runs alongside
+         scripts/supervise_run.py until (1) lands; (3) ping staleness
+         is now a first-class observable (progress.ping_age +
+         PING-STALE warning line in watch).):
            r1 03760e — 2 epochs, loss 0.0886, $0.21, 53 min (~26.5
            min/epoch on RTX 2000 Ada). Served on nano0 vllm-qwen3-05 as a
            SECOND --lora-modules (no merge stage — registry vllm-lora
@@ -203,6 +221,15 @@ NEXT     R16 Datalog legal oracle · R17 pytest language oracle (coding axis) ·
          R18 concurrent-IR model checker · R20 calibration probes
 Held     qtrain stage ablate + synth_contrasts MCP wiring (mixed-file hunks
          wait for the concurrent holdout-lane session to land)
+         POD-STOP WIRE (r2 law follow-up): the agent now POSTs
+         QTRAIN_POD_STOP_URL on deadman fire (tested, no-regression);
+         delivering that env at pod-create needs dispatch.py edits —
+         THE concurrent session's hot file, so flagged not hand-edited.
+         Meanwhile every volume-lane submit pairs with
+         scripts/supervise_run.py (feeds ping, harvests fresh manifest,
+         hard-terminates). Also open: why the submit watch's ping loop
+         froze after its first cycle (11:14:39Z) — socket stall in
+         _watch is the prime suspect, bisect needs a repro.
 ```
 
 ## 1b. R13-R15 evidence (2026-11-26)

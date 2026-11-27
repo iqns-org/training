@@ -1220,9 +1220,10 @@ def cmd_sample(args):
     stats = {"prompts": 0, "sampled": 0, "kept": 0, "by_family": {},
              "rejects": {}, "rejects_by_system": {}, "errors": []}
     rows_path = tmp / "rft.jsonl"
+    rejects_path = tmp / "rejects.jsonl"
     paths = [p for r in roots if r.is_dir()
              for p in sorted(r.rglob("*.json")) if p.name != "manifest.json"]
-    with rows_path.open("w") as fh:
+    with rows_path.open("w") as fh, rejects_path.open("w") as rj:
         for path in paths:
             rec = json.loads(path.read_text())
             if args.task and rec["system"] != args.task:
@@ -1260,6 +1261,18 @@ def cmd_sample(args):
                         bysys = stats["rejects_by_system"].setdefault(
                             rec["system"], {})
                         bysys[key] = bysys.get(key, 0) + 1
+                        # the rows BEHIND the counts: (prompt, gold, the
+                        # model's own completion, the assert that disposed
+                        # it) — consumed by `synth pairs` as DPO fuel and
+                        # by human eyes as the family->cause map.
+                        rj.write(json.dumps({
+                            "system": rec["system"], "id": rec["id"],
+                            "bucket": key, "why": why,
+                            "prompt": prompt,
+                            "gold": messages[2]["content"],
+                            "completion": completion[:1500],
+                        }, ensure_ascii=False) + "\n")
+                        stats["reject_dump"] = str(rejects_path)
                     if ok:
                         stats["kept"] += 1
                         fam = ("graph-" if "graph" in rec["id"]
@@ -1280,6 +1293,36 @@ def cmd_sample(args):
         stats["dataset"] = (f"{args.dataset}@" +
                             hashlib.sha256(out.read_bytes()).hexdigest()[:16])
     print(json.dumps(stats, indent=1, ensure_ascii=False))
+    return 0
+
+
+def cmd_pairs(args):
+    """R2-lesson tool: reject dump -> DPO pairs. RFT can't bootstrap at
+    zero yield, but a parseable near-miss completion under the SAME
+    prompt is exactly a preference negative. Rows land in the expand-
+    lane pair shape ({messages: gold, rejected: {messages: bad}}) so
+    bin/prepare-domain's preference.jsonl writer consumes them verbatim."""
+    src = Path(args.infile) if args.infile else TMP / "rft" / "rejects.jsonl"
+    out = Path(args.out) if args.out else TMP / "rft" / "dpo.jsonl"
+    keep = set(args.buckets.split(",")) if args.buckets else None
+    n, by_sys = 0, {}
+    with src.open() as fh, out.open("w") as oh:
+        for line in fh:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if keep and r["bucket"] not in keep:
+                continue
+            oh.write(json.dumps({
+                "messages": r["prompt"] + [
+                    {"role": "assistant", "content": r["gold"]}],
+                "rejected": {"messages": r["prompt"] + [
+                    {"role": "assistant", "content": r["completion"]}]},
+                "system": r["system"], "why": r["why"],
+            }, ensure_ascii=False) + "\n")
+            n += 1
+            by_sys[r["system"]] = by_sys.get(r["system"], 0) + 1
+    print(json.dumps({"pairs": n, "by_system": by_sys, "out": str(out)}))
     return 0
 
 
@@ -1910,6 +1953,11 @@ def main(argv=None):
     s.add_argument("--dataset", help="also write "
                                      "$CORPORA_DIR/datasets/<name>/rft.jsonl")
     s.set_defaults(func=cmd_sample)
+    pj = sub.add_parser("pairs", help="reject dump -> DPO pairs (r3 fuel)")
+    pj.add_argument("--in", dest="infile", help="rejects jsonl (default tmp/rft/rejects.jsonl)")
+    pj.add_argument("--out", help="dpo jsonl (default tmp/rft/dpo.jsonl)")
+    pj.add_argument("--buckets", help="comma list to keep (e.g. AssertionError,Returned)")
+    pj.set_defaults(func=cmd_pairs)
     x = sub.add_parser("mix", help="R5: weighted mix of prepared datasets")
     x.add_argument("--sources", required=True,
                    help="comma list name:weight, e.g. queer:0.3,cognition:0.6")

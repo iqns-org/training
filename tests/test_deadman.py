@@ -145,3 +145,49 @@ def test_deadman_stamp_survives_completed_gate(tmp_path):
     m2 = fin.build_manifest("R9", tmp_path, {"state": "succeeded"},
                             "succeeded")
     assert "deadman" not in m2["training"]
+
+
+# ------------------------------------------------------------ pod-kill
+class _Resp:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_pod_kill_env_contract(monkeypatch):
+    """r2 law: fire must ASK THE PLATFORM to stop the pod before exit —
+    provider restarts exited containers, so bare os._exit = zombie loop.
+    Env contract: QTRAIN_POD_STOP_URL (+ METHOD/TOKEN optional);
+    absent env = old behavior (no regression), failures swallowed."""
+    import urllib.request
+    from trainer_agent import app as app_mod
+
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append((req.get_method(), req.full_url,
+                      req.headers.get("Authorization")))
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    monkeypatch.delenv("QTRAIN_POD_STOP_URL", raising=False)
+    assert app_mod._pod_stop_best_effort() is False     # absent = no call
+    assert calls == []
+
+    monkeypatch.setenv("QTRAIN_POD_STOP_URL",
+                       "https://api.runpod.io/v2/pods/abc/stop")
+    monkeypatch.setenv("QTRAIN_POD_STOP_TOKEN", "tok")
+    assert app_mod._pod_stop_best_effort() is True
+    m, u, auth = calls[-1]
+    assert m == "POST" and u.endswith("/stop") and auth == "Bearer tok"
+
+    def angry(req, timeout=None):
+        raise OSError("net down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", angry)
+    assert app_mod._pod_stop_best_effort() is False      # best-effort

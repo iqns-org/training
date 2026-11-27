@@ -76,3 +76,28 @@ def test_snapshot_joins_ledger_and_lane(tmp_path, monkeypatch):
     assert snap["state"] == "provisioning"     # ledger truth
     assert snap["pct"] == 30.0 and snap["live"]["loss"] == 4.1
     assert progress.fmt_line(snap).count("step 3/10") == 1
+
+
+def test_snapshot_ping_age_and_stale_warning(tmp_path, monkeypatch):
+    """r2 law: the deadman tell must be visible, not a post-mortem."""
+    (tmp_path / "state").mkdir()
+    led = Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {"domain": "d"})
+    led.update(rid, state="provisioning", provider="runpod")
+    monkeypatch.setattr(progress, "ROOT", tmp_path)
+    monkeypatch.setattr(progress, "status",
+                        lambda r, p="runpod": {"state": "running",
+                                               "step": 3, "total": 10})
+    monkeypatch.setattr(progress, "history",
+                        lambda r, p="runpod", limit=0: [])
+    stale = f"{time.time() - 500:.6f}".encode()
+    monkeypatch.setattr(progress, "lane_getter",
+                        lambda p: (lambda k: stale if k.endswith("/ping")
+                                   else None))
+    snap = progress.snapshot(rid)
+    assert 490 < snap["ping_age"] < 510
+    line = progress.fmt_line(snap)
+    assert "PING-STALE" in line and "deadman" in line
+    monkeypatch.setattr(progress, "lane_getter",
+                        lambda p: (lambda k: None))     # no ping = no claim
+    assert progress.snapshot(rid)["ping_age"] is None

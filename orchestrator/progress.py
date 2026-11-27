@@ -65,6 +65,26 @@ def history(run_id: str, provider: str = "runpod", limit: int = 0):
     return rows[-limit:] if limit else rows
 
 
+def ping_age(run_id: str, provider: str) -> float | None:
+    """Seconds since the last orchestrator ping on this run's lane, None
+    if absent. THE deadman tell (r2 law, 2026-11-26): the pod SIGTERMs its
+    own container when this exceeds the grace — and the pod's default
+    runtime RESTARTS the container, so a silently-dead watcher becomes an
+    infinite zombie-attempt billing loop, not an honest stop. Stale ping +
+    `running` status = the watch hung while the pod trains on borrowed
+    time. Surfacing it turns that death spiral into one glance."""
+    try:
+        raw = lane_getter(provider)(f"runs/{run_id}/ping")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return round(time.time() - float(raw.decode().strip()), 1)
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
 def snapshot(run_id: str) -> dict:
     """One joined view: ledger truth + live heartbeat + cost context."""
     led = Ledger(ROOT / "state" / "ledger.db")
@@ -78,6 +98,8 @@ def snapshot(run_id: str) -> dict:
     step, total = st.get("step"), st.get("total")
     if step is not None and total:
         out["pct"] = round(100.0 * step / total, 1)
+    if row["state"] not in TERMINAL and st.get("state") == "running":
+        out["ping_age"] = ping_age(run_id, row["provider"])
     if row["state"] in TERMINAL:
         man = _loads(lane_getter(row["provider"])(
             f"runs/{run_id}/manifest.json")) or {}
@@ -290,4 +312,7 @@ def fmt_line(snap: dict) -> str:
         seg.append(f"loss {lv['loss']}")
     if last.get("cost") is not None:
         seg.append(f"${last['cost']}")
+    pa = snap.get("ping_age")
+    if pa is not None and pa > 420:      # 70% of the 600s grace — act now
+        seg.append(f"PING-STALE {pa:.0f}s (deadman in {max(0, 600 - pa):.0f}s)")
     return "  ".join(str(x) for x in seg)

@@ -165,8 +165,7 @@ def _arm_deadman(runner: Runner, run: dict) -> None:
         runner.cancel()
         # wait for gate -> pack -> manifest-LAST publish (deadline generous
         # for full-adapter uploads; a hang still exits: row stays OPEN,
-        # reconcile closes it, billing stops either way — that order of
-        # operations is the whole point)
+        # reconcile closes it)
         deadline = _time.time() + 600
         while _time.time() < deadline:
             if (dest / "manifest.json").is_file():
@@ -175,8 +174,46 @@ def _arm_deadman(runner: Runner, run: dict) -> None:
         else:
             print("deadman: manifest never landed; exiting anyway",
                   flush=True)
+        # r2 LAW (2026-11-27): exiting the CONTAINER does not stop the
+        # pod — Runpod's runtime restarts it (no restartPolicy exists in
+        # the v2 CreatePodRequest). os._exit alone turned this fail-safe
+        # into an unbounded billing loop (5 zombie attempts, ~$3.3). So:
+        # ask the platform to stop the pod itself first, then exit. The
+        # kill endpoint arrives via env from the orchestrator (generic
+        # contract, provider-agnostic); absent env = old behavior, no
+        # regression (reconcile + orchestrator supervisor still close it).
+        _pod_stop_best_effort()
         import os as _os
-        _os._exit(0)        # container dies -> provider stops billing
+        _os._exit(0)
+
+
+def _pod_stop_best_effort() -> bool:
+    """POST the platform's own pod-kill action before container exit.
+    Env contract (set by dispatch at launch): QTRAIN_POD_STOP_URL,
+    optional QTRAIN_POD_STOP_METHOD (default POST), optional
+    QTRAIN_POD_STOP_TOKEN (Bearer). Best-effort by design: any failure
+    logs and returns False — the exit + ledger OPEN + reconcile path is
+    the pre-existing fallback, and the supervisor script the real backstop."""
+    url = os.environ.get("QTRAIN_POD_STOP_URL", "")
+    if not url:
+        print("deadman: no pod-kill env — exit alone will NOT stop billing "
+              "on this provider (r2 law)", flush=True)
+        return False
+    method = os.environ.get("QTRAIN_POD_STOP_METHOD", "POST").upper()
+    tok = os.environ.get("QTRAIN_POD_STOP_TOKEN", "")
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            url, method=method,
+            headers={"Authorization": f"Bearer {tok}"} if tok else {},
+            data=b"" if method in {"POST", "PUT", "PATCH"} else None)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            print(f"deadman: pod kill sent -> HTTP {r.status}", flush=True)
+        return True
+    except Exception as e:                            # noqa: BLE001
+        print(f"deadman: pod kill FAILED {str(e)[:120]} — exiting anyway",
+              flush=True)
+        return False
 
     Deadman(dest / "ping", log=lambda m: print(m, flush=True)).start(fire)
 

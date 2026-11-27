@@ -212,6 +212,42 @@ def test_sample_cmd_fake_endpoint(synth, tmp_path, monkeypatch):
     assert sum(rbs["nl-to-ir"].values()) == 1
     assert (tmp_path / "tmp-synth" / "rft" / "rft.jsonl").is_file()
     assert (tmp_path / "datasets" / "cognition-rft" / "rft.jsonl").is_file()
+    # reject dump: the row BEHIND the bucket — prompt+gold+completion+why
+    rej = tmp_path / "tmp-synth" / "rft" / "rejects.jsonl"
+    assert rej.is_file() and res["reject_dump"] == str(rej)
+    r = json.loads(rej.read_text().splitlines()[0])
+    assert r["system"] == "nl-to-ir" and r["id"] == "nl-to-ir/t01"
+    assert r["gold"] == msgs[2]["content"]
+    assert r["completion"] == "The depot, probably."
+    assert r["bucket"] in ("IRError", "AssertionError") and r["why"]
+
+
+def test_pairs_cmd_fuel_from_rejects(synth, tmp_path):
+    src = tmp_path / "rejects.jsonl"
+    src.write_text(json.dumps({
+        "system": "repair", "id": "repair/t1", "bucket": "AssertionError",
+        "why": "AssertionError: boom", "prompt": [
+            {"role": "assistant", "content": "A"},
+            {"role": "user", "content": "fix"}],
+        "gold": "GOLD", "completion": "BAD",
+    }) + "\n" + json.dumps({
+        "system": "nl-to-ir", "id": "nl-to-ir/t2", "bucket": "IRError",
+        "why": "IRError: unparseable", "prompt": [
+            {"role": "assistant", "content": "A"},
+            {"role": "user", "content": "q"}],
+        "gold": "G2", "completion": "junk",
+    }) + "\n")
+    out = tmp_path / "dpo.jsonl"
+    code, res = run(synth, ["pairs", "--in", str(src), "--out", str(out),
+                            "--buckets", "AssertionError"])
+    assert code == 0 and res["pairs"] == 1          # filter honored
+    p = json.loads(out.read_text())
+    assert p["messages"][-1]["content"] == "GOLD"   # chosen = gold row
+    assert p["rejected"]["messages"][-1]["content"] == "BAD"
+    assert p["system"] == "repair"
+    code, res = run(synth, ["pairs", "--in", str(src), "--out", str(out)])
+    assert res["pairs"] == 2 and res["by_system"] == {"repair": 1,
+                                                      "nl-to-ir": 1}
 
 
 def test_mix_cmd(synth, tmp_path, monkeypatch):
