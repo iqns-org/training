@@ -172,6 +172,11 @@ def chat_stream(url: str, model: str, prompt: str, *, max_tokens: int,
 
 def _primitive(check: str, text: str) -> str:
     """Single-sample oracle primitives (R13). Composed by score()."""
+    if text.startswith("ERROR:") and check != "none":
+        # transport failures must NEVER be vacuous passes: a not: check
+        # is trivially true against an error string (caught red-handed
+        # by the first dead-tunnel bench — two "3/3" from refusals)
+        return "FAIL"
     if check.startswith("not:"):
         inner = _primitive(check[4:], text)
         return {"PASS": "FAIL", "FAIL": "PASS"}.get(inner, inner)

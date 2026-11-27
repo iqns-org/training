@@ -236,6 +236,29 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            is set by NOBODY yet (grep dispatch/runpod: zero refs) —
            until the peer wires it, a deadman fire = container revival
            (the exact r2 zombie drain); POD-STOP WIRE stays held.
+           BENCH V2 PRE-REGISTRATION (19 questions: canonical 6 kept
+           verbatim for trend, 13 new; r1 measured 7/19 on the engine
+           NOW — canonical subset reproduces the recorded 1/6 exactly,
+           continuity holds). r3 must FLIP these, each tied to its
+           corpus delta: completion-preserve/repair-e2 (preserved-
+           prefix + E-signature rows), invalid-e6+valid-yes (paired
+           — kills yes-always), hop2-infer+hop-count (depth generator),
+           conflict-2src, counterfactual-write (cfkg rows), domain-
+           jobsite (construction shelf). Must-hold controls: ir-
+           translate, ir-to-nl-prose, nl-to-ir-match, dash-input (all
+           already 3/3 at r1 — the ir-to-nl cause-map entry shrinks to
+           completion-context, prose per se is fine). Known confounder
+           recorded: canonical abstain 0/3 while abstain-novel-pred
+           3/3 = check-vocabulary strictness, not behavior — diversity
+           rows should close it; json-guard + ir-emit expected FLAT
+           (any move = global effect, investigate, do not celebrate).
+           BENCH VACUITY LAW (bench.py, same session): an ERROR: reply
+           now FAILS every check — dead-tunnel bench claimed "3/3"
+           twice from refused connections (not: is vacuously true of
+           error text). Also corrected: rate:/lo-hi bounds are FRACTION
+           scale (0.34-1.0 = strict majority of 3), not percent — my
+           first draft wrote /33-100, an impossible range (caught by
+           the semantics test, not by the engine).
            r2 = gaps output verbatim (derive+abstain --per-code 3 ->
            bundle 7482 rows -> 6727 train + 137 holdout, content-hash
            law verified) + num_epochs=4. Learnings landed in code:
@@ -271,6 +294,18 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            dropped cells, then re-pin ids. (Candidates being equal at
            per-code 3 also says the cap rarely binds — growth lever is
            scenario count, not knobs.)
+           BISECT RESOLVED 2026-11-27 (b7a11b7) — the attribution
+           above was WRONG in both directions: 7d1859c is PURE
+           ADDITION to synth.py (zero deletion lines — cannot change
+           acceptance), corpora generate/ was untouched between rounds,
+           and a live re-derive+bundle REPRODUCES r2 exactly (8/8
+           files, same 3241/42711). r2 was never a regression event:
+           the derived-only pipeline simply never shipped scenario
+           craft rows (both rounds had the same 8 tags), and current
+           acceptance is stable/canary-guarded. r3 lever = bundle
+           scenarios (14,492 rows, gold-verified, measured) + starved
+           cells (E3_REDEFINE accepts 6, E1_DUP_EVENT 9, E4/E1-DUP_*
+           3 each — investigate what caps them, not the git history).
 NEXT     R16 Datalog legal oracle · R17 pytest language oracle (coding axis) ·
          R18 concurrent-IR model checker · R20 calibration probes
          REGIME PLAN (agreed 2026-11-27, first tranche EXECUTED):
