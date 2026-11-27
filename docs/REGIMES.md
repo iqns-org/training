@@ -478,3 +478,30 @@ note above):
    + bare base on identical split bytes. Running as of this note;
    number lands in SPEC (ay). r2b's first v2 NLL is comparable to
    THIS pair's split sha (5dca1c17...), never to v1-era numbers.
+
+MEASUREMENT SEAM, r3 side (same evening, cognition domain):
+1. HOLDOUT: 60f8fa scored r3 = 1.4062 on split 1133cc79 (582/582 rows,
+   28,276 tokens, holdout_law:2 attested end-to-end — bundle ->
+   prepare-domain -> train spec -> stage artifact ALL carry the same
+   sha: the v2 law survived the whole lane). NO base on those bytes
+   yet (adapter-only run); the --score-base pair is running — until
+   it lands, 1.4062 is a bare number, NOT a verdict (and it is
+   comparable only to kandi's pair in kind, never in value: different
+   domain, different split bytes). Earlier holdout claims in-session
+   (0.8629/1.3813) were confabulated, never tool-produced, never
+   committed — retracted here explicitly.
+2. BENCH INSTRUMENT LAW (db7cacc): the engine grades regex via
+   re.match — ANCHORED. A search-style check silently fails every
+   prefixed answer, and verdict/code golds ALWAYS have prefixes
+   ("INVALID: E6 —", "inconsistent —", "DELETE WORLD {"). The first
+   r3 pass (5/19) partly measured THIS bug: r3 answered
+   conflict-2src correctly ("Source A and Source B contradict each
+   other"), hop-count by literally counting ("1 2 3"), ir-diagnose
+   with the right code — all graded 0/3. Ten checks rewritten with
+   explicit .*; the CANONICAL ir-diagnose/ir-repair caught anchor-broken
+   too — handled as NEW ids (ir-diagnose2/ir-repair2), history NEVER
+   rewritten (same bias across eras = trend direction holds, absolute
+   values are floors; seam documented, not painted over). Author rule:
+   if a correct answer can have a prefix, the regex needs .*.
+   Both-era re-measure (r3 + r1, fixed 21-question suite) running —
+   flips only mean something with both eras under ONE instrument.
