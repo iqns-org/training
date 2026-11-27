@@ -864,6 +864,17 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                    else (lambda k, d, ct="": storage.put_object(k, d, ct)))
     result["lane"] = lane
     try:
+        if lane == "volume" and tier == "community":
+            # CONFIG CONTRADICTION FAILS FAST (120c28 receipt: 8 waves /
+            # 1800s retrying an empty-by-construction pool — RunPod
+            # network volumes exist ONLY in the SECURE cloud, so a
+            # community catalog + the secure filter in _train_pool can
+            # never yield an offer). Capacity-wait is for market
+            # flakiness, not impossibilities.
+            raise ProviderError(
+                "volume lane + --tier community is impossible: RunPod "
+                "network volumes are SECURE-cloud only — drop --tier "
+                "or use --lane presign")
         dataset_key, dataset_path, dataset_sha, dataset_lines, hold = \
             prepare_dataset(domain, mini, vol)
         ov = dict(overrides or {})

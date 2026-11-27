@@ -444,3 +444,22 @@ def test_mini_estimates_smoke_profile(tmp_path, monkeypatch, fake_s3, recipe):
 
     res2 = dispatch.submit("queer", recipe, provider="runpod")
     assert "estimate $2.25" in (res2.get("error") or ""), res2
+
+
+def test_volume_tier_community_fails_fast(tmp_path, monkeypatch, fake_s3,
+                                          recipe):
+    """CONFIG CONTRADICTION FAILS FAST (120c28): volume lane forces
+    SECURE-only in _train_pool, so --tier community + volume is an
+    empty-by-construction pool — the wave loop burned 1800s treating an
+    impossibility as market flakiness. Now: refused at the top of the
+    run, no staging, no launch, no capacity-wait."""
+    monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "user_x")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "rps_y")
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "tmp").mkdir()
+    res = dispatch.submit("queer", recipe, mini=True, provider="runpod",
+                          tier="community")
+    assert "impossible" in (res.get("error") or "")
+    assert res["lane"] == "volume"
+    assert not fake_s3["put"]              # nothing staged, nothing waits
