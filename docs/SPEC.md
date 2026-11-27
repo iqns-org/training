@@ -2036,3 +2036,33 @@ is documented in `docs/UI.md`.
   — validation layers earning their keep. All corrected forward with
   honest ledger comments; no history rewritten (shared repos, plain
   push law).
+
+
+(aw) POD-STOP WIRE LANDED + REBASE IN FLIGHT (2026-11-27 evening).
+  Fleet: m-v0.5.2 @ 9203980a deployed (rs 7f9594845d, banner
+  'mcp-trainer 0.5.2 listening' == surface, boot-adoption line live).
+  POST /pod-stop/{run_id} verified live from the workstation: junk
+  bearer -> 401 (gate exempts the prefix, the handler fail-closes).
+  dispatch MINTS the capability: _pod_stop_env wired into all three
+  launch sites (relaunch/train/stage env blocks) — token =
+  sha256(run_id|MCP_TRAINER_TOKEN)[:32], single source (server imports
+  dispatch's function). INERT by design until an operator sets
+  QTRAIN_POD_STOP_URL_BASE: for CLOUD runs the URL must be public
+  (the mcp pod is hostNetwork pi00:3022 — LAN-only today; RunPod pods
+  cannot reach it. Exposing it is an infra-ingress call — until then
+  a deadman fire on cloud = container revival (CreatePodRequest has no
+  restartPolicy, r2 postmortem), which is why the agent prints the
+  honest 'exit alone will NOT stop billing' line when unset).
+  needs_base resolution FIXED (e8da70e): stage rows record their own
+  base_model on the spec root — 'stage holdout --from-run <merge>' no
+  longer dead-ends 'pass --base'; regression test in test_spine.
+  TREND REBASE (call = option (a), rebase): v3 side DONE — 3b890d,
+  holdout.json GATED: loss 1.0575 on 507/511 rows, 10699 tokens,
+  law 2, split sha 5dca1c17 (content-addressed datasets/queer/
+  5dca1c17.../queer.holdout.jsonl, on-lane verified). The number MOVED
+  UP from v1's 0.9178 exactly as the seam analysis predicted — the old
+  split scored template siblings (memorization). 1.0575 is the honest
+  anchor; the base half (485a22, same split sha — byte-identical
+  comparison by construction) was still scoring at entry time; its
+  number lands under the same law-2 stamp and completes the pair.
+  v1-era rows (0.9178/4.1088, r1) stay history, never comparators.
