@@ -715,7 +715,13 @@ def prepare_dataset(domain: str, mini: bool = False,
     return key, src, sha, lines, hold
 
 
-def render_config(recipe: Path, overrides: dict, dataset_name: str) -> str:
+def render_config(recipe: Path, overrides: dict, dataset_name: str,
+                  slug: str | None = None) -> str:
+    """Render a recipe into a pod-ready config. slug (co-tenant pair mode)
+    isolates BOTH output_dir and dataset_prepared_path per model — two
+    concurrent axolotl procs sharing a prepared dir race HF fingerprint
+    writes; two models sharing an output dir silently overwrite saves and
+    the gate would lie about what exists."""
     cfg = yaml.safe_load(recipe.read_text())
     name = f"/work/datasets/{dataset_name}"
     if cfg.get("pref_datasets"):
@@ -741,8 +747,9 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str) -> str:
     # scored POST-TRAIN by the `holdout` stage, against the same adapter
     # bytes the engine will serve.
     cfg.update({
-        "dataset_prepared_path": "/work/prepared",
-        "output_dir": "/work/outputs",
+        "dataset_prepared_path": (f"/work/prepared/{slug}" if slug
+                                  else "/work/prepared"),
+        "output_dir": (f"/work/outputs/{slug}" if slug else "/work/outputs"),
         "val_set_size": 0.0,
         "logging_steps": 5,
         "save_total_limit": 1,
@@ -857,9 +864,18 @@ def resume(run_id: str | None = None, poll: int = 30,
     result["lane"] = "volume" if (provider == "runpod" and vol) else provider
     try:
         prov = get_provider(provider) if inst_id else None
-        _watch(run_id, get_run, result, led, poll, started=time.time(),
-               max_runtime=max_runtime, prov=prov, inst_id=inst_id,
-               put_run=put_run)
+        # DEADLINE RIDES THE ROW (485a22 law): anchor elapsed to the ROW'S
+        # creation and use the budget recorded at submit (fallback: the
+        # caller's default). time.time() here made every re-attach reset
+        # the clock — a supervisor looping resume() never reaches the
+        # ceiling, and the pod bills forever (the 90-min zombie holdout
+        # was held alive by exactly this reset). max_runtime is a POD
+        # lifetime, not a watcher's viewing time.
+        _watch(run_id, get_run, result, led, poll,
+               started=row["created_at"],
+               max_runtime=int(json.loads(row["spec_json"] or "{}")
+                               .get("max_runtime") or max_runtime),
+               prov=prov, inst_id=inst_id, put_run=put_run)
         return result
     except Exception as e:
         if inst_id and _net_blip(e):
@@ -884,6 +900,28 @@ def resume(run_id: str | None = None, poll: int = 30,
                 result["terminate_error"] = str(e)
 
 
+# artifact gate law: recipes WITHOUT `adapter:` are full fine-tunes — the
+# produced bytes are model*.safetensors shards + config, not an adapter
+# pair. Agent finalize defaults (REQUIRED_FILES) are adapter-shaped, so a
+# successful FFT round would die at the gate without this override.
+_FULL_GATE = ["config.json", "model*.safetensors",
+              "tokenizer.json", "tokenizer_config.json"]
+_ADAPTER_GATE = ["adapter_config.json", "adapter_model.safetensors",
+                 "tokenizer.json", "tokenizer_config.json"]
+
+
+def _gate_required(recipe: Path, slug: str = "") -> list[str]:
+    base = (_ADAPTER_GATE if (yaml.safe_load(recipe.read_text()) or {})
+            .get("adapter") else _FULL_GATE)
+    return [f"{slug}/{f}" for f in base] if slug else list(base)
+
+
+def _cfg_slug(recipe: Path) -> str:
+    """Filename-safe per-model slug for pair mode (co-tenant outputs)."""
+    hint = _pod_hint(recipe=recipe) or recipe.stem
+    return re.sub(r"[^a-z0-9._-]+", "-", hint.lower()).strip("-")
+
+
 def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            overrides: dict | None = None, provider: str = "runpod",
            gpus: list[str] | None = None, tier: str | None = None,
@@ -891,11 +929,22 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            max_cost: float | None = None, poll: int = 20,
            force_lane: str | None = None, max_price_hr: float | None = None,
            max_wait: int | None = None,
+           pair: "Path | str | None" = None,
            on_run_id: "callable | None" = None) -> dict:
     """Full cycle; returns ledger-shaped result dict. NEVER leaves a pod
     behind: every terminal path terminates. on_run_id (if given) fires the
     instant the ledger registers the run — lets async callers (mcp-trainer)
-    return before staging finishes."""
+    return before staging finishes.
+
+    CO-TENANT (pair=): one pod, two recipes, two concurrent axolotl procs
+    (micro_batch_size=1 regimes are kernel-launch-bound — co-running is
+    nearly free throughput). One run_id, one manifest, per-slug artifact
+    trees + per-slug prepared dirs; the gate requires BOTH models' files,
+    so a half-success fails honestly. Relaunch-safe: the lane payload IS
+    the contract. Budget: price is per pod-hour, so the pair does two
+    models' work under one cap — that is the POINT, not a leak; the wave
+    loop still dies at max_runtime/max_cost as always.
+    """
     led = Ledger(ROOT / "state" / "ledger.db")  # ROOT-scoped: tests redirect
     cdir = corpora_dir()
     rp = Path(recipe)
@@ -903,11 +952,31 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         rrecipe = str(rp.relative_to(cdir))      # portable provenance
     except ValueError:
         rrecipe = str(rp)
-    run_id = led.create("train", {"domain": domain, "recipe": rrecipe,
-                                  "mini": mini, "overrides": overrides or {},
-                                  "corpora": corpora_git_sha(),
-                                  "recipe_sha": _sha(recipe)[:12]},
-                        provider=provider)
+    spec = {"domain": domain, "recipe": rrecipe,
+            "mini": mini, "overrides": overrides or {},
+            "corpora": corpora_git_sha(),
+            "recipe_sha": _sha(recipe)[:12],
+            # DEADLINE SURVIVES THE CONTROLLER (485a22 law): the watch
+            # budget is part of the run contract, not a caller-local —
+            # resume() must be able to enforce the SAME ceiling after a
+            # crash/restart, or every re-attach silently grants a fresh
+            # 4 h while the pod keeps billing (the 90-min zombie-holdout
+            # incident, 2026-11-27).
+            "max_runtime": int(max_runtime)}
+    rpair = ""
+    if pair is not None:
+        pp = Path(pair)
+        if not pp.is_file():
+            # fail BEFORE the row exists: a missing recipe is operator
+            # error at zero cost — no dangling open run to reconcile
+            raise SystemExit(f"pair recipe not found: {pp}")
+        try:
+            rpair = str(pp.relative_to(cdir))
+        except ValueError:
+            rpair = str(pp)
+        spec["pair_recipe"] = rpair
+        spec["pair_recipe_sha"] = _sha(pp)[:12]
+    run_id = led.create("train", spec, provider=provider)
     if on_run_id:
         on_run_id(run_id)
     result = {"run_id": run_id}
@@ -953,14 +1022,46 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             ov.update({"sequence_len": 256, "num_epochs": 1,
                        "gradient_accumulation_steps": 1,
                        "saves_per_epoch": 1})
-        config_yaml = render_config(recipe, ov, dataset_path.name)
+        # --- train-job shaping: single vs co-tenant pair, gate by recipe ---
+        train_cmd = "axolotl train /work/job/train.yaml"
+        job_fields: dict = {"config_yaml":
+                            render_config(recipe, ov, dataset_path.name)}
+        gate: dict | None = None
+        if pair is not None:
+            s1, s2 = _cfg_slug(recipe), _cfg_slug(pp)
+            if s1 == s2:
+                s2 += "-2"   # identical slugs = two models sharing an
+                             # output dir = the gate would lie
+            c1 = render_config(recipe, ov, dataset_path.name, slug=s1)
+            c2 = render_config(pp, ov, dataset_path.name, slug=s2)
+            # per-pid waits so ONE crash cannot orphan the other's finish;
+            # sh -c because the runner execs shlex.split — no shell (law,
+            # same chain trick as stage preludes)
+            chain = (f"axolotl train /work/job/{s1}.yaml & p1=$!; "
+                     f"axolotl train /work/job/{s2}.yaml & p2=$!; "
+                     "r=0; wait $p1 || r=1; wait $p2 || r=1; exit $r")
+            train_cmd = "sh -c " + shlex.quote(chain)
+            job_fields = {"configs": [
+                {"name": s1, "config_yaml": c1},
+                {"name": s2, "config_yaml": c2}]}
+            gate = {"required_files": _gate_required(recipe, s1)
+                    + _gate_required(pp, s2)}
+        elif not (yaml.safe_load(job_fields["config_yaml"]) or {}).get(
+                "adapter"):
+            # FULL FT round: adapter-shaped default gate would fail an
+            # otherwise-perfect run — declare what the recipe produces
+            gate = {"required_files": _gate_required(recipe)}
+        meta = {"domain": domain, "recipe": str(recipe)}
+        if pair is not None:
+            meta["pair"] = str(pp)
 
         if vol:  # pod sees the dataset THROUGH the mount
             pod_ds_path = f"{vol['mount']}/{dataset_key}"
             payload = {"run_id": run_id,
-                       "command": "axolotl train /work/job/train.yaml",
-                       "config_yaml": config_yaml,
-                       "meta": {"domain": domain, "recipe": str(recipe)},
+                       "command": train_cmd,
+                       **job_fields,
+                       "meta": meta,
+                       **({"gate": gate} if gate else {}),
                        "dataset": {"name": dataset_path.name,
                                    "path": pod_ds_path, "sha256": dataset_sha},
                        # holdout rides as a sha-verified input (agent
@@ -979,9 +1080,10 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             urls = storage.mint_job_urls(run_id, dataset_key,
                                          holdout_key=hold["key"] if hold else None)
             payload = {"run_id": run_id,
-                       "command": "axolotl train /work/job/train.yaml",
-                       "config_yaml": config_yaml,
-                       "meta": {"domain": domain, "recipe": str(recipe)},
+                       "command": train_cmd,
+                       **job_fields,
+                       "meta": meta,
+                       **({"gate": gate} if gate else {}),
                        "dataset": {"name": dataset_path.name,
                                    "url": urls["dataset_get"],
                                    "sha256": dataset_sha},
@@ -1349,7 +1451,11 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     run_id = led.create("stage", {"kind": kind, "from_run": from_run,
                                   "base_model": (base_model or "").strip()
                                   or fam_base,
-                                  "corpora": corpora_git_sha()},
+                                  "corpora": corpora_git_sha(),
+                                  # deadline rides the row (train law,
+                                  # same incident): re-attach enforces
+                                  # the submitted ceiling
+                                  "max_runtime": int(max_runtime)},
                         provider=provider)
     if on_run_id:
         on_run_id(run_id)

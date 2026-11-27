@@ -175,6 +175,39 @@ def test_relaunch_pending_stage_run(led_root, monkeypatch):
     assert row["price_hr"] == 0.25 and row["est_cost"] > 0
 
 
+def test_resume_deadline_rides_the_row(tmp_path, monkeypatch):
+    """DEADLINE RIDES THE ROW (485a22 law): a re-attach must NOT restart
+    the clock and must use the budget RECORDED AT SUBMIT, not resume()'s
+    4 h default. One row discriminates both: created 2 h ago with a
+    recorded 10-min budget. Old code (started=now, default budget) would
+    keep watching and poll the provider; the fake provider would raise
+    LOUDLY. New code fires the deadline on the first check, before any
+    poll — the looping supervisor's 90-min zombie pod becomes impossible."""
+    import time as _t
+    from orchestrator.ledger import Ledger
+    (tmp_path / "state").mkdir(exist_ok=True)
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    led = Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {"domain": "queer", "max_runtime": 600},
+                     provider="runpod")
+    led.update(rid, state="provisioning", instance_id="pod-old")
+    with led.db:
+        led.db.execute("UPDATE runs SET created_at=? WHERE run_id=?",
+                       (_t.time() - 7200, rid))
+
+    class LoudProv:
+        def poll(self, inst):
+            raise AssertionError("must never poll: deadline must fire first")
+
+        def terminate(self, inst):
+            return True
+    monkeypatch.setattr(dispatch, "get_provider", lambda p: LoudProv())
+    res = dispatch.resume(rid, poll=1)
+    assert res["status"] == "error"
+    assert "max runtime exceeded without manifest" in res["error"]
+    assert led.get(rid)["state"] == "failed"      # terminal, not zombie
+
+
 def test_relaunch_refuses_wrong_shapes(led_root):
     led = Ledger(led_root / "state" / "ledger.db")
     rid = led.create("train", {}, provider="runpod")
