@@ -205,9 +205,12 @@ if has_adapter:
                          "mismatch (740238). Load the matching subtree or "
                          "score the merged model instead")
     shape = f"peft({n_lora} lora tensors)"
-    if adapter_moves_logits(model) is False:
-        print("wiring guard: primary namespace moved 0 logits — "
-              "retrying with toggled subtree", file=sys.stderr, flush=True)
+    if adapter_moves_logits(model) is not True:
+        # None (no scorable row) counts as NOT-PROVEN: an unprobed
+        # adapter is exactly the costume that shipped 1.4059==1.4059
+        print("wiring guard: primary namespace moved 0 logits (or "
+              "unprovable) — retrying with toggled subtree",
+              file=sys.stderr, flush=True)
         del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -217,7 +220,7 @@ if has_adapter:
                              "candidate — refusing to score")
         model = load_attached(alt)
         shape += ", namespace-remapped"
-        if adapter_moves_logits(model) is False:
+        if adapter_moves_logits(model) is not True:
             with (model_dir / "adapter_model.safetensors").open("rb") as fh:
                 hn = struct.unpack("<Q", fh.read(8))[0]
                 ks = list(json.loads(fh.read(hn)))[:3]

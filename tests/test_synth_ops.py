@@ -6,6 +6,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -322,20 +323,120 @@ def test_audit_cmd_flags_hazards_and_leak(synth, tmp_path, monkeypatch):
     assert fam["uniq_gold_ratio"] == 0.4          # 4 copies + 1 variant
     assert fam["holdout_rows"] == 1
     assert fam["holdout_template_leak"] == 1.0    # sibling trained: 13am law
+    assert fam["holdout_gold_leak"] == 0.0        # variant gold unique:
+    #   the two leak metrics are ORTHOGONAL — r3 measured template-leak
+    #   0.0 with 53% gold-string leak; a metric that moves with the
+    #   other is not a second witness
 
 
-def test_holdout_mirror_matches_prepare_domain(synth):
-    """The audit MIRRORS bin/prepare-domain's SPEC 13am bucket; if the
-    law moves there and not here, the drift test fails loud (same
-    discipline as the L3 canary)."""
+def test_profile_gold_leak_catches_formulaic_family(synth, tmp_path,
+                                                   monkeypatch):
+    """The 6909eb lesson (holdout NLL 0.0095 on 'unseen' templates):
+    two DIFFERENT templates sharing the SAME gold string — template
+    law says clean, gold-string law says memorization. Both metrics
+    must be reported so the pair is visible."""
+    d = tmp_path / "diag"
+    d.mkdir()
+    gold = "INVALID: E3_REDEFINE - assigned twice."
+    train = {"messages": [{"role": "assistant", "content": "CTX-ONE"},
+                          {"role": "user", "content": "q?"},
+                          {"role": "assistant", "content": gold}]}
+    held = {"messages": [{"role": "assistant", "content": "CTX-TWO"},
+                         {"role": "user", "content": "q?"},
+                         {"role": "assistant", "content": gold}]}
+    monkeypatch.setattr(synth, "_is_holdout",
+                        lambda line: "CTX-TWO" in line)
+    (d / "diagnosis.jsonl").write_text(
+        json.dumps(train) + "\n" + json.dumps(held) + "\n")
+    code, res = run(synth, ["profile", "--path", str(d)])
+    fam = res["diagnosis"]
+    assert code == 0
+    assert fam["holdout_template_leak"] == 0.0    # v2 law does its job
+    assert fam["holdout_gold_leak"] == 1.0        # ...and MISSES this
+
+
+def test_holdout_mirror_matches_prepare_domain(synth, monkeypatch):
+    """The audit MIRRORS bin/prepare-domain's holdout law; if the law
+    moves there and not here, this test fails loud — under EVERY law,
+    on rows chosen so the laws DISAGREE (same gold, different
+    template)."""
     script = ROOT / "bin" / "prepare-domain"     # extensionless: no loader
     ns = {"__name__": "prepd", "__file__": str(script)}
     exec(compile(script.read_text(), script.name, "exec"), ns)
-    for line in [json.dumps({"messages": NL_TEMPLATE["messages"]}),
-                 '{"messages": [{"role":"user","content":"x"},'
-                 '{"role":"assistant","content":"y"}]}',
-                 '{"messages": []}', '{"a": 1}']:
-        assert synth._is_holdout(line) == ns["is_holdout"](line)
+    same_gold = [
+        json.dumps({"messages": [{"role": "assistant",
+                                  "content": "CTX-alpha-1"},
+                                 {"role": "user", "content": "q"},
+                                 {"role": "assistant", "content": "G-77"}]}),
+        json.dumps({"messages": [{"role": "assistant",
+                                  "content": "CTX-gamma-3j"},
+                                 {"role": "user", "content": "q"},
+                                 {"role": "assistant", "content": "G-77"}]}),
+    ]
+    lines = ([json.dumps({"messages": NL_TEMPLATE["messages"]}),
+              '{"messages": [{"role":"user","content":"x"},'
+              '{"role":"assistant","content":"y"}]}',
+              '{"messages": []}', '{"a": 1}'] + same_gold)
+    for law_value in ("template", "gold"):
+        monkeypatch.setenv("QTRAIN_HOLDOUT_LAW", law_value)
+        for line in lines:
+            assert synth._is_holdout(line) == ns["is_holdout"](line), \
+                f"mirror drift under law={law_value}: {line[:60]}"
+
+
+def test_holdout_law_gold_cohorts_and_typo_refuses(synth, monkeypatch):
+    """law=gold puts rows sharing a gold string on the SAME side even
+    across disagreeing templates (the template law splits these two —
+    fixture chosen by hash so the contrast is real, not luck); an
+    unknown QTRAIN_HOLDOUT_LAW value fails loud on BOTH mirrors; the
+    unset default is template (never silently anything else)."""
+    a = json.dumps({"messages": [{"role": "assistant",
+                                  "content": "CTX-alpha-1"},
+                                 {"role": "user", "content": "q"},
+                                 {"role": "assistant",
+                                  "content": "G-77"}]})
+    b = json.dumps({"messages": [{"role": "assistant",
+                                  "content": "CTX-gamma-3j"},
+                                 {"role": "user", "content": "q"},
+                                 {"role": "assistant",
+                                  "content": "G-77"}]})
+    assert synth._is_holdout(a) is False          # default = template
+    assert synth._is_holdout(b) is True           # laws disagree here
+    monkeypatch.setenv("QTRAIN_HOLDOUT_LAW", "gold")
+    assert synth._is_holdout(a) == synth._is_holdout(b)
+    monkeypatch.setenv("QTRAIN_HOLDOUT_LAW", "tamplate")   # typo
+    with pytest.raises(SystemExit):
+        synth._is_holdout(a)
+    with pytest.raises(SystemExit):
+        synth._is_holdout(b)
+
+
+def test_bundle_refuses_unvalidated_system(synth, tmp_path, capsys,
+                                           monkeypatch):
+    """Fail CLOSED: a family with no declared verification gate ships
+    zero rows and names itself in gold_rejects — the 2,562-phantom-
+    reject class (verdict prose graded by the concrete contract) can
+    only recur as an explicit refusal now."""
+    from types import SimpleNamespace
+    scen, der, data = tmp_path/"scen", tmp_path/"der", tmp_path/"data"
+    scen.mkdir(); der.mkdir()
+    unknown = {"system": "quantum-foo", "id": "quantum-foo/x",
+               "variants": {},
+               "messages": [{"role": "user", "content": "q"},
+                            {"role": "assistant", "content": "a"}]}
+    (scen / "unknown.json").write_text(json.dumps(unknown))
+    (scen / "good.json").write_text(json.dumps(CONCRETE_REC))
+    monkeypatch.setattr(synth, "SCEN_ROOT", scen)
+    monkeypatch.setattr(synth, "DERIVED_ROOT", der)
+    monkeypatch.setattr(synth, "DATA_ROOT", data)
+    monkeypatch.setattr(synth, "TMP", tmp_path / "notmp")
+    synth.cmd_bundle(SimpleNamespace(domain="probe", out=None, dpo=None))
+    out = json.loads(capsys.readouterr().out)
+    assert out["gold_rejects"].get("quantum-foo:unvalidated-system") == 1
+    assert not (data / "datasets" / "probe" / "quantum-foo.jsonl")\
+        .exists()
+    assert (data / "datasets" / "probe" / "concrete-examples.jsonl")\
+        .read_text().strip()                     # known family ships
 
 
 CONCRETE_REC = {

@@ -551,3 +551,44 @@ MEASUREMENT SEAM, r3 side (same evening, cognition domain):
    honest (the peer's kandi pair moved 1.0575 vs base 3.7905, and
    bit-identical pair halves are an instrument failure, never a
    result). Re-pair for r3 running with the corrected script.
+   THE COSTUME, CURED — AND THE LEAK ONE LEVEL UP (6909eb): the
+   self-heal fired in production exactly as designed (log: "primary
+   namespace moved 0 logits — retrying with toggled subtree", shape
+   stamped 'namespace-remapped'), and for the FIRST TIME the pair is
+   distinct: r3 = 0.0095 vs base = 1.406 on the identical 1133cc79
+   split. But perplexity 1.01 on "unseen" templates is not
+   generalization — it is the same disease one level up: v2 buckets
+   TEMPLATES, yet diagnosis/abstain/repair golds are FORMULAIC
+   STRINGS shared across families. Measured: 53.1% of r3 holdout
+   rows carry a gold appearing VERBATIM in train (weighted 48.8%;
+   abstain/equivalence/repair = 1.00, diagnosis 0.76) while 0% of
+   primes do. The law does its stated job; the FAMILY cannot be
+   certified by any split because the corpus holds ~1-16 distinct
+   golds to begin with — uniq ratios said this long before NLL
+   proved it bites. RESPONSE, per the review brief (solid,
+   configurable, helpful, not dogmatic): (1) QTRAIN_HOLDOUT_LAW knob
+   (template DEFAULT never silently moves — trend rows + 1a548a's
+   staged split stay law-2; typo values fail loud; ledger pins the
+   SHA, so bytes are the comparison contract, labels only the
+   story); (2) the gold law EXISTS and MEASURES honestly — on r3's
+   corpus it holds out 93 rows (0.4%) and ZEROES every formulaic
+   family: the data, not a new dogma (no split can certify what the
+   corpus never diversifies); (3) prepare_domain prints a per-family
+   gold-clean CENSUS at split time (582 held / 273 gold-clean / 47%)
+   so the next NLL arrives pre-qualified, and profile reports both
+   leak metrics side by side, ORTHOGONALITY pinned by tests (both
+   leak combinations now fixtures); (4) r4 lever NAMED: gold-
+   diversity rows for abstain/equivalence/repair — when uniq rises,
+   the gold-clean census rises with it, automatically. Same tranche,
+   hardened: BUNDLE_VALIDATED fail-CLOSED (unknown system -> refused
+   + named in gold_rejects, never silently graded by the wrong
+   contract — the 2,562-phantom class can now only recur as an
+   explicit refusal), and the wiring guard treats UNPROVABLE (no
+   scorable row) as NOT-PROVEN -> remap/refuse. SHARED-TREE
+   CONVERGENCE, noted with respect: my whole-file rewrite briefly
+   collided with the peer's ffafecf (their HOLDOUT_MODULO named-
+   constant rebase landed ON TOP of the in-flight law work — "their
+   law() chooses WHAT is hashed, this names HOW MANY"); one transient
+   spine failure during the overlap, zero reconciliation after; the
+   merged file is exactly right. Standing lesson, in the tools now:
+   re-read before whole-file writes in a shared checkout.

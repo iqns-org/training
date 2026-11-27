@@ -1434,18 +1434,34 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
+HOLDOUT_MODULO = 50   # mirrors bin/prepare-domain's named constant:
+                      # editing the ratio is a law bump + rebase
+                      # (c3d7027), never a quiet edit on one side
+
+
 def _is_holdout(line: str) -> bool:
-    """Mirror of bin/prepare-domain's holdout law v2 (TEMPLATE key:
-    normalized first message, whole line as fallback; test_holdout_
-    mirror pins agreement — if the law moves there and not here, it
-    fails loud)."""
+    """Mirror of bin/prepare-domain's holdout law (v2 template default;
+    QTRAIN_HOLDOUT_LAW=gold selects gold-key bucketing — the mirror
+    test pins agreement under BOTH laws; if the law moves there and
+    not here, it fails loud)."""
+    value = os.environ.get("QTRAIN_HOLDOUT_LAW", "template").strip().lower()
+    if value not in ("template", "gold"):
+        raise SystemExit(f"QTRAIN_HOLDOUT_LAW={value!r} is not a law; "
+                         "use one of: template, gold")
     try:
         msgs = json.loads(line).get("messages") or []
-        first = " ".join((msgs[0].get("content") or "").split())
     except Exception:
-        first = ""
-    key = first or line.strip()
-    return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) % 50 == 0
+        msgs = []
+    norm = lambda t: " ".join((t or "").split())
+    key = ""
+    if value == "gold":
+        key = next((norm(m.get("content")) for m in reversed(msgs)
+                    if m.get("role") == "assistant"), "")
+    if not key:
+        key = norm(msgs[0].get("content")) if msgs else ""
+    key = key or line.strip()
+    return (int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
+            % HOLDOUT_MODULO == 0)
 
 
 def _fam(fams: dict, name: str) -> dict:
@@ -1453,7 +1469,8 @@ def _fam(fams: dict, name: str) -> dict:
         "rows": 0, "gold_lens": [], "uniq": set(), "prog": 0,
         "style": {c: 0 for c in STYLE_CLASSES},
         "style_prose": {c: 0 for c in STYLE_CLASSES},
-        "train_templates": set(), "hold_templates": []})
+        "train_templates": set(), "hold_templates": [],
+        "train_golds": set(), "hold_golds": []})
 
 
 def _observe(st: dict, gold: str, tmpl: str, held: bool) -> None:
@@ -1467,8 +1484,10 @@ def _observe(st: dict, gold: str, tmpl: str, held: bool) -> None:
             (st["style"] if is_prog else st["style_prose"])[cls] += 1
     if held:
         st["hold_templates"].append(tmpl)
+        st["hold_golds"].append(_norm(gold))
     else:
         st["train_templates"].add(tmpl)
+        st["train_golds"].add(_norm(gold))
 
 
 def cmd_profile(args):
@@ -1521,6 +1540,13 @@ def cmd_profile(args):
             out["holdout_rows"] = len(st["hold_templates"])
             out["holdout_template_leak"] = round(
                 leaked / len(st["hold_templates"]), 3)
+            # v2's ceiling, measured (pair-3 6909eb: template leak 0.0 but
+            # 53% of holdout GOLD STRINGS verbatim in train — formulaic
+            # families memorize one level above the template split)
+            gleak = sum(1 for g in st["hold_golds"]
+                        if g and g in st["train_golds"])
+            out["holdout_gold_leak"] = round(
+                gleak / max(1, len(st["hold_golds"])), 3)
         report[name] = out
     print(json.dumps(report, indent=1, ensure_ascii=False))
     return 0
@@ -2025,6 +2051,16 @@ BUNDLE_MAP = {"invalid-program": "diagnosis", "repair": "repair",
               "abstain": "abstain", "equivalence": "equivalence",
               "conflict": "conflict"}
 
+# every system cmd_bundle knows how to VERIFY (which gate is chosen by
+# record shape below). A family outside this set is REFUSED, not routed
+# to check_record by default — the 2,562-phantom-reject incident proved
+# a verdict-shaped gold misgraded by the concrete contract looks exactly
+# like a data defect. New family? Declare its gate HERE first.
+BUNDLE_VALIDATED = {"invalid-program", "repair", "abstain", "conflict",
+                    "equivalence", "concrete-examples", "ir-to-nl",
+                    "nl-to-ir", "program-completion", "program-transform",
+                    "semantic-edit", "valid-program"}
+
 
 def cmd_bundle(args):
     """scenarios + derived templates → $CORPORA_DIR/datasets/<domain>/*.jsonl
@@ -2064,6 +2100,12 @@ def cmd_bundle(args):
                        else sysname)
             else:
                 tag = BUNDLE_MAP.get(sysname, sysname)
+            if sysname not in BUNDLE_VALIDATED:
+                # fail CLOSED: an undescribed contract ships unverified
+                # rows under a plausible-looking reject count otherwise
+                key = f"{tag}:unvalidated-system"
+                gold_rejects[key] = gold_rejects.get(key, 0) + 1
+                continue
             rows = buckets.setdefault(tag, [])
             first = rec["messages"][0]["content"]
             if rec["system"] == "conflict":
