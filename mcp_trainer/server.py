@@ -107,6 +107,16 @@ TRAINING
 - Teacher quality is a corpus receipt, not a hope: name the source
   model in the extraction report (qwen3.8-flash self-distillation is
   capability-PROOF, not capability-CEILING).
+- Corpus rows are LITERAL: expand.py scans row JSON for $-grid markers,
+  and transcripts ABOUT the corpus carry live grid syntax inside tool
+  outputs AND tool inputs (receipt 2026-11-28, three steps to truth:
+  prepare-domain died "missing $ arrays"; defusing outputs-only left it
+  dying — the survivors were inside edit/write ARGUMENTS, the same
+  place secrets hid). The extractor deep-scrubs every string a row can
+  contain, SELF-TESTS the defuser against expand's exact matcher at
+  every start, and VERIFY-FAILS (exit 3) if any live marker survives
+  the written file. Generated corpora must be expand-idempotent BY
+  CHECK, not by hope.
 - Tool NAME whitelist: transcripts carry teacher decoding damage
   (`ash`, `shll`, `tool_use`, `invalid`) — drop, never schema-ify;
   training hallucinated tool names INTO a small model is the tier-1
