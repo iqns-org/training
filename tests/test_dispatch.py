@@ -413,3 +413,34 @@ def test_stage_row_records_image_and_holdout(tmp_path, monkeypatch):
         dispatch.STAGE_SPECS["holdout"])
     assert spec["image"] == dispatch._image_ref()   # trainer, not postproc
     assert spec["holdout_sha"] == "cafe" + "0" * 60
+
+
+def test_mini_estimates_smoke_profile(tmp_path, monkeypatch, fake_s3, recipe):
+    """THE ESTIMATE IS A CLAIM ABOUT THE WORK (f44f27, 2026-11-27):
+    --mini was gate-estimated as a 60min train ($2.25) while the payload
+    declared 48 rows x 1 epoch (~$0.25 real); a $2.50 balance admitted
+    neither. 'smoke' (10min) existed in EST_MINUTES but NOTHING selected
+    it — dead weight. Pin the seam: same balance $2.50 / reserve $2.00 —
+    mini passes the balance gate (0.38), full train is refused (2.25).
+    Same law as cb059d opposite direction: wrong estimates either kill
+    good runs at the cap or starve cheap validations at the gate."""
+    from types import SimpleNamespace
+    import subprocess
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join(['{"m":1}'] * 60))
+    monkeypatch.setattr(dispatch.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess(a, 0))
+    monkeypatch.setattr(dispatch, "get_provider", lambda name: SimpleNamespace(
+        balance=lambda: 2.50))
+    monkeypatch.setattr(dispatch, "_wave_launch", lambda *a, **k: (
+        SimpleNamespace(id="pod-fake", base_url="http://fake"),
+        SimpleNamespace(gpu_id="RTX A5000", price_hr=0.90)))
+    monkeypatch.setattr(dispatch, "_watch", lambda *a, **k: None)
+
+    res = dispatch.submit("queer", recipe, mini=True, provider="runpod")
+    assert not res.get("error"), res
+    assert res["estimate"] == 0.38            # 1.50/hr x 10min x 1.5
+
+    res2 = dispatch.submit("queer", recipe, provider="runpod")
+    assert "estimate $2.25" in (res2.get("error") or ""), res2
