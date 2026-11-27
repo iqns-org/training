@@ -2110,3 +2110,46 @@ is documented in `docs/UI.md`.
   worktree, never add the whole shared file.
   Fleet: m-v0.5.2 @ 9203980a verified live AGAIN this turn (POST
   /pod-stop junk -> 401, pod Running, infra origin == 812ba9a).
+
+
+(ay) THE PAIR, CLOSED — base-half postmortem + the two laws it paid
+  for (2026-11-27 night).
+  The truth 485a22/07bea4 died for: the no-op-merge tars (c7cde2,
+  5c698d — the old route to base bytes) are GONE from the lane
+  (vol_get: None; cause unknown — pre-dating the evidence-retention
+  law). Both stage pods booted against the dead input: the agent
+  crash-revives (no kill-env, no restartPolicy — the r2 mode), zero
+  progress lines ever hit the lane, and only the budget wall stops
+  the billing. Two laws, each with a pinned test: (1) the resume
+  deadline RIDES THE ROW (bfb81a4): max_runtime recorded into the
+  ledger spec at submit; resume anchors elapsed to created_at — a
+  re-attach (or a looping supervisor) can no longer reset the clock
+  and hold a zombie pod open forever. (2) ARTIFACT PREFLIGHT
+  (3df5bb6): non-dry stage submits HEAD the from-run tar first and
+  refuse at $0 — a missing input is a ledger fact, never something to
+  pay a live GPU for. Dry rehearsal exempt: it costs nothing and may
+  precede the bytes.
+  And the pair itself must never again depend on GC-able evidence:
+  --score-base (3df5bb6, CLI+MCP parity, script-side) frees the
+  persona model, loads the bare --base id in the SAME pod, and writes
+  BOTH numbers into one self-stamping holdout.json — identical split
+  bytes, identical guards, comparable by construction.
+  RESULT (928b5d, done, wall 8.0 min, est 1.2):
+    persona v3-merged (5ce31b bytes): 1.0575  — re-verified, BIT-
+      IDENTICAL to 3b890d's number (determinism across runs confirmed
+      twice now)
+    bare base (Qwen/Qwen3.5-0.8B):   3.7905
+    both: 507/511 rows, 10699 tokens, split sha 5dca1c17..., law 2
+    honest margin: -2.733 NLL
+  vs the v1-era pair (0.9178 vs 4.1088, margin -3.191): the leaky
+  row-hash split inflated BOTH sides of the delta — ~0.46 NLL (15%)
+  of the old margin was memorization of template siblings, plus the
+  persona's own number was flattered (0.9178 was not real). 1.0575
+  is kandi's true held-out NLL; r4/r2b compare on split sha
+  5dca1c17..., never on era labels.
+  Retention corollary (law): the lane's evidence may never be the
+  ONLY copy a trend claim depends on — holdout.json artifacts now
+  carry loss + reference-loss + sha + law in ONE gate-required file;
+  if its tar is ever GC'd, the NUMBER is in the manifest summary, the
+  row spec and this register. Re-scoring bytes should need bytes that
+  cannot vanish.
