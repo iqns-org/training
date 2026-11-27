@@ -152,6 +152,7 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
     the CALLER's except (single choke point — no double events)."""
     lane_state: dict = {}
     memo: dict = {}
+    gone = 0               # consecutive DEFINITE-absence cycles (f831b7)
     deadline = started + max_runtime
     inst = result.get("instance")
     inst_fields = dict(inst) if isinstance(inst, dict) else (
@@ -190,10 +191,22 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
         if prov and inst_id:
             try:
                 st = prov.poll(inst_id).status
-            except Exception:
-                st = ""          # provider API blip: re-check next cycle
+            except Exception as e:
+                # DEFINITE ABSENCE is not a blip (f831b7: killed pod,
+                # watch re-checked the corpse until max_runtime). The
+                # pod may be briefly missing during creation — same
+                # boot-change discipline as the deadman — so a DEFINITE
+                # not-found must PERSIST two cycles to count as death;
+                # NET_MARKERS blips are never death.
+                if _gone_says_absent(e) and not _net_blip(e):
+                    gone += 1
+                    st = "terminated" if gone >= 2 else ""
+                else:
+                    st = ""          # provider API blip: re-check next cycle
+            else:
+                gone = 0
             if st in {"terminated", "deleted", "failed", "error", "stopped",
-                      "exited"}:
+                      "exited"} or st == "" and gone >= 2:
                 time.sleep(poll)  # grace: agent may still be flushing
                 manifest_raw = get_run(f"runs/{run_id}/manifest.json")
                 if manifest_raw:
@@ -752,6 +765,14 @@ def _net_blip(e: BaseException) -> bool:
     return any(m in str(e) for m in NET_MARKERS)
 
 
+def _gone_says_absent(e: BaseException) -> bool:
+    """Definite absence per the provider's documented law (terminate():
+    '404 anywhere = gone'). Distinct from a NET blip — a corpse must run
+    the death path, not be re-checked until max_runtime (f831b7)."""
+    s = str(e).lower()
+    return "404" in s or "not found" in s
+
+
 def resume(run_id: str | None = None, poll: int = 30,
            max_runtime: int = 4 * 3600) -> dict:
     """Re-attach to an open (non-terminal) run: resume lane polling,
@@ -765,8 +786,18 @@ def resume(run_id: str | None = None, poll: int = 30,
     rows = [r for r in led.list() if r["state"] in OPEN_STATES
             and not (r["state"] == "verified" and not r["instance_id"])]
     if run_id:
-        rows = [r for r in rows if r["run_id"] == run_id]
+        exact = [r for r in rows if r["run_id"] == run_id]
+        # suffix ids are the house convention everywhere else (verify/
+        # register resolve them, doctor matches pods by name suffix);
+        # resume silently answering "no open runs" to a suffix of a LIVE
+        # run is a no-op wearing success (f831b7 tripped it)
+        rows = exact or [r for r in rows if r["run_id"].endswith(run_id)]
     if not rows:
+        if run_id:
+            return {"resumed": None, "run_id": run_id,
+                    "error": f"no OPEN run matching {run_id!r} — `qtrain "
+                             "runs` shows states; terminal rows are not "
+                             "resumable"}
         return {"resumed": None, "note": "no open runs"}
     row = rows[-1]
     run_id = row["run_id"]

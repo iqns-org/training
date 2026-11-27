@@ -72,3 +72,36 @@ def test_live_catalog_and_pods():
     assert offers and offers == sorted(offers, key=lambda o: o.price_hr)
     assert all(o.provider == "runpod" for o in offers)
     assert isinstance(p.list_instances(), list)
+
+
+def test_poll_definite_absence_not_ghost():
+    """Provider contract the watcher consumes (f831b7): RunPod's
+    terminate() already documents '404 anywhere = gone' — poll() must
+    say the same thing DEFINITELY. A deleted pod answers as a raise
+    ('not found'), never as the empty-status ghost that a watch loop
+    must keep re-checking forever. NET blips stay blips."""
+    # (ProviderError + RunpodProvider already imported at module top;
+    # the class is RunpodProvider — lowercase 'pod' — caught by the
+    # test failing against disk, not memory)
+
+    class Stub(RunpodProvider):
+        def __init__(self, mode):
+            self.mode = mode
+
+        def _req(self, method, path, body=None, **kw):
+            if self.mode == "none":             # 204/empty body -> None
+                return None
+            if self.mode == "empty":            # 200 with no payload
+                return {}
+            if self.mode == "found":            # RunPod v2 GET /v2/pods/{id}
+                return {"id": "x", "status": "RUNNING"}   # BARE pod object
+            raise ProviderError(self.mode)      # _req RAISES on HTTP>=400
+
+    assert Stub("found").poll("x").status == "running"   # normalize_pod lowercases
+    for mode, sigil in (("none", "not found"),
+                        ("empty", "not found"),
+                        ("HTTP 404: gone", "not found")):
+        with pytest.raises(ProviderError, match="not found"):
+            Stub(mode).poll("x")
+    with pytest.raises(ProviderError, match="Temporary failure"):
+        Stub("Temporary failure in name resolution").poll("x")

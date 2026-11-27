@@ -328,3 +328,92 @@ def test_stage_base_auto_resolves(led_root, monkeypatch, tmp_path):
     # no recipe recorded -> empty -> caller returns the actionable error
     rid2 = led.create("train", {}, provider="runpod")
     assert dispatch._recipe_base_from_row(rid2) == ""
+
+
+def test_resume_suffix_resolves_unknown_id_errors(tmp_path, monkeypatch):
+    """resume(run_id): suffix ids resolve like the rest of the CLI
+    (verify/register/doctor all take suffixes) — 'no open runs' to a
+    suffix of a LIVE run was a no-op wearing success (f831b7). And an
+    unknown id must ERROR, not note: reconcile exits non-zero on it."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "state").mkdir(parents=True)
+    led = Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {}, provider="mock")
+    led.update(rid, state="running", instance_id="pod-x")
+    watched = []
+
+    def fake_watch(run_id, *a, **k):
+        watched.append(run_id)
+    monkeypatch.setattr(dispatch, "_watch", fake_watch)
+    monkeypatch.setattr(dispatch, "get_provider", lambda p: object())
+
+    res = dispatch.resume(run_id=rid[-8:])
+    assert res["run_id"] == rid and watched == [rid]
+
+    res2 = dispatch.resume(run_id="zzzz9999")
+    assert "no OPEN run matching" in (res2.get("error") or ""), res2
+    assert not watched or len(watched) == 1       # nothing new attached
+
+
+def test_watch_gone_pod_fails_fast_not_max_runtime(tmp_path, monkeypatch):
+    # f831b7: killed pod, definitive absence, yet the watch looped
+    # calling it a "blip" until max_runtime (~an hour of zombie watch,
+    # row pretending to be alive). Definite-not-found on two
+    # consecutive cycles must run the death path: grace -> manifest
+    # recheck -> run lost.
+    import time as _t
+    led = Ledger(tmp_path / "ledger.db")
+    rid = led.create("train", {}, provider="runpod")
+    led.update(rid, state="running", instance_id="pod-gone")
+    monkeypatch.setattr(dispatch.time, "sleep", lambda s: None)
+
+    class GoneProv:
+        calls = 0
+        def poll(self, iid):
+            GoneProv.calls += 1
+            raise ProviderError("pod pod-gone not found (404)")
+
+    result = {"run_id": rid, "kind": "train"}
+    with pytest.raises(ProviderError, match="run lost"):
+        dispatch._watch(rid, lambda k, **kw: None, result, led, 1,
+                        started=_t.time(), max_runtime=3600,
+                        prov=GoneProv(), inst_id="pod-gone",
+                        price_hr=1.0,
+                        put_run=lambda k, d, ct="": None)
+    assert GoneProv.calls >= 2          # convergence, not single-shot
+
+
+def test_watch_keeps_blipped_pod_alive_for_reap(tmp_path, monkeypatch):
+    # the other half of the law: a genuine NET blip is NOT death — the
+    # pod may be alive and paying (2026-11-24 leak lesson: blipped
+    # watchers must not bury live pods). The loop must actually RUN a
+    # blip cycle, then exit at the deadline: fake clock advances so the
+    # first iteration executes with the blip prov.
+    import time as _t
+    led = Ledger(tmp_path / "ledger.db")
+    rid = led.create("train", {}, provider="runpod")
+    led.update(rid, state="running", instance_id="pod-blip")
+    monkeypatch.setattr(dispatch.time, "sleep", lambda s: None)
+    t0 = _t.time()
+    calls = {"n": 0}
+
+    def fake_time():
+        calls["n"] += 1
+        # iterations 1-2 inside the deadline (blip exercised), then past
+        return t0 if calls["n"] <= 2 else t0 + 9999
+    monkeypatch.setattr(dispatch.time, "time", fake_time)
+
+    class BlipProv:
+        n = 0
+        def poll(self, iid):
+            BlipProv.n += 1
+            raise ProviderError("Network is unreachable")
+
+    result = {"run_id": rid, "kind": "train"}
+    with pytest.raises(ProviderError) as ei:
+        dispatch._watch(rid, lambda k, **kw: None, result, led, 1,
+                        started=t0, max_runtime=60,
+                        prov=BlipProv(), inst_id="pod-blip",
+                        price_hr=1.0, put_run=lambda k, d, ct="": None)
+    assert "max runtime" in str(ei.value)   # NOT "run lost"
+    assert BlipProv.n >= 1                  # the blip WAS exercised

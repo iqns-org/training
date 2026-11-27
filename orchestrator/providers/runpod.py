@@ -171,7 +171,17 @@ class RunpodProvider:
         return normalize_pod(pod if isinstance(pod, dict) else {})
 
     def poll(self, instance_id: str) -> Instance:
-        pod = self._req("GET", f"/v2/pods/{instance_id}")
+        try:
+            pod = self._req("GET", f"/v2/pods/{instance_id}")
+        except ProviderError as e:
+            # the provider's own documented law (terminate): 404 = gone
+            if "404" in str(e):
+                raise ProviderError(f"pod {instance_id} not found (404)") \
+                    from e
+            raise
+        if pod is None or (isinstance(pod, dict)
+                           and not (pod.get("data") or pod)):
+            raise ProviderError(f"pod {instance_id} not found (404)")
         return normalize_pod(pod if isinstance(pod, dict) else {})
 
     def terminate(self, instance_id: str) -> bool:
