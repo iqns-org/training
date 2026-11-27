@@ -193,6 +193,23 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            cuts mid-family, so "0.0/48" (r1) and "0.0/50" measured ONE
            family (concrete-examples) — rejects_by_system (315331c) is
            what exposed it; per-family --task is now the honest protocol.
+           INTERLEAVED FULL-CORPUS MINING (post 53fffcc, temp 0.9, k 4,
+           limit 48): yield 0.212 — NOT zero. The "corpus contract dead"
+           story was the single-family artifact again; truth = verdict
+           families keep at high temp, craft families never do. 115 DPO
+           pairs mined across 12 systems (tmp/synth/rft/dpo-mining.jsonl;
+           16 connection-reset errors when the tunnel died mid-run —
+           errors list kept honest).
+           HOLDOUT LAW v2 (13am amendment): synth profile measured the
+           row-hash bucket LEAKING 1.0 — every templated holdout row had
+           train siblings (diagnosis uniq 0.006: 3708 rows, ~22 golds —
+           phrase memorization, and the "1/6 == 1/6" bench could not see
+           it). is_holdout now buckets by TEMPLATE (normalized first
+           message): re-audit leak 1.0 -> 0.0 at the same ~1.9% holdout
+           rate; mirror test pins synth/prepare-domain agreement; the
+           Returned-bucket fixture leak sealed (named AssertionError);
+           paren/square hazard classes dropped (legal IR list literals =
+           false positives). SPEC 13am amended (both clauses).
            r2 = gaps output verbatim (derive+abstain --per-code 3 ->
            bundle 7482 rows -> 6727 train + 137 holdout, content-hash
            law verified) + num_epochs=4. Learnings landed in code:

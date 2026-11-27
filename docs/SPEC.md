@@ -32,8 +32,9 @@ payload == pod attestation (agent>=0.3.0); `qtrain verify <run>` / MCP
 `verify` prints every leg incl. corpora+recipe drift and image
 ledger==manifest; stage rows carry their own inputs/sha legs (ap).
 
-**Holdout law (13am).** bin/prepare-domain splits ~2% by content-hash
-bucket (stable forever; append-safe); rides payload as sha-verified
+**Holdout law (13am).** bin/prepare-domain splits ~2% by TEMPLATE-key
+bucket (first-message hash — v2; row-content bucketing measured
+~100% sibling leak; stable forever; append-safe); rides payload as sha-verified
 input; train NEVER sees it; scored POST-TRAIN by the holdout stage (this
 axolotl rejects in-train eval_strategy at val_set_size==0 — 3e7232 — and
 random val splits violate the stability law anyway).
@@ -1548,12 +1549,16 @@ one purpose — every future domain/round/target answers with numbers:
   refused, zero rows created, exit 1, evidence cited. MCP `families`
   tool exposes the registry. Unknown/untested never blocks — only
   explicit false.
-- **Holdout law** (13am): bin/prepare-domain content-hashes EVERY
-  conversation into train/~98% + holdout/~2% (`is_holdout`, stable
-  across rounds — a line held out in round K stays out forever, which
-  is what makes cross-round eval trends comparable; the round-2 loss
-  drop that hid a behavior collapse could not have fooled a holdout
-  split). prepare_dataset uploads it (content-addressed key), it rides
+- **Holdout law** (13am, v2 2026-11-27): bin/prepare-domain buckets
+  EVERY conversation by its TEMPLATE identity — normalized first message
+  (v1 hashed row content; `synth profile` measured that templated
+  families then leaked ~100%: every holdout row had sibling variants in
+  train, so holdout NLL scored memorization — diagnosis uniq 0.006).
+  v2 keeps ~2% (1.9% measured) and stability (content-derived key:
+  a template held out in round K stays out forever; eval trends stay
+  comparable ACROSS v2 rounds) but moves the whole template together:
+  train NEVER sees a scored template. prepare_dataset uploads it
+  (content-addressed key), it rides
   the payload as a sha-verified INPUT (both lanes; mint_job_urls gained
   holdout_get), the agent attests it like any input (13ak witness
   chain), ledger spec records holdout_sha/lines, provenance verify

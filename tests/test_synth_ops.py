@@ -336,3 +336,56 @@ def test_holdout_mirror_matches_prepare_domain(synth):
                  '{"role":"assistant","content":"y"}]}',
                  '{"messages": []}', '{"a": 1}']:
         assert synth._is_holdout(line) == ns["is_holdout"](line)
+
+
+CONCRETE_REC = {
+    "comment": "c", "label": "l", "id": "concrete-examples/t01",
+    "system": "concrete-examples",
+    "variants": {
+        "domain": [{"subject": {"iri": "my:planet"},
+                    "state_predicate": {"iri": "ai:fermState"},
+                    "before": {"iri": "my:Fermenting"},
+                    "after": {"iri": "my:Bottled"}}],
+        "phrasing": ["What state is the planet in now?"],
+    },
+    "messages": [
+        {"role": "assistant", "content":
+         "# BEFORE\n\nPREFIX my: <http://example.org/entity/>.\n"
+         "PREFIX ai: <http://example.org/property/>.\n\nWORLD {\n"
+         "    {domain.subject.iri} {domain.state_predicate.iri} "
+         "{domain.before.iri} .\n}\n\n# PROGRAM\n\nDELETE WORLD {\n"
+         "    {domain.subject.iri} {domain.state_predicate.iri} "
+         "{domain.before.iri} .\n}.\nWRITE WORLD {\n"
+         "    {domain.subject.iri} {domain.state_predicate.iri} "
+         "{domain.after.iri} .\n}.\n\nRETURN {domain.subject.iri}."},
+        {"role": "user", "content": "{phrasing}"},
+        {"role": "assistant", "content":
+         "WORLD {\n    {domain.subject.iri} {domain.state_predicate.iri} "
+         "{domain.after.iri} .\n}\n\n# RETURNED {domain.subject.iri}"},
+    ],
+    "assert": {"emitted": [], "memory_add": [], "memory_delete": [],
+               "returned": "{domain.subject.iri}", "valid": True,
+               "world_add": [["{domain.subject.iri}",
+                              "{domain.state_predicate.iri}",
+                              "{domain.after.iri}"]],
+               "world_delete": [["{domain.subject.iri}",
+                                 "{domain.state_predicate.iri}",
+                                 "{domain.before.iri}"]]},
+}
+
+
+def test_after_return_leak_is_named_assertion(synth):
+    """The r1 'Returned' bucket: RETURN executed inside the AFTER
+    program escaped check_record as a control-flow EXCEPTION CLASS.
+    Now it converts to a named AssertionError; gold still passes; the
+    raw block() keeps raising Returned internally (contract unchanged
+    there — only the grade boundary is sealed)."""
+    msgs, expected = next(iter(synth.check.expansions(CONCRETE_REC)))
+    gold = msgs[2]["content"]
+    ok, _ = synth.grade_completion(CONCRETE_REC, msgs, expected, gold)
+    assert ok, "gold must pass"
+    bad = gold + "\nRETURN my:ghost ."
+    ok, why = synth.grade_completion(CONCRETE_REC, msgs, expected, bad)
+    assert not ok
+    assert why.split(":")[0] == "AssertionError", why
+    assert "AFTER program" in why

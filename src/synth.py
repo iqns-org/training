@@ -1360,12 +1360,10 @@ def cmd_pairs(args):
 # content; templated families leak siblings, so holdout NLL partially
 # measures memorization — this quantifies it for the split-law v2 call).
 
-STYLE_CLASSES = {          # chars seen in r1 IRErrors: parser hazards
-    "dash": "\u2014\u2013",
-    "curly": "\u2018\u2019\u201c\u201d",
-    "paren": "()",
-    "square": "[]",
-}
+STYLE_CLASSES = {          # prose-bleed fingerprints: chars NO legal IR
+    "dash": "\u2014\u2013",   # program contains. (paren/square were
+    "curly": "\u2018\u2019\u201c\u201d",  # dropped: IR has legal list
+}                          # literals — presence-based = false positives
 PROGRAM_MARK = re.compile(
     r"\b(PREFIX|WORLD|MEMORY|READ|BIND|WRITE|MATCH|RETURN|EMIT)\b")
 
@@ -1375,10 +1373,17 @@ def _norm(text: str) -> str:
 
 
 def _is_holdout(line: str) -> bool:
-    """Mirror of bin/prepare-domain's SPEC 13am bucket (law lives
-    there; test_holdout_mirror_pins catches drift between the two)."""
-    return int(hashlib.sha256(line.strip().encode()).hexdigest()[:8],
-               16) % 50 == 0
+    """Mirror of bin/prepare-domain's holdout law v2 (TEMPLATE key:
+    normalized first message, whole line as fallback; test_holdout_
+    mirror pins agreement — if the law moves there and not here, it
+    fails loud)."""
+    try:
+        msgs = json.loads(line).get("messages") or []
+        first = " ".join((msgs[0].get("content") or "").split())
+    except Exception:
+        first = ""
+    key = first or line.strip()
+    return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) % 50 == 0
 
 
 def _fam(fams: dict, name: str) -> dict:

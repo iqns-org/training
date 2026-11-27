@@ -340,7 +340,11 @@ def check_record(record, messages, expected):
             assert type(value) is type(expected[key]) and value == expected[key], (key, value, expected[key])
     if task == "concrete-examples":
         after = Fixture()
-        after.block(ir.parse(last)["body"], {})
+        try:
+            after.block(ir.parse(last)["body"], {})
+        except Returned:
+            raise AssertionError("RETURN executed inside the AFTER program "
+                                 "(the # RETURNED annotation is its channel)")
         assert after.state == fixture.state, "AFTER drops or invents facts"
         returned = re.findall(r"^# RETURNED (.+)$", last, re.M)
         assert len(returned) == 1

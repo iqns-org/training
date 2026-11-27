@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import hashlib
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -9,11 +10,29 @@ sys.path.insert(0, str(ROOT / "src"))
 from expand import main_all
 
 
+def holdout_key(line: str) -> str:
+    """The bucket IDENTITY of a row: its conversation's first message
+    (normalized), falling back to the whole line when there is no
+    conversation. Template siblings share this key."""
+    try:
+        msgs = json.loads(line).get("messages") or []
+        first = " ".join((msgs[0].get("content") or "").split())
+    except Exception:
+        first = ""
+    return first or line.strip()
+
+
 def is_holdout(line: str) -> bool:
-    """Stable ~2% bucket — content hash, never position: a line held out
-    in round K is held out forever (SPEC 13am eval-trend comparability)."""
-    return int(hashlib.sha256(line.strip().encode()).hexdigest()[:8],
-               16) % 50 == 0
+    """Holdout law v2 (2026-11-27): bucket by TEMPLATE, not row content.
+    synth profile measured the v1 row-hash split LEAKING ~100%: every
+    templated-family holdout row had sibling variants in train (uniq
+    0.006 in diagnosis), so holdout NLL measured memorization. Keying
+    on the first message moves every variant of a scenario across the
+    line together — the model trains on NO template it is scored on.
+    13am stability holds: the key is content-derived, so a template
+    held out in round K is held out forever."""
+    return int(hashlib.sha256(holdout_key(line).encode())
+               .hexdigest()[:8], 16) % 50 == 0
 
 
 def prepare_domain(domain: str) -> Path:
