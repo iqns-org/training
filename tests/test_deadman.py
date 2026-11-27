@@ -99,26 +99,41 @@ def _dm(tmp_path):
 def test_step_protocol(tmp_path):
     dm = _dm(tmp_path)
     ping = tmp_path / "ping"
-    w = dm.Deadman(ping, grace=100, interval=15)
+    w = dm.Deadman(ping, grace=100, boot_grace=30, interval=15)
     # absent file: never armed, never fires (boot handshake)
     assert w.step(now=0) is False
     assert w.step(now=10 ** 9) is False        # un-armed == cannot fire
-    # first ping arms; unchanged content exhausts grace; change re-arms
+    # first READ arms the handshake but NOT the kill clock (r2 law: a
+    # resurrected container finds the previous life's stale ping).
     ping.write_bytes(b"t1")
-    assert w.step(now=1000) is False           # armed here, fresh
-    assert w.step(now=1099) is False
-    assert w.step(now=1100) is True            # grace exactly
-    ping.write_bytes(b"t2")                    # watcher alive again
-    assert w.step(now=1105) is False           # change resets
-    assert w.step(now=1204) is False
-    assert w.step(now=1205) is True
+    assert w.step(now=1000) is False           # handshake read
+    assert w.step(now=1029) is False           # boot clock, not yet
+    assert w.step(now=1030) is True            # BOOT grace: never changed
+    # a live CHANGE switches to the normal grace countdown
+    w = dm.Deadman(ping, grace=100, boot_grace=30, interval=15)
+    ping.write_bytes(b"")                      # reset for fresh watch
+    w.step(now=2000)                           # handshake
+    ping.write_bytes(b"t2")                    # watcher alive: CHANGE
+    assert w.step(now=2010) is False
+    assert w.step(now=2109) is False           # rides the GRACE clock
+    assert w.step(now=2110) is True            # 100s after the change
     # file vanishing mid-flight (lane hiccup) must NOT fake liveness nor
     # kill a healthy run: last_change stays, decision rides grace only
     ping.unlink()
-    assert w.step(now=1210) is True            # still past last change
-    # but a fresh ping resets fully
+    assert w.step(now=2115) is True            # still past last change
+    # but a fresh ping (content change) resets fully
     ping.write_bytes(b"t3")
-    assert w.step(now=1215) is False
+    assert w.step(now=2120) is False
+
+
+def test_boot_grace_env(tmp_path, monkeypatch):
+    dm = _dm(tmp_path)
+    monkeypatch.delenv("DEADMAN_BOOT_GRACE_S", raising=False)
+    assert dm.boot_grace_from_env() == 180.0
+    monkeypatch.setenv("DEADMAN_BOOT_GRACE_S", "60")
+    assert dm.boot_grace_from_env() == 60.0
+    monkeypatch.setenv("DEADMAN_BOOT_GRACE_S", "junk")
+    assert dm.boot_grace_from_env() == 180.0   # garbage never disables
 
 
 def test_grace_env_default(tmp_path, monkeypatch):

@@ -1595,7 +1595,12 @@ one purpose — every future domain/round/target answers with numbers:
       only — presign pods carry no mount and are documented-unarmed;
       their cost stays estimate-capped). Arms ONLY after the first
       successful read (boot handshake: an orchestrator that dies
-      pre-launch cannot cause a false fire mid-round), fires after
+      pre-launch cannot cause a false fire mid-round) — but per the r2
+      law the KILL CLOCK starts only on the first content CHANGE, never
+      a bare read: a resurrected container finds the previous life's
+      stale ping, and a never-changing first-seen fires after the
+      shorter DEADMAN_BOOT_GRACE_S (default 180s), not the full grace.
+      Steady state fires after
       DEADMAN_GRACE_S (default 600s ≈ 40 missed 15s checks; knob
       flows through ALL 3 pod-create env sites so forensics always
       sees the value in effect) of UNCHANGED content. Missing file

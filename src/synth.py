@@ -1223,67 +1223,80 @@ def cmd_sample(args):
     rejects_path = tmp / "rejects.jsonl"
     paths = [p for r in roots if r.is_dir()
              for p in sorted(r.rglob("*.json")) if p.name != "manifest.json"]
+    # r3 fix: interleave EXPANSIONS round-robin across systems — sorted
+    # file order let one alphabetically-first family eat the whole
+    # --limit (r1/r2's "yield 0.0" measured ONE family; rejects_by_system
+    # exposed it, 315331c). Coverage is structural now, not discovered.
+    streams: dict[str, list] = {}
+    for path in paths:
+        rec = json.loads(path.read_text())
+        if args.task and rec["system"] != args.task:
+            continue
+        for pair in check.expansions(rec):
+            streams.setdefault(rec["system"], []).append((rec,) + pair)
+    ordered = []
+    for i in range(max((len(v) for v in streams.values()), default=0)):
+        for sysname in sorted(streams):
+            if i < len(streams[sysname]):
+                ordered.append(streams[sysname][i])
+        if len(ordered) >= args.limit > 0:
+            break
     with rows_path.open("w") as fh, rejects_path.open("w") as rj:
-        for path in paths:
-            rec = json.loads(path.read_text())
-            if args.task and rec["system"] != args.task:
-                continue
-            for messages, expected in check.expansions(rec):
-                if stats["prompts"] >= args.limit:
-                    break
-                prompt = messages[:2]
-                stats["prompts"] += 1
-                for _ in range(args.k):
-                    try:
-                        resp = http_json(
-                            args.url.rstrip("/") + "/chat/completions",
-                            {"model": args.model, "messages": prompt,
-                             "temperature": args.temperature,
-                             "max_tokens": args.max_tokens})
-                        completion = (resp["choices"][0]["message"]
-                                      ["content"] or "").strip()
-                    except Exception as exc:
-                        stats["errors"].append(str(exc)[:120])
-                        continue
-                    if not completion:
-                        stats["rejects"]["empty-completion"] = \
-                            stats["rejects"].get("empty-completion", 0) + 1
-                        continue
-                    stats["sampled"] += 1
-                    ok, why = grade_completion(rec, messages, expected,
-                                               completion)
-                    if not ok:
-                        key = why.split(":", 1)[0] if ":" in why else why
-                        stats["rejects"][key] = stats["rejects"].get(key, 0) + 1
-                        # r2 lesson: the global buckets said "shape ok,
-                        # contract dead" but not WHICH contract — per-system
-                        # is what aims r3's data lever.
-                        bysys = stats["rejects_by_system"].setdefault(
-                            rec["system"], {})
-                        bysys[key] = bysys.get(key, 0) + 1
-                        # the rows BEHIND the counts: (prompt, gold, the
-                        # model's own completion, the assert that disposed
-                        # it) — consumed by `synth pairs` as DPO fuel and
-                        # by human eyes as the family->cause map.
-                        rj.write(json.dumps({
-                            "system": rec["system"], "id": rec["id"],
-                            "bucket": key, "why": why,
-                            "prompt": prompt,
-                            "gold": messages[2]["content"],
-                            "completion": completion[:1500],
-                        }, ensure_ascii=False) + "\n")
-                        stats["reject_dump"] = str(rejects_path)
-                    if ok:
-                        stats["kept"] += 1
-                        fam = ("graph-" if "graph" in rec["id"]
-                               else "") + rec["system"]
-                        stats["by_family"][fam] = \
-                            stats["by_family"].get(fam, 0) + 1
-                        fh.write(json.dumps({"messages": messages[:2] + [
-                            {"role": "assistant", "content": completion}]},
-                            ensure_ascii=False) + "\n")
+        for rec, messages, expected in ordered:
             if stats["prompts"] >= args.limit:
                 break
+            prompt = messages[:2]
+            stats["prompts"] += 1
+            for _ in range(args.k):
+                try:
+                    resp = http_json(
+                        args.url.rstrip("/") + "/chat/completions",
+                        {"model": args.model, "messages": prompt,
+                         "temperature": args.temperature,
+                         "max_tokens": args.max_tokens})
+                    completion = (resp["choices"][0]["message"]
+                                  ["content"] or "").strip()
+                except Exception as exc:
+                    stats["errors"].append(str(exc)[:120])
+                    continue
+                if not completion:
+                    stats["rejects"]["empty-completion"] = \
+                        stats["rejects"].get("empty-completion", 0) + 1
+                    continue
+                stats["sampled"] += 1
+                ok, why = grade_completion(rec, messages, expected,
+                                           completion)
+                if not ok:
+                    key = why.split(":", 1)[0] if ":" in why else why
+                    stats["rejects"][key] = \
+                        stats["rejects"].get(key, 0) + 1
+                    # r2 lesson: the global buckets said "shape ok,
+                    # contract dead" but not WHICH contract — per-system
+                    # is what aims r3's data lever.
+                    bysys = stats["rejects_by_system"].setdefault(
+                        rec["system"], {})
+                    bysys[key] = bysys.get(key, 0) + 1
+                    # the rows BEHIND the counts: (prompt, gold, the
+                    # model's own completion, the assert that disposed
+                    # it) — consumed by `synth pairs` as DPO fuel and
+                    # by human eyes as the family->cause map.
+                    rj.write(json.dumps({
+                        "system": rec["system"], "id": rec["id"],
+                        "bucket": key, "why": why,
+                        "prompt": prompt,
+                        "gold": messages[2]["content"],
+                        "completion": completion[:1500],
+                    }, ensure_ascii=False) + "\n")
+                    stats["reject_dump"] = str(rejects_path)
+                if ok:
+                    stats["kept"] += 1
+                    fam = ("graph-" if "graph" in rec["id"]
+                           else "") + rec["system"]
+                    stats["by_family"][fam] = \
+                        stats["by_family"].get(fam, 0) + 1
+                    fh.write(json.dumps({"messages": messages[:2] + [
+                        {"role": "assistant", "content": completion}]},
+                        ensure_ascii=False) + "\n")
     stats["yield"] = round(stats["kept"] / max(1, stats["sampled"]), 3)
     if args.dataset:
         dest = DATA_ROOT / "datasets" / args.dataset
@@ -1294,7 +1307,6 @@ def cmd_sample(args):
                             hashlib.sha256(out.read_bytes()).hexdigest()[:16])
     print(json.dumps(stats, indent=1, ensure_ascii=False))
     return 0
-
 
 def cmd_pairs(args):
     """R2-lesson tool: reject dump -> DPO pairs. RFT can't bootstrap at

@@ -271,3 +271,24 @@ def test_mix_cmd(synth, tmp_path, monkeypatch):
     code2, res2 = run(synth, ["mix", "--sources", "a:1,b:3", "--rows", "12",
                               "--seed", "5", "--name", "demo"])
     assert res2["mix"] == res["mix"]
+
+
+def test_sample_cmd_interleaves_families(synth, tmp_path, monkeypatch):
+    """r3 fix: one big family must not eat the whole --limit —
+    expansions round-robin across systems (sorted files let
+    r1/r2 measure ONE family while claiming the corpus)."""
+    d = tree(tmp_path)
+    ab = json.loads(json.dumps(NL_TEMPLATE))
+    ab["id"], ab["system"] = "abstain/a01", "abstain"
+    ab["variants"]["phrasing"] = [f"Who wrote it? v{i}" for i in range(6)]
+    (d / "abstain").mkdir()
+    (d / "abstain" / "a01.json").write_text(json.dumps(ab))
+    monkeypatch.setattr(
+        synth, "http_json",
+        lambda url, payload, timeout=120: {
+            "choices": [{"message": {"content": "The depot, probably."}}]})
+    monkeypatch.setattr(synth, "TMP", tmp_path / "tmp-synth")
+    code, res = run(synth, ["sample", "--url", "http://fake/v1",
+                            "--k", "1", "--limit", "4", "--out", str(d)])
+    assert code == 0 and res["prompts"] == 4
+    assert set(res["rejects_by_system"]) == {"abstain", "nl-to-ir"}
