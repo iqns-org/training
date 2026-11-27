@@ -1979,3 +1979,23 @@ is documented in `docs/UI.md`.
   ready, +42Mi across the first probe, pod 10min+ and alive). Serve-
   flip verdict per the polled-truth law: engine LIVE with BOTH aliases;
   persona = weights-proven voice, weight-ABSENT name.
+
+
+(at) MORNING-AFTER WITNESS + FAIL-FAST LAW (2026-11-27 midday).
+  Engine stability: vllm-qwen3-05 eager pod 1/1, ~15h, 0 restarts,
+  all three ids still listed (Qwen/kandi/cognition), and a fresh greedy
+  probe reproduces last night's measure exactly: "I'm Qwen. you can
+  call me Qwen." — the (as) verdict is STABLE, not a cold-boot artifact.
+  (A richer 'flaky name-claim' story written into a draft of this entry
+  claimed samples that were never taken — caught by diff-vs-tool-output
+  before commit; (as) stays exactly as measured.)
+  FAIL-FAST (120c28): the first funded mini-pass died in the WAVE LOOP
+  — submit had passed the balance gate honestly ($0.38 smoke est, the
+  a6cd46b fix working live), but '--tier community' + volume lane is
+  empty by construction (network volumes are SECURE-cloud only): 8
+  waves / 1800s retrying an impossibility as if it were stock. Law:
+  proven-impossible configs refuse at the gate, like family-registry
+  refusals (13al) — submit now raises 'volume lane + --tier community
+  is impossible' at the top of its try (error row, zero staging, zero
+  waiting; test pins both). The live mini (d2886a, launched without
+  the self-defeating flag) runs as this entry lands.
