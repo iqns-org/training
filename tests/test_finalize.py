@@ -135,6 +135,74 @@ def test_finalize_failed_status(monkeypatch, tmp_path):
     assert calls == ["m"]          # no artifacts tar on failure
 
 
+# ------------------------------------------------------------ pair/co-tenant
+def test_gate_pattern_shards(tmp_path):
+    """FFT law: model*.safetensors PATTERN matches sharded saves — the
+    exact-name REQUIRED_FILES model cannot express shards, and an
+    otherwise-perfect full-FT round must not die at the gate."""
+    out = tmp_path / "outputs"
+    for f in ("config.json", "tokenizer.json", "tokenizer_config.json",
+              "model-00001-of-00002.safetensors",
+              "model-00002-of-00002.safetensors"):
+        p = out / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+    ok, problems = fz.gate(out, {"required_files":
+                                 ["config.json", "model*.safetensors",
+                                  "tokenizer.json", "tokenizer_config.json"]})
+    assert ok, problems
+    # and the pattern FAILS honestly when the shards are absent
+    for f in ("model-00001-of-00002.safetensors",
+              "model-00002-of-00002.safetensors"):
+        (out / f).unlink()
+    ok, problems = fz.gate(out, {"required_files": ["model*.safetensors"]})
+    assert not ok and any("model*" in p for p in problems)
+
+
+def test_gate_pair_subdirs(tmp_path):
+    """Co-tenant: per-slug prefixed patterns require BOTH trees; a
+    half-success (one model trained, one crashed) must fail the gate."""
+    import shutil
+    out = tmp_path / "outputs"
+    for f in ("qwen3.5-0.8b/adapter_config.json",
+              "qwen3.5-0.8b/adapter_model.safetensors",
+              "qwen3.5-0.8b/tokenizer.json",
+              "qwen3.5-4b/config.json",
+              "qwen3.5-4b/model.safetensors",
+              "qwen3.5-4b/tokenizer.json"):
+        p = out / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x")
+    req = [f"qwen3.5-0.8b/{f}" for f in
+           ("adapter_config.json", "adapter_model.safetensors",
+            "tokenizer.json")] + [f"qwen3.5-4b/{f}" for f in
+                                  ("config.json", "model*.safetensors",
+                                   "tokenizer.json")]
+    ok, problems = fz.gate(out, {"required_files": req})
+    assert ok, problems
+    # 4b crashes -> gate names it
+    shutil.rmtree(out / "qwen3.5-4b")
+    ok, problems = fz.gate(out, {"required_files": req})
+    assert not ok and len(problems) == 3
+
+
+def test_materialize_configs(tmp_path):
+    """configs list payload: every co-tenant config lands under job/ and
+    EVERY one's bytes ride the attestation (13ak proof standard)."""
+    payload = {"run_id": "r", "command": "sh -c 'axolotl train a & wait'",
+               "configs": [
+                   {"name": "qwen3.5-0.8b", "config_yaml": "base_model: A\n"},
+                   {"name": "qwen3.5-4b.yaml", "config_yaml": "base_model: B\n"}],
+               "outputs_dir": str(tmp_path / "out"), "urls": {}}
+    run = joblane.materialize(payload, work=tmp_path)
+    assert (tmp_path / "job" / "qwen3.5-0.8b.yaml").read_text() == "base_model: A\n"
+    assert (tmp_path / "job" / "qwen3.5-4b.yaml").is_file()  # .yaml not doubled
+    att = json.loads((tmp_path / "attest.json").read_text())
+    assert {c["name"] for c in att["configs"]} == {"qwen3.5-0.8b.yaml",
+                                                   "qwen3.5-4b.yaml"}
+    assert all(len(c["sha256"]) == 64 for c in att["configs"])
+
+
 def test_materialize(tmp_path, monkeypatch):
     ds = tmp_path / "data.jsonl"
 

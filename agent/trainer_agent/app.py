@@ -180,11 +180,13 @@ def _arm_deadman(runner: Runner, run: dict) -> None:
         # into an unbounded billing loop (5 zombie attempts, ~$3.3). So:
         # ask the platform to stop the pod itself first, then exit. The
         # kill endpoint arrives via env from the orchestrator (generic
-        # contract, provider-agnostic); absent env = old behavior, no
-        # regression (reconcile + orchestrator supervisor still close it).
+        # contract, provider-agnostic; absent env = old behavior, no
+        # regression — reconcile + orchestrator supervisor still close it).
         _pod_stop_best_effort()
         import os as _os
         _os._exit(0)
+
+    Deadman(dest / "ping", log=lambda m: print(m, flush=True)).start(fire)
 
 
 def _pod_stop_best_effort() -> bool:
@@ -214,8 +216,6 @@ def _pod_stop_best_effort() -> bool:
         print(f"deadman: pod kill FAILED {str(e)[:120]} — exiting anyway",
               flush=True)
         return False
-
-    Deadman(dest / "ping", log=lambda m: print(m, flush=True)).start(fire)
 
 
 def main() -> int:

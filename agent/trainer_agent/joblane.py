@@ -64,6 +64,16 @@ def materialize(payload: dict, work: Path = WORK) -> dict:
         (jobdir / "train.yaml").write_text(payload["config_yaml"])
         attest["config_sha"] = hashlib.sha256(
             payload["config_yaml"].encode()).hexdigest()
+    # CO-TENANT law: multiple configs share the one pod (one process tree,
+    # one manifest, per-slug output dirs). Each config's exact bytes ride
+    # the attestation — same proof standard as single-config runs.
+    for cfg in payload.get("configs") or []:
+        name = cfg["name"] if cfg["name"].endswith(".yaml") \
+            else cfg["name"] + ".yaml"
+        (jobdir / name).write_text(cfg["config_yaml"])
+        attest.setdefault("configs", []).append(
+            {"name": name,
+             "sha256": hashlib.sha256(cfg["config_yaml"].encode()).hexdigest()})
 
     ds = payload.get("dataset") or {}
     if ds:

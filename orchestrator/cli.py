@@ -113,6 +113,7 @@ def cmd_submit(args):
     res = dispatch.submit(
         args.domain, resolve_recipe(args.recipe), mini=args.mini,
         overrides=overrides,
+        pair=resolve_recipe(args.pair) if args.pair else None,
         provider=args.provider, gpus=args.gpu or None, tier=args.tier,
         dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost,
         force_lane=args.lane, max_price_hr=args.max_price,
@@ -450,6 +451,11 @@ def build_parser():
     s.add_argument("domain")
     s.add_argument("--recipe", required=True,
                    help="axolotl YAML (corpora recipes/<domain>/… or path)")
+    s.add_argument("--pair", default=None,
+                   help="second recipe CO-TENANT on the same pod (one run, "
+                        "two concurrent axolotl procs, per-model artifact "
+                        "trees; gate requires both). e.g. train 0.8B+4B on "
+                        "one 24G card for the price of one pod")
     s.add_argument("--mini", action="store_true",
                    help=f"tiny dataset ({dispatch.MINI_LINES} rows, seq 256, 1 epoch) "
                         "— lane validation, not a real training run")

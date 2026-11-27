@@ -35,13 +35,25 @@ def _excluded(name: str, exclude: tuple | list | None = None) -> bool:
 def gate(outputs_dir: Path, gate_spec: dict | None = None) -> tuple[bool, list[str]]:
     """(ok, problems). Required final files present; checkpoint-* leftovers
     are NORMAL (axolotl saves_per_epoch) — excluded from pack, never fatal.
-    Stage jobs override the required set (ONNX dirs have no adapter files)."""
+    Stage jobs override the required set (ONNX dirs have no adapter files).
+    Entries may be PATTERNS ("model*.safetensors" — full FT shards;
+    "*/config.json" — one required file per co-tenant subdir): matched
+    with fnmatch against every relative path under outputs_dir. A plain
+    name stays an exact root-file check (back-compat with schema-2 law)."""
+    import fnmatch
     required = (gate_spec or {}).get("required_files", REQUIRED_FILES)
     problems = []
     if not outputs_dir.is_dir():
         return False, [f"outputs dir missing: {outputs_dir}"]
+    rels = None
     for f in required:
-        if not (outputs_dir / f).is_file():
+        if "*" in f or "?" in f:
+            if rels is None:
+                rels = [str(p.relative_to(outputs_dir))
+                        for p in outputs_dir.rglob("*") if p.is_file()]
+            if not any(fnmatch.fnmatch(r, f) for r in rels):
+                problems.append(f"required artifact missing: {f}")
+        elif not (outputs_dir / f).is_file():
             problems.append(f"required artifact missing: {f}")
     if not any(p.is_file() for p in outputs_dir.rglob("*")):
         problems.append("outputs dir has no files")

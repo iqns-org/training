@@ -173,6 +173,52 @@ class _Resp:
         return False
 
 
+# ---------------------------------------------------------------- arming
+def test_arm_deadman_wires_the_watchdog(monkeypatch, tmp_path):
+    """REGRESSION (2026-11-27): the r2 pod-stop refactor swallowed the
+    `Deadman(...).start(fire)` line into _pod_stop_best_effort's body —
+    unreachable, so the watchdog NEVER ARMED on any pod while every test
+    kept passing (they proved the class, never the wiring). Law this pins:
+    _arm_deadman on a volume-lane run MUST construct+start a Deadman on
+    the ping file; presign-lane runs stay deliberately UNARMED (no mount,
+    SPEC 13an documented hole — flip only with a lane change)."""
+    from trainer_agent import app as app_mod
+    from trainer_agent import deadman as dm_mod
+
+    armed = []
+
+    class SpyDeadman:
+        def __init__(self, path, *, log=None, **kw):
+            armed.append(("ctor", str(path)))
+
+        def start(self, on_fire):
+            armed.append(("start", on_fire))
+
+        def stop(self):
+            armed.append(("stop", None))
+
+    class FakeRunner:
+        def _write_state(self, **f):
+            armed.append(("state", f))
+
+        def cancel(self):
+            armed.append(("cancel", None))
+
+    monkeypatch.setattr(dm_mod, "Deadman", SpyDeadman)
+
+    # volume lane: must arm on <mount>/<prefix>/ping
+    app_mod._arm_deadman(FakeRunner(),
+                         {"volume": {"mount": str(tmp_path),
+                                     "prefix": "runs/R1"}})
+    assert ("ctor", str(tmp_path / "runs/R1/ping")) in armed
+    assert any(k == "start" for k, _ in armed)
+
+    # presign lane: deliberately unarmed — no mount to watch
+    armed.clear()
+    app_mod._arm_deadman(FakeRunner(), {"volume": None, "urls": {}})
+    assert armed == []
+
+
 def test_pod_kill_env_contract(monkeypatch):
     """r2 law: fire must ASK THE PLATFORM to stop the pod before exit —
     provider restarts exited containers, so bare os._exit = zombie loop.

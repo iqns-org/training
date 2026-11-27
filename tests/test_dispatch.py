@@ -77,6 +77,95 @@ def test_submit_dry_stages_objects(tmp_path, monkeypatch, fake_s3, recipe):
     assert any(k.endswith("payload.json") for k in fake_s3["put"])
 
 
+def _vol_puts(tmp_path, monkeypatch):
+    """shared plumbing for payload-inspecting dry runs (volume lane)."""
+    monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "user_x")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "rps_y")
+    monkeypatch.setenv("RUNPOD_S3_ENDPOINT", "https://s3api-eu-ro-1.runpod.io")
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join(['{"m":1}'] * 60))
+    monkeypatch.setattr(dispatch.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.storage, "sha256_file", lambda p: "0" * 64)
+    puts = []
+    monkeypatch.setattr(dispatch.storage, "vol_put",
+                        lambda k, d: puts.append((k, d)))
+    return puts
+
+
+def test_submit_fft_gate_dry(tmp_path, monkeypatch):
+    """A recipe without `adapter:` is FULL FT — the train payload must
+    carry the shard-shaped gate, else a perfect round dies at the
+    adapter-file default (the whole point of _gate_required)."""
+    r = tmp_path / "fft.yaml"
+    r.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                 "datasets": [{"path": "x"}]}))
+    puts = _vol_puts(tmp_path, monkeypatch)
+    res = dispatch.submit("queer", r, mini=True, dry=True)
+    payload = json.loads(dict(puts)[f"runs/{res['run_id']}/payload.json"])
+    assert "gate" in payload
+    assert "model*.safetensors" in payload["gate"]["required_files"]
+    # adapter recipes stay gate-less (agent default is already adapter law)
+    assert "config_yaml" in payload and "configs" not in payload
+
+
+def test_submit_pair_dry(tmp_path, monkeypatch):
+    """Co-tenant: one run, two configs, chained sh -c command whose per-pid
+    waits keep one crash from masking the other; gate requires BOTH trees
+    with distinct slugs; ledger records pair provenance."""
+    ra = tmp_path / "a.yaml"
+    ra.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                  "adapter": "qlora",
+                                  "datasets": [{"path": "x"}]}))
+    rb = tmp_path / "b.yaml"
+    rb.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-4B",
+                                  "adapter": "qlora",
+                                  "datasets": [{"path": "x"}]}))
+    puts = _vol_puts(tmp_path, monkeypatch)
+    res = dispatch.submit("queer", ra, pair=rb, mini=True, dry=True)
+    assert not res.get("error"), res
+    payload = json.loads(dict(puts)[f"runs/{res['run_id']}/payload.json"])
+    names = [c["name"] for c in payload["configs"]]
+    assert names == ["qwen3.5-0.8b", "qwen3.5-4b"]
+    cmd = payload["command"]
+    assert cmd.startswith("sh -c ")
+    assert "axolotl train /work/job/qwen3.5-0.8b.yaml" in cmd
+    assert "axolotl train /work/job/qwen3.5-4b.yaml" in cmd
+    assert "wait $p1 || r=1; wait $p2 || r=1" in cmd
+    req = payload["gate"]["required_files"]
+    assert any(f.startswith("qwen3.5-0.8b/adapter_model") for f in req)
+    assert any(f.startswith("qwen3.5-4b/adapter_model") for f in req)
+    # slug isolation reaches the configs themselves
+    for c in payload["configs"]:
+        cfg = yaml.safe_load(c["config_yaml"])
+        assert cfg["output_dir"] == f"/work/outputs/{c['name']}"
+        assert cfg["dataset_prepared_path"] == f"/work/prepared/{c['name']}"
+    row = dispatch.Ledger(dispatch.ROOT / "state" / "ledger.db") \
+        .get(res["run_id"])
+    spec = json.loads(row["spec_json"])
+    assert spec["pair_recipe"] == str(rb) and len(spec["pair_recipe_sha"]) == 12
+
+
+def test_submit_pair_slug_collision(tmp_path, monkeypatch):
+    """Two recipes with the SAME base_model (e.g. qlora + bf16-lora):
+    identical slugs would make two jobs share one output dir — the gate
+    would then certify one tree for two runs. Collision gets -2."""
+    ra = tmp_path / "a.yaml"
+    ra.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                  "adapter": "qlora",
+                                  "datasets": [{"path": "x"}]}))
+    rb = tmp_path / "b.yaml"
+    rb.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                  "adapter": "qlora", "sequence_len": 512,
+                                  "datasets": [{"path": "x"}]}))
+    puts = _vol_puts(tmp_path, monkeypatch)
+    res = dispatch.submit("queer", ra, pair=rb, mini=True, dry=True)
+    payload = json.loads(dict(puts)[f"runs/{res['run_id']}/payload.json"])
+    names = [c["name"] for c in payload["configs"]]
+    assert names[0] == "qwen3.5-0.8b" and names[1] == "qwen3.5-0.8b-2"
+
+
 def test_submit_volume_lane_dry(tmp_path, monkeypatch, recipe):
     """Volume lane selected automatically when RunPod volume env is set;
     payload carries volume mount + pod dataset path, no presigned urls."""
