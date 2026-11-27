@@ -847,6 +847,14 @@ HOP_PHRASINGS = [
     "{domain.p2label}, in that order.",
 ]
 
+HOP3_PHRASINGS = [
+    "Follow three links from the {domain.slabel}: its {domain.p1label}, "
+    "that one's {domain.p2label}, and finally its {domain.p3label}; "
+    "return all three targets in order.",
+    "From {domain.slabel}, chain through the {domain.p1label} and the "
+    "{domain.p2label} to the {domain.p3label}; return each hop's value.",
+]
+
 
 def parse_ttl(text):
     """Minimal Turtle subset: PREFIX lines + plain triple lines whose terms
@@ -995,6 +1003,50 @@ def cmd_graph(args):
             rec["id"] = f"graph/{domain}/{stem}--hops"
             rec["comment"] = f"hop-ladder over {f.name}@{gsha} (FRAMEWORK P6)"
             rec["variants"] = {"domain": hops, "phrasing": HOP_PHRASINGS}
+            if _verify_scenario(rec):
+                write_template(rec, out_root)
+                stats["templates"] += 1
+            else:
+                stats["preflight_fail"].append(rec["id"])
+        # hop-3 (r3 depth ladder): s -> m -> n -> o through TWO shared
+        # hub nodes; the bench hop2/hop-count questions need chains the
+        # two-step rows never compose. Same law as hop-2: every answer is
+        # RECOMPUTED from the ctx by the fixture, never stored.
+        hops3 = []
+        for s, p1, m, _n1 in facts:
+            if _n1 is not None or m not in by_subj or m == s:
+                continue
+            for p2, n, native2 in by_subj[m]:
+                if native2 is not None or n == m or n == s or n not in by_subj:
+                    continue
+                for p3, o, native3 in by_subj[n]:
+                    if (o != n and o != m and o != s
+                            and len(hops3) < args.max_facts):
+                        hops3.append({
+                            "subj": s, "p1": p1, "mid": m, "p2": p2,
+                            "mid2": n, "p3": p3,
+                            "obj": o if native3 is None else native3,
+                            "slabel": label(s), "p1label": label(p1),
+                            "p2label": label(p2), "p3label": label(p3),
+                            "m2label": label(n)})
+        if hops3:
+            stmts = ("READ WORLD {domain.subj} {domain.p1} my:?m . ONE.\n"
+                     "READ WORLD my:?m {domain.p2} my:?n . ONE.\n"
+                     "READ WORLD my:?n {domain.p3} my:?o . ONE.\n"
+                     "BIND my:?trio = [my:?m, my:?n, my:?o].\n"
+                     "RETURN my:?trio.")
+            rec = make_template("nl-to-ir", f"graph.{domain}.{stem}--hops3",
+                                "HOPS3", [
+                {"role": "assistant", "content": ctx},
+                {"role": "user", "content": "{phrasing}"},
+                {"role": "assistant", "content": stmts},
+            ], {"valid": True,
+                "returned": ["{domain.mid}", "{domain.mid2}", "{domain.obj}"],
+                "world_add": [], "world_delete": [],
+                "memory_add": [], "memory_delete": [], "emitted": []})
+            rec["id"] = f"graph/{domain}/{stem}--hops3"
+            rec["comment"] = f"three-step ladder over {f.name}@{gsha} (r3)"
+            rec["variants"] = {"domain": hops3, "phrasing": HOP3_PHRASINGS}
             if _verify_scenario(rec):
                 write_template(rec, out_root)
                 stats["templates"] += 1
@@ -2006,16 +2058,46 @@ def cmd_bundle(args):
             if "graph" in gid:
                 # split graph-bridge families by id suffix (qa/hops/cfkg)
                 tag = ("graph-qa" if gid.endswith("--qa")
-                       else "graph-hops" if gid.endswith("--hops")
+                       else "graph-hops" if gid.endswith(("--hops",
+                                                           "--hops3"))
                        else "counterfactual" if gid.endswith("--cfkg")
                        else sysname)
             else:
                 tag = BUNDLE_MAP.get(sysname, sysname)
             rows = buckets.setdefault(tag, [])
+            first = rec["messages"][0]["content"]
+            if rec["system"] == "conflict":
+                # verdict gold is prose; the contract is the dual-source
+                # ctx itself (same law cmd_conflict enforced at write)
+                for messages, _exp in check.expansions(rec):
+                    _d, rep = validate(messages[0]["content"])
+                    if rep is not None and rep["valid"] and not rep["warnings"]:
+                        rows.append({"messages": messages})
+                    else:
+                        gold_rejects[f"{tag}:conflict-ctx-invalid"] = \
+                            gold_rejects.get(f"{tag}:conflict-ctx-invalid", 0) + 1
+                continue
+            if (rec["system"] == "abstain"
+                    or ("{domain.mutant}" in first
+                        and rec["system"] in ("invalid-program", "repair"))):
+                # derived shapes: the fleet's preflight contract (mutant
+                # parse + single error + no-leak; abstain non-derivability
+                # through the fixture) — a whole-record gate, exactly as
+                # the generator enforced it at write time
+                fails = preflight(rec)
+                if fails:
+                    gold_rejects[f"{tag}:preflight"] = gold_rejects.get(
+                        f"{tag}:preflight", 0) + len(fails)
+                    continue
+                for messages, _exp in check.expansions(rec):
+                    rows.append({"messages": messages})
+                continue
             for messages, expected in check.expansions(rec):
                 try:
                     check.check_record(rec, messages, expected)
                 except Exception as exc:
+                    # per-expansion granularity: one broken variant of a
+                    # 40-entry pool must not zero a healthy template
                     key = f"{tag}:{type(exc).__name__}"
                     gold_rejects[key] = gold_rejects.get(key, 0) + 1
                     continue

@@ -236,6 +236,37 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            is set by NOBODY yet (grep dispatch/runpod: zero refs) —
            until the peer wires it, a deadman fire = container revival
            (the exact r2 zombie drain); POD-STOP WIRE stays held.
+           *** r3 BUNDLE PINNED 2026-11-27 (ids move deliberately):
+           cognition@7dcd8731ffaf2d44 = 25,243 SFT (15 families:
+           diagnosis 7084, repair 5950, concrete-examples 2114,
+           valid-program 2075, nl-to-ir 1862, equivalence 1481,
+           transform/semantic-edit 1400+1400, completion 1155,
+           abstain 120, ir-to-nl 336, graph-qa/cf 99+99, hops 62,
+           conflict 6) + 960 DPO. prepare-domain v2: 24,661 train +
+           582 holdout, template leak 0.0 in EVERY bucketed family
+           (conflict/graph-* hash-buckets empty this round — ~2% of
+           few-keys, honest note). vs r2: 3.7x volume, 8->15 tags —
+           the volume confounder is REAL: controls are the attribution
+           instrument (REGIMES pre-registration), not the number.
+           HOW it got built: starved cells fixed by CURATED SHAPE
+           (E3 needs BIND golds: census 2/80 -> 18 jobsite-vocab
+           clones; E4/E1-DUP_* need TYPE/CAPABILITY/EVENT decl lines:
+           1 each -> +6 clones; E3 6->42, E4_CYCLE 3->15, E2 84->150
+           measured, rulebook UNTOUCHED — canary stayed green);
+           construction shelf = jobsite-register.ttl -> cmd_graph now
+           emits a hop-3 ladder (site->inspector->firm->accredited
+           chains; --hops3 bundles into graph-hops); BUNDLE VALIDATOR
+           LESSON: first verified run rejected 2,562 rows as
+           IRError/AssertionError — NOT rot: check_record is the
+           SCENARIO contract, derived mutant/abstain/conflict golds
+           are prose verdicts — the bundle now dispatches per family
+           to each generator's OWN gate (preflight/ctx-validate/
+           check_record), and clean data re-verifies to zero rejects;
+           r4 carry-forwards: dash-in-prose golds (abstain 120,
+           diagnosis hints) + profile per-kind hazard quirk.
+           (r1 id reconciled too: 9,044 SFT + 821 DPO = 9,865 total —
+           FRAMEWORK/AS-BUILT labels tightened, ledger spec 20261126-
+           220003 proves it: 8,867+177.)
            BENCH V2 PRE-REGISTRATION (19 questions: canonical 6 kept
            verbatim for trend, 13 new; r1 measured 7/19 on the engine
            NOW — canonical subset reproduces the recorded 1/6 exactly,

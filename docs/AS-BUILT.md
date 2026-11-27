@@ -54,7 +54,7 @@ templates, 13,874 expansions):
 | accepted by oracle (16 error classes) | 1,640 |
 | **preflight failures** | **0** |
 | derived templates (`derived@a5b1e82b`) | 675 |
-| dataset rows (`cognition@e184c8de`) | 9,865 (+821 DPO pairs) |
+| dataset rows (`cognition@e184c8de`) | 9,044 SFT (+821 DPO = 9,865) |
 | equivalence pairs mined (computed verdicts) | 81 |
 | conflict rows (example register vs rev2) | 6 |
 | GBNF rules, parse-property samples | 41, 130/130 |

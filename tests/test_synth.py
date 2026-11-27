@@ -278,6 +278,8 @@ my:site1 ai:hasStatus my:Active .
 my:site1 ai:inspectedBy my:inspector7 .
 my:inspector7 ai:holdsCert "Class-A" .
 my:inspector7 ai:yearsExp 12 .
+my:inspector7 ai:worksFor my:firm3 .
+my:firm3 ai:accredited my:iso9001 .
 my:site1 ai:riskScore 7 .
 """
 
@@ -303,6 +305,16 @@ def test_graph_bridge_templates(synth, tree, tmp_path):
     hops = json.loads((out / "nl-to-ir" / "site-register--hops.json").read_text())
     mids = {e["mid"] for e in hops["variants"]["domain"]}
     assert "my:inspector7" in mids
+    # hop-3 (r3 depth ladder): site1 -> inspector7 -> firm3 -> iso9001
+    h3f = out / "nl-to-ir" / "site-register--hops3.json"
+    assert h3f.is_file(), stats
+    h3 = json.loads(h3f.read_text())
+    assert {"mid": "my:inspector7", "mid2": "my:firm3",
+            "obj": "my:iso9001"} in [
+        {k: e[k] for k in ("mid", "mid2", "obj")}
+        for e in h3["variants"]["domain"]]
+    for messages, expected in synth.check.expansions(h3):
+        synth.check.check_record(h3, messages, expected)
     # CFKG: every edited fact's answer is the ALTERNATE, never the original
     cf = json.loads((out / "nl-to-ir" / "site-register--cfkg.json").read_text())
     assert cf["variants"]["domain"]

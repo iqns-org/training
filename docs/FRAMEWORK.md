@@ -379,7 +379,7 @@ bin/synth bundle --domain cognition
     # graph-qa,graph-hops,counterfactual,equivalence,conflict}.jsonl +
     # datasets/cognition-dpo/preference.jsonl → dataset@h →
     # bin/prepare-domain → S3 → qtrain submit. Proven live:
-    # cognition@e184c8de 9,865 rows + cognition-dpo 821 pairs.
+    # cognition@e184c8de 9,044 rows + cognition-dpo 821 = 9,865 total.
 bin/synth audit                  # P28 near-dup + phrasing entropy, P29
                                  # coverage matrix, P3 re-check
 ```
