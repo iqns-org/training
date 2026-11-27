@@ -289,6 +289,19 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            holdout vs 0.9178 on leaky-v1 — the v2 law's predicted UP-
            MOVE confirmed: v1 margins measured memorization. First
            instrument-won number of the regime plan.
+           r3 SERVED 21:1x: qtrain register 1a548a -> nano0
+           /home/me/models/cognition08b-r3 (sha 52dd52e1f2b4bb64, 83.9MB);
+           engine LIVE-PATCHED (kubectl JSON patch at args index 6 —
+           single --lora-modules occurrence, third entry, verified in
+           the live spec after patch). NOT via vllm-deploy.sh: checked
+           origin/main's quadra.yaml carries exactly kandi=v3 +
+           cognition (repo==cluster for r1-era bytes) — --apply today
+           would keep those two and SILENTLY DROP cognition-r3.
+           FILE SYNC OWED BY THE INFRA LANE: add
+           cognition-r3=/home/me/models/cognition08b-r3 to the
+           qwen3-05 --lora-modules list before the next apply.
+           r1 stays served as 'cognition' — eval-history rows keep
+           their model identity, r3 measures under its own name.
            BENCH V2 PRE-REGISTRATION (19 questions: canonical 6 kept
            verbatim for trend, 13 new; r1 measured 7/19 on the engine
            NOW — canonical subset reproduces the recorded 1/6 exactly,
