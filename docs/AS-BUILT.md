@@ -470,10 +470,15 @@ with 0 restarts, stable; for a measurement engine (sequential bench
 traffic) the graph speedup is irrelevant anyway. Eager also makes the
 liveness race academic.
 Served modules answer POST {"model": "NAME"} on
-/v1/chat/completions. Endpoint url conventions differ by tool: bench
---url wants the BARE base (appends /v1/chat/completions itself —
-/v1-suffixed input = 404 on every question), synth sample --url
-wants the /v1 suffix.
+/v1/chat/completions. The old url-convention trap (bench wanted the
+BARE base, synth wanted /v1 — wrong shape = silent 404s dressed as
+model answers) is DEAD IN CODE: bench.normalize_url and
+synth.openai_endpoint accept bare base, /v1, or the full endpoint and
+canonicalize. And bench now PREFLIGHTs every target (/v1/models probe,
+fail-fast, named transport error) before grading a single sample —
+a dead socket is a transport finding, never a measurement (an
+overnight tunnel death once produced a proud table built from
+connection refusals).
 
 Budget law bit: qtrain submit estimates worst-case at
 max_runtime x max_price_hr and refuses PRE-SPEND if

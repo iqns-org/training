@@ -1232,6 +1232,20 @@ import random
 import urllib.request
 
 
+def openai_endpoint(url):
+    """One accepted shape for every caller: the bare base, the /v1
+    form, or a full /chat/completions endpoint all land on the same
+    URL. (The bench-vs-synth convention trap — bench wanted the bare
+    base, synth wanted /v1 — dies here and in bench.normalize_url,
+    not in the docs.)"""
+    u = str(url).strip().rstrip("/")
+    if u.endswith("/chat/completions"):
+        u = u[: -len("/chat/completions")]
+    if not u.endswith("/v1"):
+        u += "/v1"
+    return u + "/chat/completions"
+
+
 def http_json(url, payload, timeout=120):
     """Minimal OpenAI-compatible POST (bench.py's seam, no streaming)."""
     req = urllib.request.Request(
@@ -1326,8 +1340,7 @@ def cmd_sample(args):
                     # still working -> the request is NOT cancelled ->
                     # orphan pile-up wedged EngineCore (AS-BUILT 7). The
                     # client must outlive the server, serially, always.
-                    resp = http_json(args.url.rstrip("/")
-                                     + "/chat/completions", body,
+                    resp = http_json(openai_endpoint(args.url), body,
                                      timeout=(600 if grammar else 120))
                     completion = (resp["choices"][0]["message"]
                                   ["content"] or "").strip()

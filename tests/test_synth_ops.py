@@ -188,6 +188,19 @@ def test_conflict_cmd(synth, tmp_path):
     assert "CONFLICT" in rec["messages"][2]["content"]
 
 
+def test_openai_endpoint_forms(synth):
+    # the bench-vs-synth trap: synth historically demanded a /v1 suffix;
+    # now every shape works, and they all land on the chat endpoint.
+    assert (synth.openai_endpoint("http://h:8000")
+            == "http://h:8000/v1/chat/completions")
+    assert (synth.openai_endpoint("http://h:8000/v1")
+            == "http://h:8000/v1/chat/completions")
+    assert (synth.openai_endpoint("http://h:8000/v1/")
+            == "http://h:8000/v1/chat/completions")
+    assert (synth.openai_endpoint("http://h:8000/v1/chat/completions")
+            == "http://h:8000/v1/chat/completions")
+
+
 def test_sample_cmd_fake_endpoint(synth, tmp_path, monkeypatch):
     d = tree(tmp_path)
     msgs, _ = next(iter(synth.check.expansions(NL_TEMPLATE)))

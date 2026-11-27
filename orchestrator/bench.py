@@ -259,11 +259,94 @@ def score_all(check: str, texts) -> list[str]:
     return [_primitive(inner, t) for t in texts]
 
 
-def run(config: dict) -> list[dict]:
-    urls = config.get("urls") or suite_urls() or DEFAULT_URLS
+def normalize_url(base: str) -> str:
+    """ONE accepted shape for every caller, whichever the user typed.
+    The cross-tool trap (bench wanted the BARE base, synth wanted a
+    /v1 suffix — the wrong shape 404s or worse, silently) dies here:
+    bare base, /v1, or the full /v1/chat/completions endpoint all
+    normalize to the bare base chat_stream expects."""
+    u = base.strip().rstrip("/")
+    for suffix in ("/chat/completions", "/v1"):
+        if u.endswith(suffix):
+            u = u[: -len(suffix)].rstrip("/")
+    return u
+
+
+def _inner_regexes(check: str):
+    """The regex pattern a (possibly composed) check contains, if any.
+    Alternation is REGEX syntax, not a check separator — never split
+    on '|' (the canonical regex:READ|MATCH|BIND|RETURN is ONE pattern)."""
+    c = check
+    for _ in range(2):                      # not: / rate: wrappers
+        if c.startswith("not:"):
+            c = c[4:]
+        elif c.startswith("rate:"):
+            c = c[5:].rpartition("/")[0]
+    while c.startswith("not:"):
+        c = c[4:]
+    return [c[6:]] if c.startswith("regex:") else []
+
+
+def lint_suite(questions) -> list[str]:
+    """Loader lint (the bench v2 incidents, mechanized): an impossible
+    rate: range grades silently forever (the /33-100 fraction-scale
+    bug), and a bad regex returns '?' per sample instead of naming
+    itself. Both are suite-authoring errors, not data — catch them at
+    LOAD, naming the question. Regex ANCHORING is documented law
+    (re.match: prefix-shaped golds need .*); lint cannot know a
+    question's gold, so authoring stays human — this catches what is
+    provably broken."""
+    errors = []
+    for q in questions:
+        check = q.get("check", "none")
+        qid = q.get("id", "?")
+        if check.startswith("rate:"):
+            _, _, bound = check.rpartition("/")
+            lo_s, _, hi_s = bound.partition("-")
+            try:
+                lo, hi = float(lo_s), float(hi_s)
+                if not (0.0 <= lo <= hi <= 1.0):
+                    errors.append(f"{qid}: rate bounds {bound!r} are "
+                                  "FRACTION scale (0.0-1.0) — an "
+                                  "impossible range grades FAIL forever")
+            except ValueError:
+                errors.append(f"{qid}: rate bounds {bound!r} unparseable")
+        for pat in _inner_regexes(check):
+            try:
+                re.compile(pat)
+            except re.error as e:
+                errors.append(f"{qid}: regex {pat!r}: {e}")
+    return errors
+
+
+def preflight(targets) -> None:
+    """Fail fast, fail LOUD: a dead tunnel used to burn a whole bench
+    run and return a table of ERROR-shaped 'verdicts' (one such run
+    reported proud '3/3' rows built from connection refusals). One
+    /v1/models call per distinct URL before any question loop; a dead
+    endpoint is a TRANSPORT finding, never a model result."""
+    for base in dict.fromkeys(t["url"] for t in targets):
+        try:
+            _req(f"{base}/v1/models", timeout=8)
+        except Exception as e:
+            raise SystemExit(
+                f"bench preflight: no engine answers at {base} "
+                f"({_short(e)}) — tunnel down or pod replaced? "
+                f"Fix the endpoint; a dead socket is not a measurement.")
+
+
+def run(config: dict, sink: list | None = None) -> list[dict]:
+    urls = [normalize_url(u) for u in
+            (config.get("urls") or suite_urls() or DEFAULT_URLS)]
     targets = config.get("targets") or discover(urls)
+    targets = [{**t, "url": normalize_url(t["url"])} for t in targets]
     questions = config.get("questions") or suite_questions() \
         or DEFAULT_QUESTIONS
+    problems = lint_suite(questions)
+    if problems:
+        raise ValueError("bench suite lint: " + "; ".join(problems))
+    if config.get("preflight", True):
+        preflight(targets)
     repeats = int(config.get("repeats", 3))
     max_tokens = int(config.get("max_tokens", 64))
     temperature = float(config.get("temperature", 0.0))
@@ -297,6 +380,15 @@ def run(config: dict) -> list[dict]:
                 "wall_med": round(statistics.median(lat), 2),
                 "answer": texts[0][:120],
             })
+            if sink is not None:
+                # FULL text, every sample: the 60-char table cell and
+                # 120-char row field once cost a wrong diagnosis (a
+                # truncation hid that the "bleed" answer was complete).
+                sink.append({"host": t["name"], "model": t["model"],
+                             "q": q["id"], "check": q.get("check", "none"),
+                             "verdict": verdict,
+                             "passes": sum(v == "PASS" for v in verdicts),
+                             "answers": texts})
             print(f"  {t['model']:>18} / {q['id']:<10} "
                   f"{verdicts.count('PASS')}/{repeats} "
                   f"{statistics.median(tps):5.1f} tok/s", file=sys.stderr)
@@ -343,6 +435,11 @@ def main(argv=None) -> int:
     ap.add_argument("--max-tokens", type=int, default=None)
     ap.add_argument("--temperature", type=float, default=None)
     ap.add_argument("--json", dest="json_out", help="write full rows json")
+    ap.add_argument("--answers", dest="answers_out",
+                    help="write FULL per-sample answers as jsonl "
+                         "(the table truncates; forensics needs the rest)")
+    ap.add_argument("--no-preflight", dest="preflight", action="store_false",
+                    help="skip the live-engine probe (offline replay only)")
     ap.add_argument("--csv", dest="csv_out", help="write rows csv")
     ap.add_argument("--record", action="store_true",
                     help="persist to the eval-history ledger (SPEC 13am)")
@@ -377,9 +474,19 @@ def main(argv=None) -> int:
                      ("temperature", args.temperature)):
         if val is not None:
             config[key] = val
+    config["preflight"] = args.preflight
 
     print("bench: running...", file=sys.stderr)
-    rows = run(config)
+    sink: list = [] if args.answers_out else None
+    try:
+        rows = run(config, sink=sink)
+    except ValueError as e:              # suite lint: authoring error,
+        print(f"bench: {e}", file=sys.stderr)   # clean exit, no traceback
+        return 2
+    if args.answers_out:
+        with open(args.answers_out, "w") as f:
+            for rec in sink:
+                f.write(json.dumps(rec) + "\n")
     print(table(rows))
     if args.record or args.run:
         from .config import ROOT as _ROOT

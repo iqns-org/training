@@ -592,3 +592,40 @@ MEASUREMENT SEAM, r3 side (same evening, cognition domain):
    spine failure during the overlap, zero reconciliation after; the
    merged file is exactly right. Standing lesson, in the tools now:
    re-read before whole-file writes in a shared checkout.
+STATUS (instrument cleanup pass, 2026-11-28 — the review P0s that
+live in MY files, landed together):
+1. BENCH LOADER LINT (bench.lint_suite): rate: bounds are validated as
+   FRACTION scale (0<=lo<=hi<=1) — the /33-100 bug class now aborts at
+   LOAD naming the question, exit 2, no traceback, before any sample is
+   graded; every regex (incl. not:/rate: wrappers) is compiled at load.
+   Anchoring (re.match, prefix-golds need .*) stays AUTHORING law —
+   lint cannot know a gold, so it catches only what is provably broken.
+2. PREFLIGHT (bench.preflight): one /v1/models probe per distinct URL
+   before the question loop; dead endpoint = SystemExit naming the
+   transport — the incident class "proud table built from connection
+   refusals" (overnight tunnel death) is now mechanically impossible.
+   --no-preflight exists for offline replay only.
+3. ANSWERS CAPTURE (run(..., sink=), --answers FILE): full per-sample
+   answer text as jsonl — the 60/120-char truncations once cost a
+   wrong diagnosis (a "bleed" that was actually a complete answer).
+   CLI flags reach via `python -m orchestrator.bench` because the
+   cmd_bench wrapper is in cli.py (peer hot file) — plumbing
+   --answers/--no-preflight through `qtrain bench` is QUEUED FOR
+   PEER, one-liners, no law in them.
+4. URL CONVENTION TRAP, DEAD IN CODE: bench.normalize_url and
+   synth.openai_endpoint both accept bare base / /v1 / full endpoint.
+   Pinned by tests (forms + fake-server path untouched).
+5. SUITE CONTRACT: cognition.json now pins "temperature": 0.0
+   explicitly (value unchanged — the 0.8B lesson is that the contract
+   must be VISIBLE in the suite, not defaulted). NB the suite loader
+   MERGES all bench/*.json: cognition(21) + peer's queer(8) = 29
+   questions, lint-clean.
+6. SKIPPED TEST, NAMED: tests/test_provider_runpod.py live-API test,
+   gated RUNPOD_LIVE_TESTS=1 — deliberate, kept.
+7. STILL QUEUED (peer lanes, unchanged): supervisor_cmd emission
+   (dispatch.py), qtrain-bench flag passthrough (cli.py), infra
+   quadra.yaml cognition-r3 sync — checked this pass: origin/main
+   diverged (6 ahead/15 behind locally, peer WIP dirty) and the sync
+   belongs to the peer's next vllm-deploy.sh --apply; NOT touching
+   their repo state. Numbers: 259 passed, 1 skipped, full suite green
+   with all five new bench tests + endpoint test included.
