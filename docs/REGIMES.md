@@ -541,6 +541,10 @@ MEASUREMENT SEAM, r3 side (same evening, cognition domain):
    Fix: load shape now READS the adapter safetensors header itself
    (pure fn, unit-tested) and WIRING GUARD 2 refuses to score when
    enable/disable_adapter_layers moves zero logits — attached !=
-   executed. All holdout numbers for adapter runs before this fix
-   are base numbers wearing a costume (incl. 60f8fa's 1.4062);
-   re-pair running with the corrected script.
+   executed. Scope the costume claim: adapters whose tensor names carry
+   the language_model.* subtree (r3-family artifacts) scored through
+   the env-guessing script are base numbers wearing a costume —
+   60f8fa's 1.4062 among them; PLAIN-namespace pairs were always
+   honest (the peer's kandi pair moved 1.0575 vs base 3.7905, and
+   bit-identical pair halves are an instrument failure, never a
+   result). Re-pair for r3 running with the corrected script.
