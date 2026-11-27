@@ -521,12 +521,15 @@ MEASUREMENT SEAM, r3 side (same evening, cognition domain):
    the graph teaches chaining (r4: conflict between the two dials,
    named). CONTROL VIOLATION, investigated not hidden:
    ir-to-nl-prose 3/3(r1)->0/3(r3) — but a temp-0 probe of the exact
-   suite prompt answers clean prose; the bleed is TEMPERATURE-gated
-   (all 3 bench samples leak IR tokens into description —
-   format-selection judgment not yet consolidated by one mixed pass;
-   consistent with abstain's 0/3 code-answer regression). ROOT
-   SUSPECTS, in order: epochs (Rule-4 lever), then prose-verdict
-   discipline in the corpus. HOLDING THE LINE on interpretation:
+   suite CONTENT in assistant-PRIMING form answers clean prose, while
+   the bench ships it as a bare user message; bench defaults
+   temperature 0.0 (suite pins none), so the gate is MESSAGE FORM —
+   correction of this note's first draft (claimed TEMPERATURE-gated
+   on one un-reprinted probe). The model leans on the trained
+   [prime,user,gold] shape and bleeds IR tokens when the ctx arrives
+   as user text (consistent with abstain's 0/3 code-answer
+   regression). ROOT SUSPECTS, in order: epochs (Rule-4 lever), then
+   format-robustness rows (verdict/qa golds in user-only shape). HOLDING THE LINE on interpretation:
    this is why NLL/loss is fit-only and the TABLE arbitrates — a
    single-epoch bundle moved the corpus into range (2 real flips +
    1 partial) and left the deep dials red; both facts are the point.
