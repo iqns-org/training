@@ -199,11 +199,22 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            cmd_gaps eats the REAL bench shape (was fiction-tested),
            cmd_sample buckets rejects by cause, ledger evals record both
            legs (r1 vs base) — docs/AS-BUILT §7.
-           r3 lever (from the clean per-family split): CRAFT-family
-           coverage, not epochs — program-completion/nl-to-ir/
-           concrete-examples rows (and scenario COUNT). Verdict
-           families (abstain/invalid-program) already pass — re-
-           training them is waste. And an
+           r3 lever (from the CAUSE MAP, not bucket guesses — the
+           reject dump + `pairs` tools, 1d52eae): ir-to-nl fails 4/4 on
+           "final must be prose" (it answers NL asks WITH IR — a
+           direction-confusion, not a capability gap); program-
+           completion fails "must preserve supplied source" (rewrites
+           instead of appending); repair fails E2_UNBOUND single-error
+           signature mismatch; and the em-dash —
+           `IRError: unexpected character '—'` recurs across THREE
+           families: prose punctuation leaking into programs (persona-
+           corpus bleed?). Fixes are cheap and targeted: direction-
+           emphasized ir-to-nl rows, preserved-prefix completion rows,
+           E-signature repair rows, plus a no-emoji/no-dash contrast;
+           16 mined DPO pairs already sit in tmp/synth/rft/dpo-craft
+           .jsonl (expand-lane shape, regenerable at temp 0). Verdict
+           families (abstain 5/6, invalid-program 6/6) already pass —
+           re-training them is waste. And an
            L3 event worth naming: the r2 rebuild from an UNCHANGED
            scenarios tree yielded cognition@569e46d5 (6864 SFT + 618
            DPO) vs r1's cognition@e184c8de (9044 + 821) — identical
