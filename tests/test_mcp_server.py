@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import yaml
+
 from mcp_trainer import server
 
 
@@ -127,6 +129,51 @@ def test_laws_surface_and_pair_parity(tmp_path, monkeypatch):
     out = st.fn(domain="opencode", recipe=str(ra), pair=str(rb), mini=True)
     assert out["run_id"] == "test-pair-run"
     assert seen["pair"] == rb
+
+
+def test_mcp_reports_and_guard_codes(tmp_path):
+    """recipe_report is the guidance surface: resolved knobs, family,
+    refusal codes + bypass names — an agent gets the lore WITHOUT being
+    locked into it (priors arrive labeled as priors)."""
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    assert "recipe_report" in tools
+    r = tmp_path / "q.yaml"
+    r.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                 "adapter": "qlora", "lora_r": 32,
+                                 "datasets": [{"path": "x"}]}))
+    rep = tools["recipe_report"].fn(recipe=str(r),
+                                    overrides={"micro_batch_size": 2})
+    assert rep["family"] == "qwen3.5"
+    # both burned classes fire: batch AND the missing target list
+    assert rep["bypassable"] == ["fla_batch", "vlm_lora"]
+    assert rep["resolved"]["lora_r"] == 32
+    # the guide EXPLICITLY labels r=32 a prior, not a law
+    assert "PRIOR" in rep["knob_guide"]["lora_r"]
+    assert "burned" in rep["knob_guide"]["micro_batch_size"].lower()
+    # a recipe with nothing wrong: no refusals, empty bypass list
+    ok = tmp_path / "ok.yaml"
+    ok.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                  "adapter": "lora", "micro_batch_size": 1,
+                                  "lora_target_modules": ["q_proj"],
+                                  "datasets": [{"path": "x"}]}))
+    rep2 = tools["recipe_report"].fn(recipe=str(ok))
+    assert rep2["refusals"] == []
+
+
+def test_laws_text_labels_priors_as_priors():
+    """The 2026-11-27 correction: 'r=32 by law' was FALSE prose (nothing
+    enforced it) — the laws surface must now carry the guidance-vs-law
+    distinction itself, keyword-pinned."""
+    resources = {str(r.uri): r for r in asyncio.run(server.mcp.list_resources())}
+    laws_uri = next(u for u in resources if u.endswith("laws"))
+    text = asyncio.run(server.mcp.read_resource(laws_uri))
+    body = "".join(getattr(c, "content", "") or getattr(c, "text", "")
+                   for c in text.contents)
+    assert "GUIDANCE vs LAW" in body
+    assert "PRIORS, not ceilings" in body
+    assert "Silent forcing is a bug" in body
+    # and nothing claims r=32 is enforced
+    assert "r=32 ALL-LAYER BY LAW" not in body.upper()
 
 
 def test_synth_tools_chain(tmp_path, monkeypatch):

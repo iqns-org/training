@@ -114,6 +114,7 @@ def cmd_submit(args):
         args.domain, resolve_recipe(args.recipe), mini=args.mini,
         overrides=overrides,
         pair=resolve_recipe(args.pair) if args.pair else None,
+        force_guards=args.force_guard,
         provider=args.provider, gpus=args.gpu or None, tier=args.tier,
         dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost,
         force_lane=args.lane, max_price_hr=args.max_price,
@@ -457,6 +458,11 @@ def build_parser():
                         "two concurrent axolotl procs, per-model artifact "
                         "trees; gate requires both). e.g. train 0.8B+4B on "
                         "one 24G card for the price of one pod")
+    s.add_argument("--force-guard", action="append", metavar="CODE",
+                   default=None,
+                   help="proceed past a named config refusal (each refusal "
+                        "message states its code + burned-evidence run). "
+                        "The bypass is recorded on the ledger row")
     s.add_argument("--mini", action="store_true",
                    help=f"tiny dataset ({dispatch.MINI_LINES} rows, seq 256, 1 epoch) "
                         "— lane validation, not a real training run")

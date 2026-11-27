@@ -17,6 +17,8 @@ import threading
 import time
 from pathlib import Path
 
+import yaml
+
 from fastmcp import FastMCP
 
 from orchestrator import dispatch, notify, progress, storage
@@ -143,6 +145,23 @@ QUANT & SERVING
   quantized product. The QUANTIZED ENDPOINT benches before register
   flips traffic. Quantize-on-hybrid (qwen3.5 GDN) expects PARTIAL
   products — linears without kernels stay bf16; measure the delta.
+
+GUIDANCE vs LAW (assumption audit, 2026-11-27)
+- Recipes carry PRIORS, not ceilings: lora_r=32, alpha=64, lr=1e-4,
+  epochs=2, adamw_bnb_8bit are tuned defaults that travel by copy —
+  NOTHING enforces them; per-task tuning is expected (r scales with
+  skill breadth, sequence_len is always task-measured, never tradition).
+  Read recipe_report() for the per-knob truth before inventing laws.
+- A REFUSAL exists only where money burned: qwen3.5 micro_batch>1
+  (fla/cu_seqlens, 425e6c) and adapter-without-target-list (VLM trap,
+  1a6ea5). Every refusal cites its run and names its bypass code —
+  force_guards=["code"] proceeds knowingly, and the choice is recorded
+  on the ledger row (guards spec field). No silent assumptions.
+- Silent forcing is a bug: render_config forces val_set_size=0 (law —
+  clash recorded even against overrides), logging_steps/save_total_limit
+  (soft — recipe-declared value RECORDED in the row when different).
+  The packaging bug survived months because the books could not see
+  what actually ran; visibility first, refusal only for burns.
 """
 
 
@@ -199,7 +218,8 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                     gpus: list[str] | None = None, tier: str | None = None,
                     max_runtime: int = 3600, max_cost: float | None = None,
                     dry: bool = False, provider: str = "runpod",
-                    pair: str | None = None) -> dict:
+                    pair: str | None = None,
+                    force_guards: list[str] | None = None) -> dict:
     """Launch a full training cycle in the background; returns as soon as
     the run is registered (seconds). mini=True is a cheap lane-validation
     run (48 rows, 1 epoch) — ALWAYS pilot mini before a real spend.
@@ -231,7 +251,13 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
     branch rendering tool calls into tokens — if the template has no
     tools branch the model learns prose ABOUT tool calls instead of the
     tokens, at full price. Teacher quality ships with the corpus receipt
-    (extract_opencode.py report), not vibes."""
+    (extract_opencode.py report), not vibes.
+
+    Guards: submit REFUSES only burned footguns (qwen3.5 batch>1, adapter
+    without target-modules — each refusal cites its run). Everything else
+    in a recipe is a PRIOR you may move: tune via overrides, see
+    recipe_report() for the per-knob guidance, force_guards=[codes] to
+    proceed past a refusal knowingly (recorded on the ledger row)."""
     recipe_path = resolve_recipe(recipe)
     if not recipe_path.is_file():
         return {"error": f"recipe not found: {recipe}"}
@@ -253,7 +279,8 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                 domain, recipe_path, mini=mini, overrides=overrides or {},
                 gpus=gpus, tier=tier, max_runtime=max_runtime,
                 max_cost=max_cost, dry=dry, provider=provider,
-                pair=pair_path, on_run_id=_on_run_id)
+                pair=pair_path, force_guards=force_guards,
+                on_run_id=_on_run_id)
         except Exception as e:                          # noqa: BLE001
             holder["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -272,6 +299,38 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                     "result": holder.get("result")}
         time.sleep(0.25)
     return {"error": "staging did not register a run within 240s"}
+
+
+@mcp.tool
+def recipe_report(recipe: str, pair: str | None = None,
+                  overrides: dict | None = None) -> dict:
+    """Read-only guidance view of a resolved config (recipe + overrides):
+    per-knob GUIDE text (which values are PRIORS you may move vs which
+    have burned evidence), the guard verdict (refusals + advisories), and
+    the exact bypass codes. Read this BEFORE inventing constraints — and
+    before overriding anything the fleet refuses."""
+    rp = resolve_recipe(recipe)
+    if not rp.is_file():
+        return {"error": f"recipe not found: {recipe}"}
+    ov = dict(overrides or {})
+    merged = {**(yaml.safe_load(rp.read_text()) or {}), **ov}
+    merged_pair = None
+    if pair:
+        pp = resolve_recipe(pair)
+        if not pp.is_file():
+            return {"error": f"pair recipe not found: {pair}"}
+        merged_pair = {**(yaml.safe_load(pp.read_text()) or {}), **ov}
+    refusals, advisories = dispatch.config_guards(merged, merged_pair)
+    return {"recipe": str(rp), "base_model": merged.get("base_model", ""),
+            "family": (dispatch.families.family_for(
+                str(merged.get("base_model", ""))) or ("unknown", {}))[0],
+            "resolved": {k: merged.get(k) for k in
+                         ("adapter", "lora_r", "lora_alpha",
+                          "learning_rate", "micro_batch_size",
+                          "num_epochs", "sequence_len", "load_in_4bit")},
+            "refusals": refusals, "advisories": advisories,
+            "bypassable": [r["code"] for r in refusals],
+            "knob_guide": dispatch.KNOB_GUIDE}
 
 
 @mcp.tool

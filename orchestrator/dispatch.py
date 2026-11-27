@@ -716,12 +716,20 @@ def prepare_dataset(domain: str, mini: bool = False,
 
 
 def render_config(recipe: Path, overrides: dict, dataset_name: str,
-                  slug: str | None = None) -> str:
+                  slug: str | None = None,
+                  report: dict | None = None) -> str:
     """Render a recipe into a pod-ready config. slug (co-tenant pair mode)
     isolates BOTH output_dir and dataset_prepared_path per model — two
     concurrent axolotl procs sharing a prepared dir race HF fingerprint
     writes; two models sharing an output dir silently overwrite saves and
-    the gate would lie about what exists."""
+    the gate would lie about what exists.
+
+    TRANSPARENCY (2026-11-27 assumption audit): every soft-forced key the
+    recipe declared differently is RECORDED in report["forced"] — a
+    recipe that lies about what runs is how the packaging bug survived
+    months. And LAW_KEYS are re-applied AFTER overrides: an operator knob
+    must not silently break the holdout law; the clash is recorded, not
+    hidden (refusing the whole submit stays possible at the caller)."""
     cfg = yaml.safe_load(recipe.read_text())
     name = f"/work/datasets/{dataset_name}"
     if cfg.get("pref_datasets"):
@@ -746,16 +754,32 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str,
     # stable holdout rides the payload as a sha-verified input and is
     # scored POST-TRAIN by the `holdout` stage, against the same adapter
     # bytes the engine will serve.
+    # soft forces the lane needs (heartbeat cadence / disk economics): the
+    # recipe's declared value is RECORDED as overridden, not hidden
+    soft_forced = {"logging_steps": 5, "save_total_limit": 1}
+    declared = {k: cfg[k] for k in soft_forced if k in cfg}
     cfg.update({
         "dataset_prepared_path": (f"/work/prepared/{slug}" if slug
                                   else "/work/prepared"),
         "output_dir": (f"/work/outputs/{slug}" if slug else "/work/outputs"),
         "val_set_size": 0.0,
-        "logging_steps": 5,
-        "save_total_limit": 1,
         "bf16": cfg.get("bf16", "auto"),
+        **soft_forced,
     })
     cfg.update(overrides)
+    # LAW_KEY: val_set_size stays 0 even against overrides — an operator
+    # knob tunes preferences; it does not vote the holdout law out
+    # (13am stability beats convenience; the clash is on the record)
+    if cfg.get("val_set_size") not in (0, 0.0):
+        if report is not None:
+            report.setdefault("law_clash", []).append(
+                f"val_set_size={cfg['val_set_size']!r} overridden to 0.0 "
+                "(holdout law 13am: random val split breaks content-hash "
+                "stability; use the holdout STAGE for eval)")
+        cfg["val_set_size"] = 0.0
+    if report is not None and declared:
+        report["forced"] = {k: {"declared": v, "forced": cfg[k]}
+                            for k, v in declared.items() if cfg[k] != v}
     return yaml.safe_dump(cfg, sort_keys=False)
 
 
@@ -922,6 +946,112 @@ def _cfg_slug(recipe: Path) -> str:
     return re.sub(r"[^a-z0-9._-]+", "-", hint.lower()).strip("-")
 
 
+# ---------------------------------------------------------------------------
+# GUIDANCE vs LAW (operator principle, 2026-11-27): recipes carry PRIORS
+# (r=32, lr=1e-4, adamw_bnb_8bit, epochs=2 — tuned defaults that travel via
+# copy, tunable per task via `overrides`, enforced by NOTHING). Refusals
+# exist ONLY for footguns with burned evidence, and every refusal names
+# the run that proved it + the bypass code. Silent forcing is a bug: what
+# render_config overrides is now RECORDED on the ledger row.
+GUARD_BYPASS = "pass force_guards=[code] to override a refusal"
+
+KNOB_GUIDE = {
+    "lora_r": "PRIOR not law: 32 is corpus convention (works 360M-4B). "
+              "Scale to task capacity: format/persona skills often "
+              "survive 8-16 (cheaper serving, less overfit); broad "
+              "behavior may want 64. Nothing enforces 32.",
+    "lora_alpha": "PRIOR: 2x r convention. r/alpha ratio moves effective "
+                  "LR more than either alone — tune the ratio, not ritual.",
+    "learning_rate": "PRIOR 1e-4 (lora/qlora), 2e-5 (FFT: full weights "
+                     "cook at LoRA rates). Advisory refusal only for FFT "
+                     ">1e-4; otherwise per-task judgement.",
+    "micro_batch_size": "SPLIT CATEGORY: qwen3.5 family >1 = REFUSED on "
+                        "BURNED evidence (425e6c step-0 death via fla "
+                        "cu_seqlens; c4b9eb/8250dc re-proved via "
+                        "overrides). Other families: free (smollm2 runs 2).",
+    "num_epochs": "PRIOR 2; preference/FFT regimes often want 1 "
+                  "(cognition dpo note: overfits fast). Holdout law is "
+                  "what catches overtraining — not this number.",
+    "optimizer": "PRIOR adamw_bnb_8bit (fleet-wide, memory-cheap, no "
+                 "known harm). adamw_torch fine for small LoRAs.",
+    "sequence_len": "TASK-DERIVED, never tradition: rows + template "
+                    "render (incl. tools schemas) must fit p99 or you "
+                    "train truncation artifacts. opencode agentic = 8192 "
+                    "BY MEASUREMENT, chat domains 1024 BY MEASUREMENT.",
+    "lora_target_modules": "GUARDED: text-path list is the 1a6ea5 VLM-Trap "
+                           "fix (lora_target_linear bakes dead visual "
+                           "tensors -> vLLM refuses the adapter). The "
+                           "MODULE LIST guards; r stays free.",
+    "val_set_size": "always forced to 0 (holdout law 13am) — the recipe "
+                    "value is decorative; forcing is RECORDED per row.",
+}
+
+
+def config_guards(cfg: dict, pair_cfg: dict | None = None) -> tuple[list[dict], list[str]]:
+    """(refusals, advisories) for a RESOLVED train config (recipe+overrides).
+    Refusals: only burned footguns; each = {code, reason} and is bypassable
+    via force_guards=[code]. Advisories: strong opinions, loosely held."""
+    refusals: list[dict] = []
+    advisories: list[str] = []
+    for tag, c in (("main", cfg), ("pair", pair_cfg)):
+        if not c:
+            continue
+        bm = str(c.get("base_model", ""))
+        fam = families.family_for(bm)
+        fam_name = fam[0] if fam else ""
+        mb = c.get("micro_batch_size", 1)
+        if fam_name == "qwen3.5" and isinstance(mb, int) and mb > 1:
+            refusals.append({"code": "fla_batch", "leg": tag, "reason":
+                f"{tag}: qwen3.5 + micro_batch_size={mb} — fla gated-delta "
+                "kernels reject batch>1 when sample_packing sets cu_seqlens "
+                "(425e6c died at step 0; c4b9eb/8250dc re-proved). "
+                "Keep 1 and raise gradient_accumulation_steps, or pay for "
+                "new evidence. " + GUARD_BYPASS})
+        if c.get("adapter"):
+            tgts = c.get("lora_target_modules")
+            linear = c.get("lora_target_linear") or tgts in (None, "all-linear")
+            if fam_name == "qwen3.5" and linear:
+                refusals.append({"code": "vlm_lora", "leg": tag, "reason":
+                    f"{tag}: qwen3.5 adapter without an explicit "
+                    "text-path lora_target_modules targets the vision tower "
+                    "(1a6ea5: dead visual.* tensors -> vLLM refuses the "
+                    "merged/adapter load). Pin the list. " + GUARD_BYPASS})
+        lr = float(c.get("learning_rate") or 0)
+        if c.get("adapter"):
+            if lr and lr > 2e-4:
+                advisories.append(
+                    f"{tag}: learning_rate={lr:g} above the fleet band "
+                    "(<=1e-4 observed for LoRA at these sizes) — identity "
+                    "cooks; not refused (no burned run), but holdout will "
+                    "tell the truth.")
+            if int(c.get("num_epochs", 1)) > 4:
+                advisories.append(f"{tag}: num_epochs={c['num_epochs']} — "
+                                  "the holdout law is what catches "
+                                  "memorization at this altitude; 5+ passes "
+                                  "usually trade generalization for loss "
+                                  "curves (round-2 shape).")
+        elif lr > 5e-5:
+            advisories.append(f"{tag}: FULL FT at lr={lr:g} — full weights "
+                              "cook at LoRA rates; fleet FFT prior is 2e-5 "
+                              "(~20x under LoRA). Not refused: no burned "
+                              "run yet — this number is YOURS to prove.")
+        if fam_name == "qwen3.5" and "0.8" in bm.lower() and c.get("load_in_4bit"):
+            advisories.append(f"{tag}: 0.8B on qwen3.5 with load_in_4bit — "
+                              "bf16 base fits 24GB many times over; 4-bit "
+                              "buys nothing and adds quant noise under the "
+                              "adapter (2026-11-27 call, recipes/opencode).")
+    if cfg and pair_cfg:
+        heavy = [t for t, c in (("main", cfg), ("pair", pair_cfg))
+                 if c and not c.get("adapter")]
+        if heavy:
+            advisories.append("pair: FFT leg(s) "
+                              f"{heavy} hold sustained full-weight memory — "
+                              "co-tenancy risks an OOM that kills BOTH legs "
+                              "in one manifest. Pair lora-legs only.")
+    return refusals, advisories
+# ---------------------------------------------------------------------------
+
+
 def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            overrides: dict | None = None, provider: str = "runpod",
            gpus: list[str] | None = None, tier: str | None = None,
@@ -930,6 +1060,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            force_lane: str | None = None, max_price_hr: float | None = None,
            max_wait: int | None = None,
            pair: "Path | str | None" = None,
+           force_guards: "list[str] | None" = None,
            on_run_id: "callable | None" = None) -> dict:
     """Full cycle; returns ledger-shaped result dict. NEVER leaves a pod
     behind: every terminal path terminates. on_run_id (if given) fires the
@@ -1012,8 +1143,6 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 "volume lane + --tier community is impossible: RunPod "
                 "network volumes are SECURE-cloud only — drop --tier "
                 "or use --lane presign")
-        dataset_key, dataset_path, dataset_sha, dataset_lines, hold = \
-            prepare_dataset(domain, mini, vol)
         ov = dict(overrides or {})
         if mini:
             # micro_batch_size stays 1 — the recipe's own lesson (packing
@@ -1022,18 +1151,41 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             ov.update({"sequence_len": 256, "num_epochs": 1,
                        "gradient_accumulation_steps": 1,
                        "saves_per_epoch": 1})
+        # GUARDS (2026-11-27 assumption audit): refuse burned footguns on
+        # the RESOLVED config (recipe+overrides) BEFORE staging a single
+        # byte; everything else is guidance the operator keeps. Verdicts
+        # ride the ledger row (merge_spec) — the row answers "what did we
+        # know and choose" without archaeology.
+        merged = {**(yaml.safe_load(rp.read_text()) or {}), **ov}
+        merged_pair = ({**(yaml.safe_load(Path(pair).read_text()) or {}),
+                        **ov} if pair is not None else None)
+        refusals, advisories = config_guards(merged, merged_pair)
+        bypass = set(force_guards or [])
+        blocked = [r for r in refusals if r["code"] not in bypass]
+        if blocked:
+            raise ProviderError(
+                "config guards refused: "
+                + " | ".join(r["reason"] for r in blocked)
+                + f" (bypass knowingly: force_guards="
+                  f"{sorted({r['code'] for r in blocked})})")
+        dataset_key, dataset_path, dataset_sha, dataset_lines, hold = \
+            prepare_dataset(domain, mini, vol)
         # --- train-job shaping: single vs co-tenant pair, gate by recipe ---
         train_cmd = "axolotl train /work/job/train.yaml"
+        cfg_report: dict = {}
         job_fields: dict = {"config_yaml":
-                            render_config(recipe, ov, dataset_path.name)}
+                            render_config(recipe, ov, dataset_path.name,
+                                          report=cfg_report)}
         gate: dict | None = None
         if pair is not None:
             s1, s2 = _cfg_slug(recipe), _cfg_slug(pp)
             if s1 == s2:
                 s2 += "-2"   # identical slugs = two models sharing an
                              # output dir = the gate would lie
-            c1 = render_config(recipe, ov, dataset_path.name, slug=s1)
-            c2 = render_config(pp, ov, dataset_path.name, slug=s2)
+            c1 = render_config(recipe, ov, dataset_path.name, slug=s1,
+                               report=cfg_report)
+            c2 = render_config(pp, ov, dataset_path.name, slug=s2,
+                               report=cfg_report)
             # per-pid waits so ONE crash cannot orphan the other's finish;
             # sh -c because the runner execs shlex.split — no shell (law,
             # same chain trick as stage preludes)
@@ -1106,6 +1258,10 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         # (de3c7d post-mortem, 2026-11-25).
         led.merge_spec(run_id, dataset_sha=dataset_sha,
                        dataset_lines=dataset_lines, image=_image_ref(),
+                       guards={"advisories": advisories,
+                               "bypassed": sorted(bypass),
+                               "forced": cfg_report.get("forced") or {},
+                               "law_clash": cfg_report.get("law_clash") or []},
                        **({"holdout_sha": hold["sha256"],
                            "holdout_lines": hold["lines"]} if hold else {}))
         if dry:

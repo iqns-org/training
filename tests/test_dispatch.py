@@ -117,10 +117,12 @@ def test_submit_pair_dry(tmp_path, monkeypatch):
     ra = tmp_path / "a.yaml"
     ra.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
                                   "adapter": "qlora",
+                                  "lora_target_modules": ["q_proj"],
                                   "datasets": [{"path": "x"}]}))
     rb = tmp_path / "b.yaml"
     rb.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-4B",
                                   "adapter": "qlora",
+                                  "lora_target_modules": ["q_proj"],
                                   "datasets": [{"path": "x"}]}))
     puts = _vol_puts(tmp_path, monkeypatch)
     res = dispatch.submit("queer", ra, pair=rb, mini=True, dry=True)
@@ -154,16 +156,110 @@ def test_submit_pair_slug_collision(tmp_path, monkeypatch):
     ra = tmp_path / "a.yaml"
     ra.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
                                   "adapter": "qlora",
+                                  "lora_target_modules": ["q_proj"],
                                   "datasets": [{"path": "x"}]}))
     rb = tmp_path / "b.yaml"
     rb.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
                                   "adapter": "qlora", "sequence_len": 512,
+                                  "lora_target_modules": ["q_proj"],
                                   "datasets": [{"path": "x"}]}))
     puts = _vol_puts(tmp_path, monkeypatch)
     res = dispatch.submit("queer", ra, pair=rb, mini=True, dry=True)
     payload = json.loads(dict(puts)[f"runs/{res['run_id']}/payload.json"])
     names = [c["name"] for c in payload["configs"]]
     assert names[0] == "qwen3.5-0.8b" and names[1] == "qwen3.5-0.8b-2"
+
+
+# ------------------------------------------------------------------ guards
+def test_guards_pure():
+    """The category test: priors never refuse, burns always do, family
+    matters (smollm2 batch 2 is business as usual)."""
+    q = {"base_model": "Qwen/Qwen3.5-0.8B", "adapter": "qlora"}
+    s = {"base_model": "HuggingFaceTB/SmolLM2-360M-Instruct",
+         "adapter": "qlora"}
+    # r/alpha/lr/epochs: pure priors — no refusal, any value
+    ref, adv = dispatch.config_guards({**q, "lora_r": 8, "lora_alpha": 16,
+                                       "learning_rate": 3e-4, "num_epochs": 5,
+                                       "lora_target_modules": ["q_proj"]})
+    assert ref == [] and len(adv) >= 1     # advisories only
+    ref, _ = dispatch.config_guards({**s, "micro_batch_size": 2,
+                                     "lora_target_modules": ["q_proj"]})
+    assert ref == []                        # smollm2: batch 2 is normal
+    ref, _ = dispatch.config_guards({**q, "micro_batch_size": 2,
+                                     "lora_target_modules": ["q_proj"]})
+    assert [r["code"] for r in ref] == ["fla_batch"]
+    ref, _ = dispatch.config_guards({**q, "micro_batch_size": 1})  # no targets
+    assert [r["code"] for r in ref] == ["vlm_lora"]
+    # FFT at LoRA rates: ADVISORY (no burned run yet — operator's to prove)
+    ref, adv = dispatch.config_guards({"base_model": "Qwen/Qwen3.5-0.8B",
+                                       "learning_rate": 1e-4})
+    assert ref == [] and any("cook" in a for a in adv)
+    # pair of heavy legs: advisory names the OOM coupling
+    ref, adv = dispatch.config_guards(
+        {"base_model": "Qwen/Qwen3.5-0.8B", "learning_rate": 2e-5},
+        {"base_model": "Qwen/Qwen3.5-4B", "learning_rate": 2e-5})
+    assert ref == [] and any("OOM" in a for a in adv)
+
+
+def test_render_config_law_key_clash(tmp_path):
+    """val_set_size is a LAW (holdout stability 13am): forced back to 0
+    even against an explicit override — and the clash is RECORDED, not
+    hidden. Soft forces against recipe declarations land in
+    report['forced'] (silent forcing was how the packaging bug survived)."""
+    r = tmp_path / "rec.yaml"
+    r.write_text(yaml.safe_dump({"base_model": "X/Y",
+                                 "datasets": [{"path": "x"}],
+                                 "val_set_size": 0.05, "logging_steps": 50}))
+    rep = {}
+    out = yaml.safe_load(dispatch.render_config(
+        r, {"val_set_size": 0.1}, "d.jsonl", report=rep))
+    assert out["val_set_size"] == 0.0
+    assert rep["law_clash"] and "holdout law" in rep["law_clash"][0]
+    assert rep["forced"]["logging_steps"] == {"declared": 50, "forced": 5}
+
+
+def test_guard_refuses_fla_batch_before_staging(tmp_path, monkeypatch,
+                                                fake_s3):
+    """qwen3.5 + micro_batch>1 (425e6c step-0 death) is refused on the
+    RESOLVED config (recipe+overrides) before a single byte is staged,
+    with the evidence + bypass code named in the row."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join(['{"m":1}'] * 60))
+    monkeypatch.setattr(dispatch.subprocess, "run", lambda *a, **k: None)
+    r = tmp_path / "bad.yaml"
+    r.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                 "adapter": "qlora", "micro_batch_size": 1,
+                                 "lora_target_modules": ["q_proj"],
+                                 "datasets": [{"path": "x"}]}))
+    res = dispatch.submit("queer", r, mini=True, dry=True,
+                          overrides={"micro_batch_size": 2})
+    assert res.get("error")
+    row = dispatch.Ledger(tmp_path / "state" / "ledger.db").get(res["run_id"])
+    assert "fla_batch" in row["error"] and "425e6c" in row["error"]
+    assert not any(k.startswith("datasets/queer/") for k in fake_s3["put"])
+
+
+def test_guard_bypass_records_choice(tmp_path, monkeypatch, fake_s3):
+    """force_guards proceeds KNOWINGLY and the bypass lands in the ledger
+    spec — the books answer 'what did we know and choose'."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join(['{"m":1}'] * 60))
+    monkeypatch.setattr(dispatch.subprocess, "run", lambda *a, **k: None)
+    r = tmp_path / "bad.yaml"
+    r.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                 "adapter": "qlora",
+                                 "lora_target_modules": ["q_proj"],
+                                 "datasets": [{"path": "x"}]}))
+    res = dispatch.submit("queer", r, mini=True, dry=True,
+                          overrides={"micro_batch_size": 2},
+                          force_guards=["fla_batch"])
+    assert not res.get("error"), res
+    row = dispatch.Ledger(tmp_path / "state" / "ledger.db").get(res["run_id"])
+    spec = json.loads(row["spec_json"])
+    assert spec["guards"]["bypassed"] == ["fla_batch"]
+    assert isinstance(spec["guards"]["advisories"], list)
 
 
 def test_submit_volume_lane_dry(tmp_path, monkeypatch, recipe):
