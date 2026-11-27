@@ -33,6 +33,14 @@ from .models import POD_PREFIX, ProviderError, pod_is_ours
 from .providers import get_provider
 
 MINI_LINES = 48
+# PAIR VRAM FLOOR (PRIOR, first pair smoke post-mortem 2026-11-28): the
+# train pool prices-only fit handed a 12GB RTX 2000 Ada to a TWO-leg
+# job — single-leg minis have trained on cards that small, two concurrent
+# legs (bf16 0.8B + 4-bit 4B + 2 CUDA ctx + activations at 8192) have not
+# and the sizing math says 12GB cannot end well. Floor applied ONLY when
+# pair is set; env knob to retune as the pilot measures real usage.
+PAIR_MIN_VRAM = int(os.environ.get("QTRAIN_PAIR_MIN_VRAM", "20"))
+
 
 
 def _tolerant_get(get_run, key: str, state: dict, limit: int = 5):
@@ -346,15 +354,18 @@ def _max_wait(explicit: int | None) -> int:
     return int(os.environ.get("QTRAIN_MAX_WAIT", "1800"))
 
 
-def _train_pool(prov, gpus, tier, vol, ceiling):
+def _train_pool(prov, gpus, tier, vol, ceiling, min_vram: int = 0):
     """Fresh catalog pass through the train fit: SECURE when the lane
-    needs it, then the rate ceiling. Raises the capacity error so
-    _wave_launch treats 'nothing fits right now' as retryable stock."""
+    needs it, then the rate ceiling, then (pairs) the VRAM floor. Raises
+    the capacity error so _wave_launch treats 'nothing fits right now'
+    as retryable stock."""
     offers = prov.catalog(gpus, tier)
     if vol:
         # network volumes exist only in the SECURE cloud; community
         # launches that ask for one 400 as "no instances available"
         offers = [o for o in offers if o.secure]
+    if min_vram:
+        offers = [o for o in offers if (o.vram_gb or 0) >= min_vram]
     within = [o for o in offers if (o.price_hr or 0.0) <= ceiling]
     if not within:
         best = min((o.price_hr for o in offers if o.price_hr), default=None)
@@ -1270,7 +1281,9 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                        guards={"advisories": advisories,
                                "bypassed": sorted(bypass),
                                "forced": cfg_report.get("forced") or {},
-                               "law_clash": cfg_report.get("law_clash") or []},
+                               "law_clash": cfg_report.get("law_clash") or [],
+                               "pair_min_vram": (PAIR_MIN_VRAM if pair
+                                                 is not None else 0)},
                        **({"holdout_sha": hold["sha256"],
                            "holdout_lines": hold["lines"]} if hold else {}))
         if dry:
@@ -1312,7 +1325,9 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                "data_center": vol["dc"]}
               if (vol and not vol.get("local")) else {})
         inst, offer = _wave_launch(
-            prov, lambda: _train_pool(prov, gpus, tier, vol, ceiling),
+            prov, lambda: _train_pool(prov, gpus, tier, vol, ceiling,
+                                      min_vram=(PAIR_MIN_VRAM
+                                                if pair is not None else 0)),
             name=_pod_name("train", run_id, _pod_hint(domain, recipe)),
             image=_image_ref(),
             env={**payload_env, "AGENT_TOKEN": token,
@@ -1946,11 +1961,12 @@ def pipeline_report(kind: str | None = None) -> dict:
 
 def preflight(kind: str = "train", *, provider: str = "runpod",
               max_price_hr: float | None = None,
-              max_runtime: int = 3600) -> dict:
+              max_runtime: int = 3600, pair: bool = False) -> dict:
     """Read-only decision report (the plan's `--preflight`): which cards
     pass the fit, what the estimate/kill threshold would be, gate verdicts
     — launches NOTHING, writes NOTHING. Answers 'what would this job
-    cost, on what' before committing a cent."""
+    cost, on what' before committing a cent. pair=True applies the PAIR
+    VRAM floor (co-tenant sizing PRIOR, see PAIR_MIN_VRAM)."""
     led = Ledger(ROOT / "state" / "ledger.db")
     prov = get_provider(provider)
     out: dict = {"kind": kind, "provider": provider}
@@ -1980,6 +1996,11 @@ def preflight(kind: str = "train", *, provider: str = "runpod",
                     "QTRAIN_MAX_PRICE_HR default (right-sizing prior, "
                     "13q)"])
         all_ = raw_catalog
+        if pair:
+            all_ = [o for o in all_ if (o.vram_gb or 0) >= PAIR_MIN_VRAM]
+            assumed.append(f"pair floor: vram >= {PAIR_MIN_VRAM}GB "
+                           "(co-tenant PRIOR, first-smoke sizing math; "
+                           "QTRAIN_PAIR_MIN_VRAM to retune)")
         if storage.vol_cfg():
             all_ = [o for o in all_ if o.secure]
         offers = sorted((o for o in all_

@@ -187,6 +187,36 @@ def test_est_basis_names_its_guess(tmp_path, monkeypatch):
     assert "declare" in fb["basis"]      # tells you the fix
 
 
+def test_preflight_pair_floor_keeps_small_cards_out(tmp_path, monkeypatch):
+    """PAIR VRAM FLOOR (post-mortem of the first pair smoke, 2026-11-28):
+    the pool fitted $0.24/12GB for a TWO-leg job — the cheapest-fit logic
+    is single-leg thinking. pair=True must exclude sub-floor cards and
+    SAY it (assumed[]; the floor is a labeled PRIOR, env-retunable)."""
+    from orchestrator import dispatch
+    from orchestrator.models import Offer
+
+    class Stub:
+        def catalog(self, gpus=None, tier=None):
+            return [Offer(provider="runpod", gpu_id="RTX2000-Ada",
+                          vram_gb=12, price_hr=0.24, secure=True),
+                    Offer(provider="runpod", gpu_id="A5000", vram_gb=24,
+                          price_hr=0.69, secure=True)]
+
+        def balance(self):
+            return 9.0
+
+    monkeypatch.setattr(dispatch, "get_provider", lambda n: Stub())
+    monkeypatch.setattr(dispatch.storage, "vol_cfg", lambda: None)
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    solo = dispatch.preflight("train")
+    pair = dispatch.preflight("train", pair=True)
+    assert pair["candidates"][0]["gpu"] == "A5000"          # floor bites
+    assert any("pair floor" in a for a in pair["assumed"])
+    assert solo["candidates"][0]["gpu"] == "RTX2000-Ada"    # single-leg
+    # kill thresholds must be SECONDS-derived on both paths
+    assert pair["kill_threshold"] <= 0.69 + 0.01
+
+
 def test_calibration_contamination_auto_retires(tmp_path, monkeypatch):
     # THE LAW (cb059d as code): when a kind's work profile changes
     # (EST_VERSION bump), its old obs samples retire from estimation —

@@ -147,6 +147,9 @@ def test_submit_pair_dry(tmp_path, monkeypatch):
         .get(res["run_id"])
     spec = json.loads(row["spec_json"])
     assert spec["pair_recipe"] == str(rb) and len(spec["pair_recipe_sha"]) == 12
+    # the VRAM floor decision is ON THE ROW — a future reader sees the
+    # fit the pair demanded without touching the catalog
+    assert spec["guards"]["pair_min_vram"] == dispatch.PAIR_MIN_VRAM
 
 
 def test_submit_pair_slug_collision(tmp_path, monkeypatch):

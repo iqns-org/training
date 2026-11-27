@@ -664,13 +664,16 @@ def janitor_pass(provider: str = "runpod", dry: bool = True) -> dict:
 @mcp.tool
 def preflight_report(kind: str = "train", provider: str = "runpod",
                      max_price_hr: float | None = None,
-                     max_runtime: int = 3600) -> dict:
+                     max_runtime: int = 3600,
+                     pair: bool = False) -> dict:
     """Read-only launch decision (SPEC 13p): fitting cards, cost estimate,
     kill threshold, budget gate verdicts. Launches nothing, writes
-    nothing — answers 'what would this cost, on what' before committing."""
+    nothing — answers 'what would this cost, on what' before committing.
+    pair=True shows the CO-TENANT fit (VRAM floor applied — the first
+    pair smoke landed on a 12GB card that cannot host two legs)."""
     return dispatch.preflight(kind, provider=provider,
                               max_price_hr=max_price_hr,
-                              max_runtime=max_runtime)
+                              max_runtime=max_runtime, pair=pair)
 
 
 @mcp.tool

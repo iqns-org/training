@@ -315,7 +315,8 @@ def cmd_defaults(args):
 def cmd_preflight(args):
     res = dispatch.preflight(args.kind, provider=args.provider,
                              max_price_hr=args.max_price,
-                             max_runtime=args.max_runtime)
+                             max_runtime=args.max_runtime,
+                             pair=args.pair)
     _print(res)
     raise SystemExit(0 if "launch" in str(res.get("decision", "")) else 1)
 
@@ -561,6 +562,8 @@ def build_parser():
     prov_arg(s)
     s.add_argument("--max-price", type=float, default=None)
     s.add_argument("--max-runtime", type=int, default=3600)
+    s.add_argument("--pair", action="store_true",
+                   help="show the co-tenant fit (VRAM floor applied)")
     s.set_defaults(func=cmd_preflight)
 
     s = sub.add_parser("watch", help="follow a run until terminal state")
