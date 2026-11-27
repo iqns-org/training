@@ -505,3 +505,42 @@ MEASUREMENT SEAM, r3 side (same evening, cognition domain):
    if a correct answer can have a prefix, the regex needs .*.
    Both-era re-measure (r3 + r1, fixed 21-question suite) running —
    flips only mean something with both eras under ONE instrument.
+   VERDICT (both eras, fixed suite; r1 7/21 -> r3 9/21):
+   FLIPS LANDED: completion-preserve 0->3/3 (preserved-prefix rows —
+   the P1 cause-map fix, directly attributed) + ir-diagnose2 0->3/3
+   (E3 cells 6->42: the starved-shape tranche, directly attributed)
+   + domain-jobsite 2->3/3 (partial). HELD CONTROLS: ir-translate,
+   nl-to-ir-match, dash-input, conflict-2src (r1 already 3/3 — the
+   mining 11/12 was TRUE, the pre-registration over-predicted; logged
+   as an expectation error, not a model event). STILL RED (1-epoch
+   verdict): repair-e2, invalid-e6, valid-yes, hop2-infer, hop-count,
+   counterfactual-write — cells exist (E6 15, E2 150) but a single
+   pass over 24.6k rows didn't convert them to behavior; hop2-infer's
+   answer is literally "NOT DERIVABLE..." — the abstain prior
+   OUTRANKS inference: verdict families teach refusal stronger than
+   the graph teaches chaining (r4: conflict between the two dials,
+   named). CONTROL VIOLATION, investigated not hidden:
+   ir-to-nl-prose 3/3(r1)->0/3(r3) — but a temp-0 probe of the exact
+   suite prompt answers clean prose; the bleed is TEMPERATURE-gated
+   (all 3 bench samples leak IR tokens into description —
+   format-selection judgment not yet consolidated by one mixed pass;
+   consistent with abstain's 0/3 code-answer regression). ROOT
+   SUSPECTS, in order: epochs (Rule-4 lever), then prose-verdict
+   discipline in the corpus. HOLDING THE LINE on interpretation:
+   this is why NLL/loss is fit-only and the TABLE arbitrates — a
+   single-epoch bundle moved the corpus into range (2 real flips +
+   1 partial) and left the deep dials red; both facts are the point.
+   DEAD-ADAPTER FIX (postproc/holdout_loss.py): f09318 pair printed
+   1.4059==1.4059 — bit-identical "adapter vs base" is physically
+   impossible with live weights; the engine proved otherwise in one
+   greedy prompt (r3: exact NOT DERIVABLE template, base: prose).
+   Cause: the script trusted a QWEN3_5_TEXT env guess for the load
+   shape; r3's adapter tensor names route model.language_model.* and
+   the env-forced text subtree got 372 ATTACHED-but-UNEXECUTED
+   tensors (the old n_lora==0 guard counted attachment, not wiring).
+   Fix: load shape now READS the adapter safetensors header itself
+   (pure fn, unit-tested) and WIRING GUARD 2 refuses to score when
+   enable/disable_adapter_layers moves zero logits — attached !=
+   executed. All holdout numbers for adapter runs before this fix
+   are base numbers wearing a costume (incl. 60f8fa's 1.4062);
+   re-pair running with the corrected script.

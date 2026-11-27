@@ -15,9 +15,10 @@ COMPOSITE class (model.language_model.* naming, same root as vLLM's
 (model.layers.*), so peft attached ZERO LoRA tensors and would have
 silently scored the base model wearing a costume. Metric integrity beats
 run completion: unattached adapters fail fast, never a fake number.
-
-QWEN3_5_TEXT=1 loads the text subtree when scoring adapters on the
-trainer stack (same extraction merge_adapter.py's output proves).
+The adapter's OWN tensor names pick the load shape now (plain targets
+-> text subtree; language_model.* targets -> full wrapper); the old
+QWEN3_5_TEXT env guess is retired — guessing at a namespace is how the
+r3 pair scored 1.4059==1.4059 with 372 attached-but-dead tensors.
 
 Assistant turns only are scored (prefix-conditioning masked to -100, the
 serving-shape conditional). --dry-run validates the row loop WITHOUT
@@ -28,7 +29,7 @@ manifest.training.summary; lands holdout.json as the gate file.
 import argparse
 import hashlib
 import json
-import os
+import struct
 from pathlib import Path
 
 ap = argparse.ArgumentParser()
@@ -91,6 +92,25 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 model_dir = Path(a.model)
 has_adapter = (model_dir / "adapter_config.json").is_file()
+
+
+def adapter_namespace(md: Path) -> str:
+    """'language_model' when adapter tensor names route through the VL
+    wrapper subtree, else 'plain'. Read from the safetensors header —
+    the file ITSELF says where its weights belong; env flags guessing
+    this are how r3 got 1.4059==1.4059 (adapters trained on the
+    wrapper's language_model.* modules, script forced the bare text
+    subtree, PeftModel happily attached 372 tensors to nothing)."""
+    p = md / "adapter_model.safetensors"
+    if not p.is_file():
+        return "plain"
+    with p.open("rb") as fh:
+        n = struct.unpack("<Q", fh.read(8))[0]
+        keys = list(json.loads(fh.read(n)))
+    return ("language_model" if any("language_model." in k for k in keys)
+            else "plain")
+
+
 # tokenizer: the artifact dir is truth (a merged dir carries the exact
 # serving tokenizer); fall back to the base id only when absent
 tok_src = str(model_dir) if (model_dir / "tokenizer.json").is_file() else a.base
@@ -98,7 +118,11 @@ tok = AutoTokenizer.from_pretrained(tok_src)
 
 if has_adapter:
     from peft import PeftModel
-    if os.environ.get("QWEN3_5_TEXT") == "1":
+    # LOAD SHAPE FROM THE DATA, not from QWEN3_5_TEXT: the text-subtree
+    # config is only correct for PLAIN-namespace adapters; a
+    # language_model.* adapter MUST get the full wrapper (its memory on
+    # stage cards is fine — 0.8B).
+    if adapter_namespace(model_dir) == "plain":
         from transformers import AutoConfig
         cfg = AutoConfig.from_pretrained(a.base)
         text_cfg = getattr(cfg, "text_config", None) or cfg
@@ -123,6 +147,28 @@ else:
 model.eval()
 if torch.cuda.is_available():
     model = model.to("cuda")
+
+if has_adapter:
+    # WIRING GUARD 2: n_lora counted ATTACHED tensors; the r3 pair had
+    # 372 of them and moved ZERO logits (attached to a subtree the
+    # forward never routes through). Prove execution, not attachment:
+    # one probe row, adapter vs disable_adapter_layers, any difference.
+    probe = next((r.get("messages") for r in rows if r.get("messages")), None)
+    if probe is not None:
+        pid = tok(tok.apply_chat_template(probe, tokenize=False),
+                  add_special_tokens=False).input_ids[:, :64]
+        if torch.cuda.is_available():
+            pid = pid.to("cuda")
+        with torch.no_grad():
+            with_ad = model(pid).logits.float()
+            model.disable_adapter_layers()
+            without = model(pid).logits.float()
+            model.enable_adapter_layers()
+        if torch.allclose(with_ad, without, atol=1e-5):
+            raise SystemExit(
+                "adapter attached %d lora tensors but moved 0 logits — "
+                "dead wiring (namespace mismatch); refusing to score"
+                % n_lora)
 
 def score(mdl):
     """Teacher-forced NLL pass with model mdl -> (loss, scored, skipped,
