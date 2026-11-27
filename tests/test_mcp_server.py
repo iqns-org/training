@@ -100,7 +100,7 @@ def test_laws_surface_and_pair_parity(tmp_path, monkeypatch):
         items = list(text)
         body = getattr(items[0], "text", "") if items else ""
     for law in ("DEADMAN", "HOLDOUT LAW", "micro_batch_size", "tools",
-                "CO-TENANT", "whitelist", "scrub"):
+                "CO-TENANT", "whitelist", "scrub", "QUANT & SERVING"):
         assert law in body, f"law text missing: {law}"
     # pair mode on the surface: parameter + its docstring laws
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}

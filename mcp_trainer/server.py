@@ -128,6 +128,21 @@ SAFETY SPINE
   worth money sit on the instance (TrainingError keep_alive).
 - Family registry (recipes/_families.yaml, 13al): targets proven false
   are REFUSED at submit_stage for free; re-asking needs new evidence.
+
+QUANT & SERVING
+- The train recipe returns NO quant: QLoRA's 4-bit base is training-time
+  math, never a product. Artifacts are bf16 adapters; quants are STAGE
+  children of a MERGED model (train -> merge -> awq|fp8), each its own
+  run row + gate. One train run may fan out to many quant products.
+- vLLM (2026 status, maintainer table): FP8+LoRA dynamic switching ✅
+  but W8A8 kernels need Ada/Hopper (Ampere dead); AWQ+LoRA ✅ with the
+  #50059 caveat — r=32 all-layer adapters over int4 W4A16 go weak/non-
+  reproducible on some stacks. bnb-4bit base + adapter switching ❌ —
+  never serve a training quant as a product.
+- HOLDOUT LAW EXTENSION: adapter holdout NLL does NOT certify the
+  quantized product. The QUANTIZED ENDPOINT benches before register
+  flips traffic. Quantize-on-hybrid (qwen3.5 GDN) expects PARTIAL
+  products — linears without kernels stay bf16; measure the delta.
 """
 
 
