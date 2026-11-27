@@ -759,6 +759,7 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str,
     # recipe's declared value is RECORDED as overridden, not hidden
     soft_forced = {"logging_steps": 5, "save_total_limit": 1}
     declared = {k: cfg[k] for k in soft_forced if k in cfg}
+    vz_declared = cfg.get("val_set_size")
     cfg.update({
         "dataset_prepared_path": (f"/work/prepared/{slug}" if slug
                                   else "/work/prepared"),
@@ -771,6 +772,13 @@ def render_config(recipe: Path, overrides: dict, dataset_name: str,
     # LAW_KEY: val_set_size stays 0 even against overrides — an operator
     # knob tunes preferences; it does not vote the holdout law out
     # (13am stability beats convenience; the clash is on the record)
+    if vz_declared not in (None, 0, 0.0) and report is not None:
+        # doctrine: recording forcing includes the quiet recipe-declared
+        # force (a law applied silently is still a silent force)
+        report.setdefault("law_clash", []).append(
+            f"recipe-declared val_set_size={vz_declared!r} forced to 0.0 "
+            "(holdout law 13am: the stable split, not a random val, "
+            "scores this round)")
     if cfg.get("val_set_size") not in (0, 0.0):
         if report is not None:
             report.setdefault("law_clash", []).append(
