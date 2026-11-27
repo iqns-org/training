@@ -267,6 +267,28 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            (r1 id reconciled too: 9,044 SFT + 821 DPO = 9,865 total —
            FRAMEWORK/AS-BUILT labels tightened, ledger spec 20261126-
            220003 proves it: 8,867+177.)
+           r3 SUBMITTED 20:04: 20261127-200403-1a548a @ pod ox4v0j239wm0vt,
+           recipe qlora --override num_epochs=1 --max-runtime 7200
+           --max-price 0.75 (live offers $0.50-0.69/hr — budget-law pin,
+           est $0.75 vs $2.25 worst-case). EPOCH DECISION (Rule 4):
+           epochs=4 was r2's habit but 3.7x data = $9 gate-bust; a
+           3600s-capped 4-epoch run TRUNCATES unseen rows (unfalsifiable
+           "family failed or never seen?" — the exact r2-style lie the
+           whole session exists to kill). 1 epoch x 7200 = one CLEAN
+           full pass over all 15 families: first question is corpus
+           coverage, with epochs as r3.1's isolated lever if flips
+           land short. Paired: scripts/supervise_run.py (backgrounded,
+           tmp/supervise-r3.log) — covers externally what the agent-side
+           pod-kill cannot yet do on cloud (peer's c0b6834 wired the
+           route LAN-only INERT by design; supervisor feeds ping,
+           harvests manifest, hard-terminates via provider API).
+           HANDOFF ITEMS CLOSED by the peer: f831b7 -> failed at 16:08
+           (max-runtime without manifest — the fixed watch DID fire the
+           death path); POD-STOP wire -> c0b6834 live-probed, fail-closed
+           tested; rebase option (a) EXECUTED: kandi v3 = 1.0575 on v2
+           holdout vs 0.9178 on leaky-v1 — the v2 law's predicted UP-
+           MOVE confirmed: v1 margins measured memorization. First
+           instrument-won number of the regime plan.
            BENCH V2 PRE-REGISTRATION (19 questions: canonical 6 kept
            verbatim for trend, 13 new; r1 measured 7/19 on the engine
            NOW — canonical subset reproduces the recorded 1/6 exactly,
