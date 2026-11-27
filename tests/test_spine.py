@@ -168,3 +168,23 @@ def test_extended_check_grammar():
     assert score("max_len:5", "much too long for five") == "FAIL"
     assert score("nonempty", "hi") == "PASS"
     assert score("nonempty", "   ") == "FAIL"
+
+
+def test_needs_base_resolves_from_stage_row_spec(tmp_path, monkeypatch):
+    """STAGE-OF-STAGE RESOLUTION (rebase incident, (aw)): the needs_base
+    auto-resolver read ONLY a recipe (train rows) — a merge row carries
+    the RESOLVED base_model on its spec root, so `stage holdout
+    --from-run <merge>` dead-ended 'pass --base' on a ledger that
+    obviously knew the answer. The row's own record is the source."""
+    import json
+    from orchestrator.ledger import Ledger
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+    led = Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("stage", {"kind": "merge",
+                               "base_model": "Qwen/Qwen3.5-0.8B",
+                               "from_run": "train-xyz"}, provider="runpod")
+    assert dispatch._recipe_base_from_row(rid) == "Qwen/Qwen3.5-0.8B"
+    # unknown row still resolves to empty (caller's error stays
+    # actionable — never a silent wrong base)
+    assert dispatch._recipe_base_from_row("no-such-run") == ""

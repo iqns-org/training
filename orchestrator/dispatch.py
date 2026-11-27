@@ -1210,10 +1210,15 @@ def _recipe_base_from_row(run_id: str) -> str:
     try:
         led = Ledger(ROOT / "state" / "ledger.db")
         row = led.get(run_id)
-        rec = (json.loads((row or {}).get("spec_json") or "{}")).get(
-            "recipe")
+        sp = json.loads((row or {}).get("spec_json") or "{}")
+        rec = sp.get("recipe")
         if not rec:
-            return ""
+            # stage rows record the RESOLVED base_model on their own
+            # spec (auto-resolution at their submit) — the ledger's
+            # word beats a hand-typed --base (same anti-drift law);
+            # this closes the stage-of-stage dead-end that made
+            # `stage holdout --from-run <merge>` refuse honest inputs
+            return str(sp.get("base_model", ""))
         p = resolve_recipe(rec)
         return str((yaml.safe_load(p.read_text()) or {}).get(
             "base_model", ""))
