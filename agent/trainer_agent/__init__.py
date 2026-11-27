@@ -5,4 +5,4 @@ active job running an arbitrary command with log capture, cancellation and
 progress scraping. Presigned transfer + artifact gate/manifest land with P1.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
