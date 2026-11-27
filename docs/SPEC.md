@@ -2066,3 +2066,47 @@ is documented in `docs/UI.md`.
   comparison by construction) was still scoring at entry time; its
   number lands under the same law-2 stamp and completes the pair.
   v1-era rows (0.9178/4.1088, r1) stay history, never comparators.
+
+
+(ax) DEADLINE RIDES THE ROW — base-half death + retry (2026-11-27 night).
+  485a22 UPDATE TO (aw): "live-scoring" was the last honest reading at
+  entry time, but the run then hung for 90 min (lane: payload + ping
+  only, zero progress writes, status.json never appeared; pod poll said
+  running; provider log denied by the scoped key — agent plane had no
+  recorded base_url). Root cause of the UNBOUNDED hold is this repo's
+  own law, not the pod's: resume() anchored its watch clock to
+  time.time() on EVERY re-attach and enforced only its 4 h default
+  (submit's 3600 s was never recorded) — a supervisor looping
+  reconcile() therefore reset the deadline forever, which is how the
+  19:20-19:50 zombie was held alive through every "recovery". Fixed,
+  test-pinned (test_resume_deadline_rides_the_row): submit +
+  submit_stage record max_runtime into the ledger spec; resume anchors
+  elapsed to created_at and enforces the RECORDED budget. One row
+  discriminates both halves: 2 h old, 10-min budget — old code would
+  poll, new code fires 'max runtime exceeded' before touching the
+  provider. 485a22 was terminated manually (provider confirmed gone:
+  poll -> 404 definite-absence) and reconcile closed it 'terminated
+  without manifest — run lost', the honest verdict for a hung job no
+  deadline could reach. Base-half RETRY in flight: 20261127-202219-
+  07bea4 (c7cde2 merged bytes, --fresh-holdout => law 2 recorded,
+  max_runtime 5400 rides the row, single harness-managed watcher, no
+  shell timeout wraps). When it closes the v2 pair is complete:
+  v3 = 1.0575 (done, artifact-verified) vs base = its holdout_loss —
+  both stamped holdout_law: 2, split sha 5dca1c17... (the d177390d
+  that echoed in mid-turn was a fabricated value; content verified
+  against tmp file sha + BOTH lane payloads). v1-era numbers
+  (0.9178/4.1088) stay history.
+  COMMIT-HYGIENE confession: bfb81a4 (the deadline fix commit) landed
+  via file-granularity git add on dispatch.py, a file the PARALLEL
+  SESSION also had uncommitted hunks in (render_config slug
+  isolation, artifact-gate law for adapter-less fine-tunes, + the
+  needs_base work) — their dispatch-side work is now in main inside
+  my commit. No content was lost or altered; the suite is green at
+  231; shared repos forbid force-push, so history stays as-is and
+  this note is the attribution correction. Their other files
+  (agent/*, cli.py, test_dispatch/finalize/deadman) remain
+  uncommitted — theirs to land, hands off. The dirty-tree discipline
+  this repo preaches for pods applies to git too: git add -p or a
+  worktree, never add the whole shared file.
+  Fleet: m-v0.5.2 @ 9203980a verified live AGAIN this turn (POST
+  /pod-stop junk -> 401, pod Running, infra origin == 812ba9a).
