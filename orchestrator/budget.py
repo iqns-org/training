@@ -101,6 +101,22 @@ def est_minutes(kind: str):
     return EST_MINUTES.get(kind, 30)
 
 
+def est_basis(kind: str) -> dict:
+    """WHICH number backs the estimate — 'observed median' vs 'static
+    prior' vs 'unknown-kind fallback 30'. Surfaced by preflight so a
+    calibration guess is never mistaken for a measurement."""
+    obs = obs_minutes(kind)
+    if len(obs) >= 2:
+        return {"kind": kind, "basis": "observed-median", "minutes":
+                round(statistics.median(obs), 1), "samples": len(obs)}
+    if kind in EST_MINUTES:
+        return {"kind": kind, "basis": "static-prior",
+                "minutes": EST_MINUTES[kind], "samples": len(obs)}
+    return {"kind": kind, "basis": "FALLBACK-30 (kind unknown to "
+            "EST_MINUTES — declare it or the gate runs on a guess)",
+            "minutes": 30, "samples": 0}
+
+
 def estimate(price_hr: float, kind: str) -> float:
     """Predicted all-in dollars with bounded margin."""
     return price_hr * est_minutes(kind) / 60 * MARGIN

@@ -85,6 +85,10 @@ def _pd_module():
 
 def test_holdout_is_stable_and_tiny():
     m = _pd_module()
+    assert m.HOLDOUT_MODULO == 50   # named constant: editing it silently
+                                    # reshuffles EVERY historical split —
+                                    # that is a HOLDOUT_LAW bump + rebase
+                                    # (c3d7027), never a quiet config edit
     lines = [json.dumps({"messages": [{"role": "user", "content": f"q{i}"}]})
              for i in range(20000)]
     held = [l for l in lines if m.is_holdout(l)]

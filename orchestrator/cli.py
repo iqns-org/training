@@ -305,6 +305,13 @@ def cmd_hygiene(args):
     _print(res)
 
 
+def cmd_defaults(args):
+    """Every declared stage/budget default (assumption-audit surface):
+    gate contracts, declared min_vram + PRIOR labels, estimate basis,
+    env knobs, law notes — the same object pipeline_report serves MCP."""
+    _print(dispatch.pipeline_report(args.kind))
+
+
 def cmd_preflight(args):
     res = dispatch.preflight(args.kind, provider=args.provider,
                              max_price_hr=args.max_price,
@@ -540,6 +547,12 @@ def build_parser():
                        "projections, caps, observed medians")
     prov_arg(s)
     s.set_defaults(func=cmd_budget)
+
+    s = sub.add_parser("defaults", help="declared stage/budget defaults: "
+                       "min_vram PRIORS, gate contracts, estimate basis, "
+                       "env knobs (read-only)")
+    s.add_argument("kind", nargs="?", default=None)
+    s.set_defaults(func=cmd_defaults)
 
     s = sub.add_parser("preflight", help="read-only launch decision "
                        "report: cards, estimate, gates (writes nothing)")

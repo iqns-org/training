@@ -162,7 +162,43 @@ GUIDANCE vs LAW (assumption audit, 2026-11-27)
   (soft — recipe-declared value RECORDED in the row when different).
   The packaging bug survived months because the books could not see
   what actually ran; visibility first, refusal only for burns.
+
+PIPELINE DEFAULTS (stage/budget audit, 2026-11-27 — read pipeline_report())
+- The silent min_vram=10 stage floor is REMOVED: CPU-only kinds (onnx,
+  int8) declare 0 (the floor was EXCLUDING their cheapest fits), and GPU
+  kinds declare labeled PRIORS (merge/ablate/holdout 12, awq 16 — the
+  4B pilots correct these numbers; DEFAULT_MIN_VRAM fallback is reported
+  as an assumption in preflight, never hidden).
+- Preflight must quote the SAME kill math as launch: max_runtime is
+  SECONDS (/3600, the 425e6c units law) — the /60-vs-/3600 bug class is
+  why preflight output is test-pinned against the launch path.
+- Estimates name their basis: observed-median / static-prior /
+  FALLBACK-30 (unknown kind = a guess the gate runs on — declare it in
+  EST_MINUTES or see it in the report). Calibration-contamination law:
+  obs samples expire with EST_VERSION, never deleted (cb059d).
+- DEADMAN stale-warning threshold derives from QTRAIN_DEADMAN_GRACE_S
+  (70% of grace), not a hardcoded 420 — knobs and their watchers cannot
+  drift apart.
+- HOLDOUT modulo (1-in-50) is a NAMED constant with a law note: changing
+  it reshuffles every historical split — that is a HOLDOUT_LAW version
+  bump + rebase (c3d7027), never a quiet edit.
+- Money gates (QTRAIN_BUDGET/_MARGIN/_RESERVE/QTRAIN_REAP_GRACE) are all
+  env knobs WITH defaults stated in pipeline_report — the aggregate gate
+  refuses BEFORE launch, the soft kill acts during, the deadman covers
+  watcher death. Three layers, one vocabulary.
 """
+
+
+@mcp.tool
+def pipeline_report(kind: str | None = None) -> dict:
+    """Read the pipeline's declared defaults BEFORE tuning a stage or
+    trusting an estimate (assumption-audit doctrine, see trainer://laws
+    PIPELINE DEFAULTS): per-stage gate contracts, declared vs fallback
+    min_vram, estimate basis (observed | static-prior | FALLBACK-30),
+    budget knobs, deadman/holdout law notes. Delegates to
+    dispatch.pipeline_report — the CLI `qtrain defaults` shows the
+    identical object."""
+    return dispatch.pipeline_report(kind)
 
 
 @mcp.resource("trainer://versions")

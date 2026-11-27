@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import hashlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -9,30 +10,75 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from expand import main_all
 
+LAWS = ("template", "gold")
+
+
+def law() -> str:
+    """Active holdout bucketing law, QTRAIN_HOLDOUT_LAW selects it.
+    The DEFAULT IS THE LAW: nothing moves silently (trend rows and
+    every staged split were cut under template), a typo fails loud,
+    and the ledger pins the holdout SHA — the bytes are the comparison
+    contract, the label only tells the story."""
+    value = os.environ.get("QTRAIN_HOLDOUT_LAW", "template").strip().lower()
+    if value not in LAWS:
+        raise SystemExit(f"QTRAIN_HOLDOUT_LAW={value!r} is not a law; "
+                         f"use one of: {', '.join(LAWS)}")
+    return value
+
+
+def _norm(text) -> str:
+    return " ".join((text or "").split())
+
+
+def _last_gold(msgs) -> str:
+    return next((_norm(m.get("content")) for m in reversed(msgs)
+                 if m.get("role") == "assistant"), "")
+
 
 def holdout_key(line: str) -> str:
-    """The bucket IDENTITY of a row: its conversation's first message
-    (normalized), falling back to the whole line when there is no
-    conversation. Template siblings share this key."""
+    """The bucket IDENTITY of a row under the active law.
+
+    template (default, v2): the conversation's first message — every
+      variant of a scenario crosses the line together. Measures: can
+      the model respond to a template family it never trained on?
+
+    gold: the last assistant message — formulaic families (pair
+      6909eb: 53% of template-law holdout GOLD STRINGS appear verbatim
+      in train) collapse to their few distinct answers. Measures: can
+      the model say anything it never saw said?
+
+    Fallbacks (no assistant turn -> template; no conversation -> the
+    line) keep every key content-derived, so a row bucketed in round K
+    stays bucketed forever (13am stability) under EITHER law."""
     try:
         msgs = json.loads(line).get("messages") or []
-        first = " ".join((msgs[0].get("content") or "").split())
     except Exception:
-        first = ""
+        msgs = []
+    if law() == "gold":
+        gold = _last_gold(msgs)
+        if gold:
+            return gold
+    first = _norm(msgs[0].get("content")) if msgs else ""
     return first or line.strip()
 
 
+# Named by the assumption audit (2026-11-27): the bucket RATIO is not
+# free to change — every staged split and trend row was cut under it, so
+# editing it silently reshuffles historical membership. A deliberate
+# change = new law version + rebase (c3d7027), never a quiet edit. The
+# law() switch above moves WHAT is hashed; this moves HOW MANY rows.
+HOLDOUT_MODULO = 50
+
+
 def is_holdout(line: str) -> bool:
-    """Holdout law v2 (2026-11-27): bucket by TEMPLATE, not row content.
-    synth profile measured the v1 row-hash split LEAKING ~100%: every
-    templated-family holdout row had sibling variants in train (uniq
-    0.006 in diagnosis), so holdout NLL measured memorization. Keying
-    on the first message moves every variant of a scenario across the
-    line together — the model trains on NO template it is scored on.
-    13am stability holds: the key is content-derived, so a template
-    held out in round K is held out forever."""
+    """Stable ~2% bucket by hash of holdout_key — never by position.
+    v2 template law fixed the INSTANCE leak (measured 1.0 -> 0.0);
+    the gold-clean census printed by prepare_domain shows the level
+    ABOVE it that formulaic families still leak — where the honest
+    number is 'this split cannot certify this family', the fix is
+    corpus gold-diversity (r4), not a cleverer split."""
     return int(hashlib.sha256(holdout_key(line).encode())
-               .hexdigest()[:8], 16) % 50 == 0
+               .hexdigest()[:8], 16) % HOLDOUT_MODULO == 0
 
 
 def prepare_domain(domain: str) -> Path:
@@ -45,31 +91,53 @@ def prepare_domain(domain: str) -> Path:
 
     final_path = ROOT / "tmp" / f"{domain}.jsonl"
     holdout_path = ROOT / "tmp" / f"{domain}.holdout.jsonl"
-    total_rows = 0
-    held = 0
-    # HOLDOUT LAW (SPEC 13am): every conversation is bucketed by content
-    # hash, never by position — a line that trains in round K still trains
-    # in round K+5, and a line held out is held out forever. That stability
-    # is what makes cross-round eval trends honest (round-2 lesson: loss
-    # dropped while behavior flattened — no unseen split to reveal it).
+
+    # pass 1: bucket every row + collect the TRAIN gold-string set.
+    # pass 2: write, and census how much of the holdout is
+    # gold-CLEAN (its exact answer string appears nowhere in train) —
+    # that subset, not the raw count, is what NLL can honestly score.
+    rows: list[tuple[str, str, str, bool]] = []
+    train_golds: set[str] = set()
+    for path in files:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                gold = _last_gold(json.loads(line).get("messages") or [])
+            except Exception:
+                gold = ""
+            held = is_holdout(line)
+            if gold and not held:
+                train_golds.add(gold)
+            rows.append((path.stem, line, gold, held))
+
+    census: dict[str, list[int]] = {}
+    total_rows = held = 0
     with final_path.open("w", encoding="utf-8") as out, \
             holdout_path.open("w", encoding="utf-8") as hold:
-        for path in files:
-            with path.open("r", encoding="utf-8") as src:
-                for line in src:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if is_holdout(line):           # stable ~2%
-                        hold.write(line + "\n")
-                        held += 1
-                    else:
-                        out.write(line + "\n")
-                        total_rows += 1
+        for stem, line, gold, is_held in rows:
+            c = census.setdefault(stem, [0, 0, 0])
+            if is_held:
+                hold.write(line + "\n")
+                held += 1
+                c[1] += 1
+                if gold and gold not in train_golds:
+                    c[2] += 1
+            else:
+                out.write(line + "\n")
+                total_rows += 1
+                c[0] += 1
 
     shutil.rmtree(expanded_root, ignore_errors=True)
     print(f"prepared {domain}: {len(files)} source files -> {final_path} "
-          f"({total_rows} train + {held} holdout)")
+          f"({total_rows} train + {held} holdout; law={law()})")
+    for stem, (_t, h, q) in sorted(census.items()):
+        if h:
+            # 0% gold-clean does NOT mean the family is memorized — it
+            # means THIS split cannot certify it either way; the
+            # uniq_gold_ratio in `synth profile` says which story.
+            print(f"  {stem}: {h} held, {q} gold-clean ({q / h:.0%})")
     return final_path
 
 

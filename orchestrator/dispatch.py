@@ -374,7 +374,8 @@ def _stage_pool(prov, spec, provider, ceiling):
     pool = [o for o in prov.catalog() if o.secure]
     for pat in spec.get("arch_exclude", []):
         pool = [o for o in pool if pat.lower() not in o.gpu_id.lower()]
-    ok, best = budget.fits(pool, spec.get("min_vram", 10), ceiling)
+    ok, best = budget.fits(pool, spec.get("min_vram", DEFAULT_MIN_VRAM),
+                           ceiling)
     if not ok:
         cheap = f"${best:.2f}/hr" if best is not None else "none"
         raise ProviderError(
@@ -1354,8 +1355,18 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 result["terminate_error"] = str(e)
 
 
+# min_vram audit (2026-11-27): the silent spec.get("min_vram", 10) applied
+# a GPU floor to EVERY stage kind, declared or not — for CPU-only kinds
+# (onnx/int8: postproc CPU image, VRAM-irrelevant) it EXCLUDED the
+# cheapest cards and made fits strictly worse than needed; for big-base
+# GPU kinds 10 was never validated against the 4B pilots. Every GPU stage
+# now DECLARES its floor — labeled PRIOR where no pilot has measured it.
+# DEFAULT_MIN_VRAM remains only as the loud fallback for unlisted kinds.
+DEFAULT_MIN_VRAM = 10
 STAGE_SPECS = {
     "merge": {"script": "merge_adapter.py", "needs_base": True,
+              "min_vram": 12,       # PRIOR: base bf16 (4B ~8GB) + deltas +
+                                    # save headroom; pilot data corrects it
               "required": ["config.json", "model.safetensors",
                            "merge_stats.json"],
               "max_price_hr": 0.80},
@@ -1365,12 +1376,14 @@ STAGE_SPECS = {
     # ships the pod payload; probe forward-passes run torch-side when
     # the image provides it — direction math is pure python (tested).
     "ablate": {"script": "ablate.py", "needs_base": True,
-               "required": ["steer.json"], "max_price_hr": 0.80},
+               "min_vram": 12, "required": ["steer.json"],
+               "max_price_hr": 0.80},
     # preludes now carry ONLY the dependency stack (pip drift-fixes until
     # p-v0.1.4+ images land via CI); the stage scripts + util.py ride along
     # as sha-verified file inputs (see submit_stage), so script fixes NEVER
     # wait on an image rebuild.
     "onnx": {"script": "export_onnx.py", "required": ["model.onnx"],
+             "min_vram": 0,   # CPU workload — no VRAM floor (was: silent 10)
              "max_price_hr": 0.80,
              # torch 2.6: newer torches dropped the symbolic_opset14
              # symbols optimum 1.x imports; optimum 2.x dropped the
@@ -1385,6 +1398,7 @@ STAGE_SPECS = {
              "prelude": "pip install --no-cache-dir -q --index-url https://download.pytorch.org/whl/cpu 'torch==2.6.*'"
                         " && pip install --no-cache-dir -q 'optimum[exporters]<2' onnx"},
     "int8": {"script": "quantize_onnx.py", "required": ["model.int8.onnx"],
+             "min_vram": 0,   # CPU workload — same audit finding as onnx
              "max_price_hr": 0.80,
              "prelude": "pip install --no-cache-dir -q onnx"},
     # HOLDOUT STAGE (SPEC 13am): teacher-forced NLL on the content-hashed
@@ -1398,10 +1412,16 @@ STAGE_SPECS = {
     # dependency), so no prelude. e7712c (missing peft) taught the same
     # lesson from the other side.
     "holdout": {"script": "holdout_loss.py", "needs_base": True, "gpu": True,
+                "min_vram": 12,   # PRIOR: 4B base + adapter scoring; the
+                                  # 10GB floor was never validated at 4B
                 "image": "trainer", "required": ["holdout.json"],
                 "max_price_hr": 0.85},
     "awq": {"script": "quantize_awq.py", "required": ["config.json"],
             "gpu": True, "needs_dataset": True, "max_price_hr": 0.80,
+            # PRIOR, deliberately generous: calibration forward-passes the
+            # base at full precision; 10 never met a 4B qwen3.5 (registry:
+            # awq untested on the hybrid — the pilot corrects this number)
+            "min_vram": 16,
             # cu128 swap on Blackwell only — datacenter sm_100 (compute
             # 10.x) AND consumer sm_120 (12.x); baked cu124 lacks both.
             # Guard skips the 3.5GB download on Ada/Ampere (530b30's
@@ -1866,6 +1886,56 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                 result["terminate_error"] = str(e)
 
 
+# PIPELINE DEFAULTS REPORT (assumption audit leg 2, 2026-11-27): the
+# stage/budget/hygiene side of the guidance-vs-law doctrine. ONE function
+# object serves the MCP tool and the CLI `defaults` command — mint/check
+# drift is the r2 lesson, applied to REPORTING too.
+def pipeline_report(kind: str | None = None) -> dict:
+    """Every DEFAULT the stage/budget machinery applies: per-stage
+    contracts (gate files, DECLARED min_vram with PRIOR labels,
+    ceilings), estimate basis (observed vs static-prior vs fallback-30),
+    env knobs, and the law notes (deadman re-arm, holdout modulo). The
+    silent min_vram=10 this replaced EXCLUDED cheap cards for CPU-only
+    kinds and was never validated for 4B — defaults must be declared,
+    labeled, and visible, never assumed."""
+    specs = {}
+    for k, spec in STAGE_SPECS.items():
+        if kind and k != kind:
+            continue
+        specs[k] = {"gate_required": spec["required"],
+                    "min_vram": spec.get("min_vram", DEFAULT_MIN_VRAM),
+                    "min_vram_declared": "min_vram" in spec,
+                    "max_price_hr": spec.get("max_price_hr"),
+                    "gpu": bool(spec.get("gpu")),
+                    "needs_base": bool(spec.get("needs_base")),
+                    "needs_dataset": bool(spec.get("needs_dataset")),
+                    "image": spec.get("image", "postproc(-gpu)"),
+                    "est": budget.est_basis(k)}
+    return {
+        "stages": specs,
+        "train": {"default_max_runtime_s": 3600, "mini_lines": MINI_LINES,
+                  "est": budget.est_basis("train"),
+                  "rate_ceiling": float(os.environ.get("QTRAIN_MAX_PRICE_HR",
+                                                       "1.50")),
+                  "presign_hours": 48},
+        "budget": {"margin": budget.MARGIN, "total": budget.TOTAL,
+                   "reserve": budget.RESERVE,
+                   "knobs": ["QTRAIN_BUDGET", "QTRAIN_BUDGET_MARGIN",
+                             "QTRAIN_RESERVE", "QTRAIN_MAX_PRICE_HR",
+                             "QTRAIN_DEADMAN_GRACE_S", "QTRAIN_REAP_GRACE"]},
+        "deadman": {"grace_s": float(os.environ.get("QTRAIN_DEADMAN_GRACE_S",
+                                                    "600")),
+                    "law": "13an; re-armed 86d5e9a; wiring test-pinned"},
+        "holdout": {"modulo": 50, "law_version": HOLDOUT_LAW,
+                    "law": "v2 template-keyed (13am); changing the modulo "
+                           "RESHUFFLES historical splits — cut a law "
+                           "version, never a quiet edit (c3d7027)"},
+        "assumption_doctrine": "defaults are labeled PRIOR or cited; "
+                               "silent forcing is a bug; refusals need "
+                               "burned evidence + bypass codes",
+    }
+
+
 def preflight(kind: str = "train", *, provider: str = "runpod",
               max_price_hr: float | None = None,
               max_runtime: int = 3600) -> dict:
@@ -1889,10 +1959,18 @@ def preflight(kind: str = "train", *, provider: str = "runpod",
             pool = [o for o in pool if pat.lower() not in o.gpu_id.lower()]
         ceiling = (max_price_hr if max_price_hr is not None
                    else spec.get("max_price_hr", 1.50))
-        offers, best = budget.fits(pool, spec.get("min_vram", 10), ceiling)
+        vram_floor = spec.get("min_vram", DEFAULT_MIN_VRAM)
+        assumed = [] if "min_vram" in spec else [
+            f"min_vram={vram_floor} is the FALLBACK default — this stage "
+            "declares no floor (assumption audit 2026-11-27)"]
+        offers, best = budget.fits(pool, vram_floor, ceiling)
     else:
         ceiling = (max_price_hr if max_price_hr is not None
                    else float(os.environ.get("QTRAIN_MAX_PRICE_HR", "1.50")))
+        assumed = ([] if max_price_hr is not None else
+                   [f"ceiling ${ceiling:.2f}/hr from "
+                    "QTRAIN_MAX_PRICE_HR default (right-sizing prior, "
+                    "13q)"])
         all_ = raw_catalog
         if storage.vol_cfg():
             all_ = [o for o in all_ if o.secure]
@@ -1901,6 +1979,8 @@ def preflight(kind: str = "train", *, provider: str = "runpod",
                         key=lambda o: o.price_hr or 0.0)
         best = min((o.price_hr for o in all_ if o.price_hr), default=None)
     out["ceiling_hr"] = ceiling
+    out["assumed"] = assumed
+    out["est_basis"] = budget.est_basis(kind if is_stage else "train")
     out["candidates"] = [{"gpu": o.gpu_id, "price_hr": o.price_hr,
                           "vram_gb": o.vram_gb} for o in offers[:5]]
     if not offers:
@@ -1910,7 +1990,10 @@ def preflight(kind: str = "train", *, provider: str = "runpod",
         return out
     est = budget.estimate(offers[0].price_hr or 0.0,
                           kind if is_stage else "train")
-    kill = est if is_stage else (offers[0].price_hr or 0.0) * max_runtime / 60
+    # UNITS LAW (425e6c): max_runtime is SECONDS — the launch path kills
+    # at price*runtime/3600; this report must quote the SAME number or
+    # preflight lies by 60x (the original bug's shape, reborn here)
+    kill = est if is_stage else (offers[0].price_hr or 0.0) * max_runtime / 3600
     opens = [r.get("est_cost") or 0.0 for r in led.list()
              if r["state"] in budget.BILLED]
     why = budget.aggregate_gate(opens, est)

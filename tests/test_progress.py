@@ -78,6 +78,19 @@ def test_snapshot_joins_ledger_and_lane(tmp_path, monkeypatch):
     assert progress.fmt_line(snap).count("step 3/10") == 1
 
 
+def test_stale_threshold_follows_grace_env(tmp_path, monkeypatch):
+    """Assumption audit (2026-11-27): the PING-STALE threshold was a
+    hardcoded 420 ("70% of 600s") that DESYNCED whenever the operator
+    tuned QTRAIN_DEADMAN_GRACE_S — knob and watcher drifted apart. Now
+    the warning derives from the same env the pod receives."""
+    snap = {"state": "running", "ping_age": 90}
+    monkeypatch.setenv("QTRAIN_DEADMAN_GRACE_S", "600")
+    assert "PING-STALE" not in progress.fmt_line(snap)   # 90 < 420
+    monkeypatch.setenv("QTRAIN_DEADMAN_GRACE_S", "100")
+    line = progress.fmt_line(snap)
+    assert "PING-STALE" in line and "deadman in 10s" in line  # 90 > 70
+
+
 def test_snapshot_ping_age_and_stale_warning(tmp_path, monkeypatch):
     """r2 law: the deadman tell must be visible, not a post-mortem."""
     (tmp_path / "state").mkdir()

@@ -124,6 +124,69 @@ def test_preflight_reports_without_launching(tmp_path, monkeypatch):
     assert Ledger(tmp_path / "state" / "ledger.db").list() == []
 
 
+def test_preflight_cpu_kinds_free_the_floor(tmp_path, monkeypatch):
+    """The floor was EXCLUDING cheap cards for CPU-only stages: onnx/int8
+    declare min_vram 0, so the 6GB RTX2000 is now their best (cheapest)
+    fit — an assumption-audit finding becoming a candidate list."""
+    from orchestrator import dispatch
+    from orchestrator.models import Offer
+
+    class Stub:
+        def catalog(self, gpus=None, tier=None):
+            return [Offer(provider="runpod", gpu_id="A5000", vram_gb=24,
+                          price_hr=0.69, secure=True),
+                    Offer(provider="runpod", gpu_id="RTX2000", vram_gb=6,
+                          price_hr=0.24, secure=True)]
+
+        def balance(self):
+            return 9.0
+
+    monkeypatch.setattr(dispatch, "get_provider", lambda n: Stub())
+    monkeypatch.setattr(dispatch.storage, "vol_cfg", lambda: None)
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    out = dispatch.preflight("onnx")
+    assert out["candidates"][0]["gpu"] == "RTX2000"   # was floor-blocked
+    assert out["assumed"] == []                        # onnx DECLARES now
+
+
+def test_preflight_kill_units_match_launch(tmp_path, monkeypatch):
+    """425e6c UNITS LAW: max_runtime is SECONDS. Preflight's quoted kill
+    threshold must equal the launch path's price*runtime/3600 — the /60
+    variant (60x) is exactly how 425e6c's $33-for-$0.50 bug was born."""
+    from orchestrator import dispatch
+    from orchestrator.models import Offer
+
+    class Stub:
+        def catalog(self, gpus=None, tier=None):
+            return [Offer(provider="runpod", gpu_id="A5000", vram_gb=24,
+                          price_hr=0.50, secure=True)]
+
+        def balance(self):
+            return 50.0
+
+    monkeypatch.setattr(dispatch, "get_provider", lambda n: Stub())
+    monkeypatch.setattr(dispatch.storage, "vol_cfg", lambda: None)
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    out = dispatch.preflight("train", max_runtime=3600)
+    # 1 hour on a $0.50/hr card = $0.50 — NOT $30 (the /60 lie)
+    assert out["kill_threshold"] == 0.5
+    assert out["assumed"] and "QTRAIN_MAX_PRICE_HR" in out["assumed"][0]
+
+
+def test_est_basis_names_its_guess(tmp_path, monkeypatch):
+    """An estimate must say whether it is measurement or folklore:
+    observed-median / static-prior / FALLBACK-30 for unknown kinds."""
+    monkeypatch.setattr(budget, "OBS_FILE", tmp_path / "obs.json")
+    assert budget.est_basis("train")["basis"] == "static-prior"
+    assert budget.est_basis("awq")["basis"] == "static-prior"
+    budget.record_observed("awq", 9.0)
+    budget.record_observed("awq", 21.0)   # >=2 trusted samples graduate it
+    assert budget.est_basis("awq")["basis"] == "observed-median"
+    fb = budget.est_basis("no-such-kind-xyz")
+    assert fb["basis"].startswith("FALLBACK-30")
+    assert "declare" in fb["basis"]      # tells you the fix
+
+
 def test_calibration_contamination_auto_retires(tmp_path, monkeypatch):
     # THE LAW (cb059d as code): when a kind's work profile changes
     # (EST_VERSION bump), its old obs samples retire from estimation —

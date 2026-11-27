@@ -176,6 +176,42 @@ def test_laws_text_labels_priors_as_priors():
     assert "r=32 ALL-LAYER BY LAW" not in body.upper()
 
 
+def test_pipeline_report_surface(tmp_path):
+    """The stage-side audit must be READABLE from the surface: every GPU
+    stage declares min_vram (no silent 10), CPU kinds declare 0, ests
+    name their basis, and the CLI/MCP see the SAME object (one function
+    object law)."""
+    from orchestrator import dispatch
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    assert "pipeline_report" in tools
+    rep = tools["pipeline_report"].fn()
+    assert rep is dispatch.pipeline_report() or rep == dispatch.pipeline_report()
+    st = rep["stages"]
+    assert st["onnx"]["min_vram"] == 0 and st["onnx"]["min_vram_declared"]
+    assert st["int8"]["min_vram"] == 0
+    for gpu_kind in ("merge", "ablate", "holdout", "awq"):
+        assert st[gpu_kind]["min_vram_declared"], gpu_kind
+    assert st["awq"]["min_vram"] == 16 and st["holdout"]["min_vram"] == 12
+    assert st["merge"]["est"]["basis"] in ("static-prior", "observed-median")
+    assert rep["holdout"]["modulo"] == 50 and rep["holdout"]["law_version"] == 2
+    assert "86d5e9a" in rep["deadman"]["law"]
+    assert rep["assumption_doctrine"]
+    # kind filter works
+    only = tools["pipeline_report"].fn(kind="onnx")
+    assert list(only["stages"]) == ["onnx"]
+
+
+def test_laws_cover_pipeline_defaults():
+    resources = {str(r.uri): r for r in asyncio.run(server.mcp.list_resources())}
+    laws_uri = next(u for u in resources if u.endswith("laws"))
+    text = asyncio.run(server.mcp.read_resource(laws_uri))
+    body = "".join(getattr(c, "content", "") or getattr(c, "text", "")
+                   for c in text.contents)
+    for law in ("PIPELINE DEFAULTS", "min_vram", "SECONDS", "HOLDOUT modulo",
+                "pipeline_report"):
+        assert law in body, f"pipeline law missing: {law}"
+
+
 def test_synth_tools_chain(tmp_path, monkeypatch):
     """graph → manifest → bundle entirely through the MCP surface."""
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}

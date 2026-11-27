@@ -313,6 +313,11 @@ def fmt_line(snap: dict) -> str:
     if last.get("cost") is not None:
         seg.append(f"${last['cost']}")
     pa = snap.get("ping_age")
-    if pa is not None and pa > 420:      # 70% of the 600s grace — act now
-        seg.append(f"PING-STALE {pa:.0f}s (deadman in {max(0, 600 - pa):.0f}s)")
+    # stale threshold = 70% of the DEADMAN grace, read from the SAME env
+    # as the pod knob (QTRAIN_DEADMAN_GRACE_S, dispatch launch sites) —
+    # a hardcoded 420 desyncs the moment the grace is tuned
+    import os as _os
+    _grace = float(_os.environ.get("QTRAIN_DEADMAN_GRACE_S", "600"))
+    if pa is not None and pa > 0.7 * _grace:
+        seg.append(f"PING-STALE {pa:.0f}s (deadman in {max(0, _grace - pa):.0f}s)")
     return "  ".join(str(x) for x in seg)
