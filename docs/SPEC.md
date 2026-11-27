@@ -1997,5 +1997,15 @@ is documented in `docs/UI.md`.
   proven-impossible configs refuse at the gate, like family-registry
   refusals (13al) — submit now raises 'volume lane + --tier community
   is impossible' at the top of its try (error row, zero staging, zero
-  waiting; test pins both). The live mini (d2886a, launched without
-  the self-defeating flag) runs as this entry lands.
+  waiting; test pins both).
+  d2886a RECEIPT (closed, same day) — the v0.5.0 pin campaign done:
+  status succeeded, 9 artifacts, problems [], terminated true;
+  verify 9/9 pass incl. agent=0.5.0 — the honest version string
+  WITNESSED LIVE (image_tag = ghcr digest a188c08b on both ledger
+  and manifest legs); the smoke estimate ($0.38) admitted where
+  f44f27's $2.25 train-lie had refused; lane ping present (deadman
+  heartbeat, not exercised — nothing died); 48 rows, loss 1.86->
+  train_loss 1.648, train_runtime 108s, $0.24/hr secure RTX 2000
+  Ada (~$0.06). My two probe errors on the way (suffix-id reconcile
+  silent no-op; manifest key names guessed as agent/image) — both
+  caught by re-read, neither by assumption.
