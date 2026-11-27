@@ -1219,6 +1219,10 @@ def cmd_sample(args):
         # silently IGNORES top-level guided_* fields — enforcement lives
         # in response_format structural_tag, grammar must be
         # xgrammar-portable (ir-gbnf build(): root alias + [^...] sets).
+        # LOAD WARNING (same day): the first full guided pass wedged
+        # EngineCore on Orin (guided costs MINUTES per generation and
+        # client timeouts leave orphan server work) — single probes or
+        # small --max-tokens only; AS-BUILT §7.
         gmod = _load("ir_gbnf_cli", "ir-gbnf.py")
         grammar = gmod.build()
     # rejects: WHY the oracle disposed no (r1 lesson — yield=0 with an
@@ -2092,7 +2096,9 @@ def main(argv=None):
                                      "$CORPORA_DIR/datasets/<name>/rft.jsonl")
     s.add_argument("--guided", action="store_true",
                    help="force IR grammar via response_format "
-                        "structural_tag (engine must be v0.34+ portable)")
+                        "structural_tag (v0.34+ portable grammar; ORIN "
+                        "WARNING: minutes per generation, wedged the "
+                        "first full pass — probe small, AS-BUILT 7)")
     s.set_defaults(func=cmd_sample)
     pj = sub.add_parser("pairs", help="reject dump -> DPO pairs (r3 fuel)")
     pj.add_argument("--in", dest="infile", help="rejects jsonl (default tmp/rft/rejects.jsonl)")

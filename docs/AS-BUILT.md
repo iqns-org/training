@@ -480,6 +480,25 @@ max_runtime x max_price_hr and refuses PRE-SPEND if
 balance - $2 reserve < estimate (r2 attempt: $3.96-$2.00 < $2.25).
 Cheaper fix than topping up: pin --max-price to the real offer tier.
 
+The guided-decoding incident (2026-11-27, first full --guided pass):
+three hard truths. (1) /health 200 DOES NOT MEAN THE ENGINE IS ALIVE —
+healthz only proves the API-server loop; EngineCore deadlocked while
+probes stayed green for a full kubelet window. Real liveness =
+generation_tokens_total ADVANCING, or a tiny probe request with a
+client timeout. (2) On Orin + vLLM v0.34 + xgrammar, guided decode
+costs minutes per 512-token generation (masking runs on CPU; measured
+~3-5 min each while healthy) — engine-side throughput, not queue
+depth, is the wall; keep --guided to single probes with small
+--max-tokens until root-caused, and mine unguided (oracle filter is
+the $0 safety net; yield 0.212 across 12 families measured).
+(3) A CLIENT TIMEOUT NEVER CANCELS SERVER WORK: killing the synth run
+left ~20 orphan generations queued — the engine finished 6 more
+requests (log 200s) twelve minutes after the client died, then the
+step loop stopped producing tokens entirely (counter frozen 15:20:53
+-> 15:35, running=0, fresh 16-token request unanswered) — pod
+restart required (kubectl -n quadra rollout restart
+deploy/vllm-qwen3-05; kubectl runs on pi00, NOT on nano0 directly).
+
 ## 8. Honest edges
 
 - **Unreachable error families (documented, not hidden):**
