@@ -1975,31 +1975,51 @@ BUNDLE_MAP = {"invalid-program": "diagnosis", "repair": "repair",
 
 
 def cmd_bundle(args):
-    """derived + graph templates → $CORPORA_DIR/datasets/<domain>/*.jsonl
+    """scenarios + derived templates → $CORPORA_DIR/datasets/<domain>/*.jsonl
     consumable by the existing lane: bin/prepare-domain <domain> → S3 →
-    qtrain. Regenerable output — corpora/.gitignore keeps it out of git."""
-    out_root = Path(args.out) if args.out else DERIVED_ROOT
+    qtrain. Regenerable output — corpora/.gitignore keeps it out of git.
+    r3: reads BOTH roots (scenarios' craft sources were never bundled —
+    r1/r2 corpora trained on mutations of them, never on them) and
+    gold-verifies EVERY row with check_record before writing — the L3
+    law applied to the bundle itself: a hand-promoted scenario whose
+    gold fails its own record contract (parser hazard, stale assert)
+    is counted and skipped, not shipped."""
+    roots = ([Path(args.out)] if args.out else [SCEN_ROOT, DERIVED_ROOT])
     domain = args.domain
     dest = DATA_ROOT / "datasets" / domain
     dest.mkdir(parents=True, exist_ok=True)
     buckets = {}
-    for path in sorted(out_root.rglob("*.json")):
-        if path.name == "manifest.json":
+    seen = set()
+    gold_rejects = {}
+    for root in roots:
+        if not root.is_dir():
             continue
-        rec = json.loads(path.read_text())
-        sysname = rec["system"]
-        gid = rec["id"]
-        if "graph" in gid:
-            # split graph-bridge families by id suffix (qa/hops/cfkg)
-            tag = ("graph-qa" if gid.endswith("--qa")
-                   else "graph-hops" if gid.endswith("--hops")
-                   else "counterfactual" if gid.endswith("--cfkg")
-                   else sysname)
-        else:
-            tag = BUNDLE_MAP.get(sysname, sysname)
-        rows = buckets.setdefault(tag, [])
-        for messages, _expected in check.expansions(rec):
-            rows.append({"messages": messages})
+        for path in sorted(root.rglob("*.json")):
+            if path.name == "manifest.json":
+                continue
+            rec = json.loads(path.read_text())
+            if rec["id"] in seen:
+                continue
+            seen.add(rec["id"])
+            sysname = rec["system"]
+            gid = rec["id"]
+            if "graph" in gid:
+                # split graph-bridge families by id suffix (qa/hops/cfkg)
+                tag = ("graph-qa" if gid.endswith("--qa")
+                       else "graph-hops" if gid.endswith("--hops")
+                       else "counterfactual" if gid.endswith("--cfkg")
+                       else sysname)
+            else:
+                tag = BUNDLE_MAP.get(sysname, sysname)
+            rows = buckets.setdefault(tag, [])
+            for messages, expected in check.expansions(rec):
+                try:
+                    check.check_record(rec, messages, expected)
+                except Exception as exc:
+                    key = f"{tag}:{type(exc).__name__}"
+                    gold_rejects[key] = gold_rejects.get(key, 0) + 1
+                    continue
+                rows.append({"messages": messages})
     written = {}
     for tag, rows in sorted(buckets.items()):
         out = dest / f"{tag}.jsonl"
@@ -2034,7 +2054,8 @@ def cmd_bundle(args):
                 (pdest / "preference.jsonl").read_bytes()).hexdigest()[:16]}
     total = sum(w["rows"] for w in written.values())
     print(json.dumps({"dataset": f"{domain}@{hashlib.sha256(str(sorted(written.items())).encode()).hexdigest()[:16]}",
-                      "path": str(dest), "files": written, "rows": total},
+                      "path": str(dest), "files": written, "rows": total,
+                      "gold_rejects": gold_rejects},
                      indent=1))
     return 0
 
@@ -2084,7 +2105,8 @@ def main(argv=None):
     b = sub.add_parser("bundle", help="derived rows → "
                                       "$CORPORA_DIR/datasets/<domain>/")
     b.add_argument("--domain", default="cognition")
-    b.add_argument("--out", help="derived root to read")
+    b.add_argument("--out", help="single root to read "
+                                 "(default: scenarios + derived)")
     b.add_argument("--dpo", help="override dpo.jsonl path (default tmp)")
     b.set_defaults(func=cmd_bundle)
     s = sub.add_parser("sample", help="R4: student-side RFT (serve -> k -> "

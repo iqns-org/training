@@ -389,3 +389,33 @@ def test_after_return_leak_is_named_assertion(synth):
     assert not ok
     assert why.split(":")[0] == "AssertionError", why
     assert "AFTER program" in why
+
+
+def test_bundle_reads_both_roots_and_verifies_gold(synth, tmp_path, capsys,
+                                                   monkeypatch):
+    """r3 bundle law: scenarios' craft sources are bundled (never were),
+    ids dedupe across roots, and every gold passes check_record before
+    it ships — a promoted-but-stale scenario row is counted, not shipped."""
+    import copy
+    from types import SimpleNamespace
+    scen, der, data = tmp_path/"scen", tmp_path/"der", tmp_path/"data"
+    scen.mkdir(); der.mkdir()
+    (scen / "good.json").write_text(json.dumps(CONCRETE_REC))
+    bad = copy.deepcopy(CONCRETE_REC)
+    bad["id"] = "concrete-examples/bad01"
+    bad["messages"][2]["content"] = bad["messages"][2]["content"].replace(
+        "WORLD {", "WORLD \u2014 {", 1)        # parser hazard in gold
+    (scen / "bad.json").write_text(json.dumps(bad))
+    twin = copy.deepcopy(CONCRETE_REC)          # same id -> must dedupe
+    (der / "twin.json").write_text(json.dumps(twin))
+    monkeypatch.setattr(synth, "SCEN_ROOT", scen)
+    monkeypatch.setattr(synth, "DERIVED_ROOT", der)
+    monkeypatch.setattr(synth, "DATA_ROOT", data)
+    monkeypatch.setattr(synth, "TMP", tmp_path / "notmp")
+    synth.cmd_bundle(SimpleNamespace(domain="probe", out=None, dpo=None))
+    out = json.loads(capsys.readouterr().out)
+    rows = (data / "datasets" / "probe" / "concrete-examples.jsonl")\
+        .read_text().splitlines()
+    assert len(rows) == 1, out                  # good once, dedupe held
+    assert out["gold_rejects"] == {"concrete-examples:IRError": 1}, out
+    assert not (data / "datasets" / "probe" / "bad01.jsonl").exists()
