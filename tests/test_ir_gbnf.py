@@ -36,6 +36,29 @@ def test_grammar_rule_refs_resolve(gbnf):
         assert gbnf.check_refs(gbnf.build(root)) == []
 
 
+def test_engine_portability_laws(gbnf):
+    """Backend-verified 2026-11-27 (r3 decode probe): vLLM v0.34 400s
+    structural_tag grammars containing llama-style ~[...] negation and
+    needs a root rule named 'root'. These two lines are the difference
+    between a grammar the engine ENFORCES and one it rejects."""
+    for root in ("response", "document"):
+        text = gbnf.build(root)
+        assert "~[" not in text, f"{root}: llama-GBNF negation leaked in"
+        assert text.splitlines()[0] == f"root ::= {root}"
+        assert gbnf.lint(text) == []
+
+
+def test_lint_catches_dangling_quote(gbnf):
+    """The shipped-bug fingerprint: a terminal that consumed its closing
+    quote as escaped content left a bare backslash pair — the old rule 4
+    literally contained  `"` + \\\\ + `""` . lint must flag that line, and
+    leave clean grammars alone."""
+    q, b = chr(34), chr(92)
+    broken = f"string ::= {q}{b}{b}{q}{q} [x]* {q}{b}{b}{q}{q}"
+    assert gbnf.lint(broken) == [1]
+    assert gbnf.lint('x ::= "a"\ny ::= "b"\n') == []
+
+
 def test_response_samples_parse(gbnf, ir):
     for seed in range(40):
         for s in gbnf.generate("response", 2, seed):

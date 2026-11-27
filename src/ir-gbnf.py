@@ -49,11 +49,11 @@ CORE = {
     "name": r'[a-zA-Z_] [a-zA-Z0-9_-]*',
     "iri": r'"<" [^<>{}" ]* ">" | name ":" name',
     "var": r'"?" name | name ":" "?" name',
-    "string": r'"\\"" [^"\\]* "\\""',
+    "string": '"\\"" [^"\\\\]* "\\""',
     "unsigned": r'[0-9]+ | [0-9]+ "." [0-9]+',
-    "integer": r'"-"? [0-9]+ ~[ \n\t]',
-    "decimal": r'"-"? [0-9]+ "." [0-9]+ ~[ \n\t]',
-    "boolean": r'("true" | "false") ~[ \n\t]',
+    "integer": r'"-"? [0-9]+ [^ \n\t]',
+    "decimal": r'"-"? [0-9]+ "." [0-9]+ [^ \n\t]',
+    "boolean": r'("true" | "false") [^ \n\t]',
     "term": r'iri | var | string | decimal | integer | boolean',
     "card": r'"ONE" | "OPTIONAL" | "MANY"',
     "scope": r'"WORLD" | "MEMORY" | "WORKING" | "HISTORY" | "PLAN"',
@@ -63,7 +63,7 @@ CORE = {
     "pattern": r'"{" (wsp term wsp+ term wsp+ term wsp ".")* wsp "}"',
     "triple": r'term wsp+ term wsp+ term wsp "."',
     "exprlist": r'"[" wsp (expr (wsp "," wsp expr)*)? wsp "]"',
-    "ref": r'name ":" name | name ~[ \n\t(]',
+    "ref": r'name ":" name | name [^ \n\t(]',
     "funccall": r'ref wsp* "(" wsp* args? wsp* ")"',
     "expr": r'exprlist | funccall | term',
     "cmpop": r'"=" | "!=" | "<"',
@@ -117,9 +117,60 @@ RESP = {"response": r'(wsp stmt)*'}
 
 
 def build(root="response"):
+    """GBNF for the fleet engine. PORTABILITY LAWS (r3 decode probe,
+    2026-11-27): vLLM v0.34 enforces response_format structural_tag
+    grammars ONLY when xgrammar-portable — negated sets as [^...]
+    (llama's ~[...] 400s the validator) and an entry rule named root
+    (the alias satisfies both the first-rule and the named-root
+    conventions at zero cost)."""
     rules = dict(CORE)
     rules.update(RESP if root == "response" else DOC)
-    return "\n".join(f"{k} ::= {v}" for k, v in rules.items()) + "\n"
+    lines = [f"root ::= {root}"] + [f"{k} ::= {v}"
+                                    for k, v in rules.items()]
+    return "\n".join(lines) + "\n"
+
+
+def lint(gbnf_text):
+    """Line numbers whose terminals are malformed GBNF. The r-string bug
+    emitted `"\\""` — an escaped-backslash literal plus a DANGLING quote;
+    check_refs strips only well-formed literals so it sailed through,
+    and the backend 400d on every request. Single-pass scan (classes are
+    skipped, not regex-stripped, so bracket-LITERALS don't false-positive)
+    and the degenerate fingerprints of dangling quotes — empty or
+    whitespace/backslash-only terminals — are the catch."""
+    bad = []
+    for i, line in enumerate(gbnf_text.splitlines(), 1):
+        if "::=" not in line:
+            continue
+        body = line.split("::=", 1)[1]
+        n, p = len(body), 0
+        while p < n:
+            c = body[p]
+            if c == "[":                           # char class: skip to ]
+                q = body.find("]", p + 1)
+                p = n if q < 0 else q + 1
+                continue
+            if c == '"':
+                q, esc = p + 1, False
+                while q < n:
+                    if esc:
+                        esc = False
+                    elif body[q] == "\\":
+                        esc = True
+                    elif body[q] == '"':
+                        break
+                    q += 1
+                if q >= n:
+                    bad.append(i)                  # dangling quote
+                    break
+                inner = body[p + 1:q]
+                if not inner.strip() or set(inner) <= {"\\", " "}:
+                    bad.append(i)                  # degenerate terminal
+                    break
+                p = q + 1
+                continue
+            p += 1
+    return bad
 
 
 def check_refs(gbnf_text):

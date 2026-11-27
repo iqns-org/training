@@ -1213,6 +1213,14 @@ def cmd_sample(args):
     roots = ([Path(args.out)] if args.out else [SCEN_ROOT, DERIVED_ROOT])
     tmp = TMP / "rft"
     tmp.mkdir(parents=True, exist_ok=True)
+    grammar = None
+    if getattr(args, "guided", False):
+        # R3 serve-flag, PROVEN 2026-11-27: this engine (vLLM v0.34)
+        # silently IGNORES top-level guided_* fields — enforcement lives
+        # in response_format structural_tag, grammar must be
+        # xgrammar-portable (ir-gbnf build(): root alias + [^...] sets).
+        gmod = _load("ir_gbnf_cli", "ir-gbnf.py")
+        grammar = gmod.build()
     # rejects: WHY the oracle disposed no (r1 lesson — yield=0 with an
     # empty by_family taught us nothing; the exception class from
     # grade_completion is the actionable bucket: CompileError/AssertionError/
@@ -1249,11 +1257,16 @@ def cmd_sample(args):
             stats["prompts"] += 1
             for _ in range(args.k):
                 try:
-                    resp = http_json(
-                        args.url.rstrip("/") + "/chat/completions",
-                        {"model": args.model, "messages": prompt,
-                         "temperature": args.temperature,
-                         "max_tokens": args.max_tokens})
+                    body = {"model": args.model, "messages": prompt,
+                            "temperature": args.temperature,
+                            "max_tokens": args.max_tokens}
+                    if grammar:
+                        body["response_format"] = {
+                            "type": "structural_tag",
+                            "format": {"type": "grammar",
+                                       "grammar": grammar}}
+                    resp = http_json(args.url.rstrip("/")
+                                     + "/chat/completions", body)
                     completion = (resp["choices"][0]["message"]
                                   ["content"] or "").strip()
                 except Exception as exc:
@@ -2072,6 +2085,9 @@ def main(argv=None):
     s.add_argument("--out", help="derived root to read prompts from")
     s.add_argument("--dataset", help="also write "
                                      "$CORPORA_DIR/datasets/<name>/rft.jsonl")
+    s.add_argument("--guided", action="store_true",
+                   help="force IR grammar via response_format "
+                        "structural_tag (engine must be v0.34+ portable)")
     s.set_defaults(func=cmd_sample)
     pj = sub.add_parser("pairs", help="reject dump -> DPO pairs (r3 fuel)")
     pj.add_argument("--in", dest="infile", help="rejects jsonl (default tmp/rft/rejects.jsonl)")
