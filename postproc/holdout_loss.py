@@ -30,6 +30,7 @@ import argparse
 import hashlib
 import json
 import struct
+import sys
 from pathlib import Path
 
 ap = argparse.ArgumentParser()
@@ -116,22 +117,87 @@ def adapter_namespace(md: Path) -> str:
 tok_src = str(model_dir) if (model_dir / "tokenizer.json").is_file() else a.base
 tok = AutoTokenizer.from_pretrained(tok_src)
 
-if has_adapter:
+def remap_adapter_dir(md: Path, out: Path) -> bool:
+    """Rewrite the adapter safetensors KEYS toggling the language_model
+    subtree (names only; values and offsets untouched). The r3 costume
+    class: leaf-name target_modules INJECT lora layers (n_lora>0, module
+    match passes) but the saved values never load into them — a
+    zero-initialized B is bit-exact the base. True only if names moved."""
+    import shutil
+    src = md / "adapter_model.safetensors"
+    if not src.is_file():
+        return False
+    with src.open("rb") as fh:
+        n = struct.unpack("<Q", fh.read(8))[0]
+        hdr = json.loads(fh.read(n))
+        body = fh.read()
+    new, moved = {}, 0
+    for k, meta in hdr.items():
+        if k == "__metadata__":
+            new[k] = meta
+            continue
+        if "model.language_model.layers." in k:
+            k = k.replace("model.language_model.layers.", "model.layers.")
+            moved += 1
+        elif "model.layers." in k and "language_model" not in k:
+            k = k.replace("model.layers.", "model.language_model.layers.")
+            moved += 1
+        new[k] = meta
+    if not moved:
+        return False
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copy(md / "adapter_config.json", out)
+    blob = json.dumps(new).encode()
+    pad = (-len(blob)) % 8
+    with (out / "adapter_model.safetensors").open("wb") as fh:
+        fh.write(struct.pack("<Q", len(blob) + pad))
+        fh.write(blob + b" " * pad)
+        fh.write(body)
+    return True
+
+
+def load_attached(adir: Path):
     from peft import PeftModel
-    # LOAD SHAPE FROM THE DATA, not from QWEN3_5_TEXT: the text-subtree
-    # config is only correct for PLAIN-namespace adapters; a
-    # language_model.* adapter MUST get the full wrapper (its memory on
-    # stage cards is fine — 0.8B).
-    if adapter_namespace(model_dir) == "plain":
+    if adapter_namespace(adir) == "plain":
         from transformers import AutoConfig
         cfg = AutoConfig.from_pretrained(a.base)
         text_cfg = getattr(cfg, "text_config", None) or cfg
-        model = AutoModelForCausalLM.from_pretrained(
-            a.base, config=text_cfg, dtype=torch.bfloat16)
+        m = AutoModelForCausalLM.from_pretrained(a.base, config=text_cfg,
+                                                 dtype=torch.bfloat16)
     else:
-        model = AutoModelForCausalLM.from_pretrained(a.base,
-                                                    dtype=torch.bfloat16)
-    model = PeftModel.from_pretrained(model, model_dir)
+        m = AutoModelForCausalLM.from_pretrained(a.base,
+                                                 dtype=torch.bfloat16)
+    m = PeftModel.from_pretrained(m, adir)
+    m.eval()
+    if torch.cuda.is_available():
+        m = m.to("cuda")
+    return m
+
+
+def adapter_moves_logits(m):
+    """Wiring ground truth: does the attached adapter CHANGE the forward?
+    None when no scorable row. Injected-but-unloaded adapters are
+    bit-identical to the base — attachment counts and module-match both
+    PASS that costume; only the delta sees it."""
+    probe = next((r.get("messages") for r in rows if r.get("messages")),
+                 None)
+    if probe is None:
+        return None
+    pid = tok(tok.apply_chat_template(probe, tokenize=False),
+              add_special_tokens=False, return_tensors="pt",
+              truncation=True, max_length=96)["input_ids"]
+    if torch.cuda.is_available():
+        pid = pid.to("cuda")
+    with torch.no_grad():
+        with_ad = m(pid).logits.float()
+        m.disable_adapter_layers()
+        base_out = m(pid).logits.float()
+        m.enable_adapter_layers()
+    return not torch.equal(with_ad, base_out)
+
+
+if has_adapter:
+    model = load_attached(model_dir)
     n_lora = sum(1 for k, _ in model.named_parameters() if "lora_" in k)
     if n_lora == 0:
         # never report a base-model number dressed as an adapter score
@@ -139,36 +205,36 @@ if has_adapter:
                          "mismatch (740238). Load the matching subtree or "
                          "score the merged model instead")
     shape = f"peft({n_lora} lora tensors)"
+    if adapter_moves_logits(model) is False:
+        print("wiring guard: primary namespace moved 0 logits — "
+              "retrying with toggled subtree", file=sys.stderr, flush=True)
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        alt = Path("/work/adapter-remapped")
+        if not remap_adapter_dir(model_dir, alt):
+            raise SystemExit("adapter keys carry no namespace toggle "
+                             "candidate — refusing to score")
+        model = load_attached(alt)
+        shape += ", namespace-remapped"
+        if adapter_moves_logits(model) is False:
+            with (model_dir / "adapter_model.safetensors").open("rb") as fh:
+                hn = struct.unpack("<Q", fh.read(8))[0]
+                ks = list(json.loads(fh.read(hn)))[:3]
+            mods = [qn for qn, _ in model.named_modules()
+                    if qn.endswith("q_proj")][:3]
+            raise SystemExit(
+                "adapter moved 0 logits in BOTH namespaces — refusing "
+                "to score; adapter keys %s vs model targets %s"
+                % (ks, mods))
 else:
     # merged run: the very bytes the engine serves
     model = AutoModelForCausalLM.from_pretrained(str(model_dir),
                                                  dtype=torch.bfloat16)
     shape = "merged"
-model.eval()
-if torch.cuda.is_available():
-    model = model.to("cuda")
-
-if has_adapter:
-    # WIRING GUARD 2: n_lora counted ATTACHED tensors; the r3 pair had
-    # 372 of them and moved ZERO logits (attached to a subtree the
-    # forward never routes through). Prove execution, not attachment:
-    # one probe row, adapter vs disable_adapter_layers, any difference.
-    probe = next((r.get("messages") for r in rows if r.get("messages")), None)
-    if probe is not None:
-        pid = tok(tok.apply_chat_template(probe, tokenize=False),
-                  add_special_tokens=False).input_ids[:, :64]
-        if torch.cuda.is_available():
-            pid = pid.to("cuda")
-        with torch.no_grad():
-            with_ad = model(pid).logits.float()
-            model.disable_adapter_layers()
-            without = model(pid).logits.float()
-            model.enable_adapter_layers()
-        if torch.allclose(with_ad, without, atol=1e-5):
-            raise SystemExit(
-                "adapter attached %d lora tensors but moved 0 logits — "
-                "dead wiring (namespace mismatch); refusing to score"
-                % n_lora)
+    model.eval()
+    if torch.cuda.is_available():
+        model = model.to("cuda")
 
 def score(mdl):
     """Teacher-forced NLL pass with model mdl -> (loss, scored, skipped,

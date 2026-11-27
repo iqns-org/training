@@ -69,3 +69,48 @@ def test_adapter_namespace_reads_safetensors_header(tmp_path):
     assert fn(lm) == "language_model"
     assert fn(pl) == "plain"
     assert fn(tmp_path / "missing") == "plain"      # merged dir: plain
+
+
+def test_remap_adapter_dir_toggles_namespace(tmp_path):
+    """The r3 costume self-heal: keys toggle, BYTES and offsets don't
+    move — a remapped file must round-trip back to the original."""
+    import re
+    import shutil
+    import struct
+    src = (Path(__file__).resolve().parents[1] / "postproc" /
+           "holdout_loss.py").read_text()
+    m = re.search(r"def remap_adapter_dir\(.*?\n(?=\ndef )", src, re.S)
+    assert m, "remap_adapter_dir gone/refactored — update this test"
+    ns = {"struct": struct, "json": json, "Path": Path, "shutil": shutil}
+    exec(m.group(0), ns)
+    md = tmp_path / "ad"
+    md.mkdir()
+    keys = {"base_model.model.model.language_model.layers.0.mlp"
+            ".up_proj.lora_A.default.weight": {"dtype": "BF16",
+                                               "shape": [1],
+                                               "data_offsets": [0, 2]},
+            "__metadata__": {"format": "pt"}}
+    hdr = json.dumps(keys).encode()
+    (md / "adapter_model.safetensors").write_bytes(
+        struct.pack("<Q", len(hdr)) + hdr + b"\x00\x00")
+    (md / "adapter_config.json").write_text('{"r": 32}')
+    out = tmp_path / "alt"
+    assert ns["remap_adapter_dir"](md, out) is True
+    with (out / "adapter_model.safetensors").open("rb") as fh:
+        n = struct.unpack("<Q", fh.read(8))[0]
+        new = json.loads(fh.read(n))
+        body = fh.read()
+    nk = [k for k in new if k != "__metadata__"]
+    assert len(nk) == 1 and "language_model" not in nk[0]
+    assert "model.layers.0.mlp" in nk[0]
+    assert body == b"\x00\x00"                       # values untouched
+    assert (out / "adapter_config.json").is_file()
+    # toggle back == original keys
+    back = tmp_path / "back"
+    assert ns["remap_adapter_dir"](out, back) is True
+    with (back / "adapter_model.safetensors").open("rb") as fh:
+        n = struct.unpack("<Q", fh.read(8))[0]
+        rk = json.loads(fh.read(n))
+    assert "base_model.model.model.language_model.layers.0.mlp" \
+        ".up_proj.lora_A.default.weight" in [k for k in rk
+                                             if k != "__metadata__"]
