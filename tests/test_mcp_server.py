@@ -82,6 +82,53 @@ TTL = ('@PREFIX my: <http://example.org/entity/> .\n'
        'my:site1 ai:hasStatus my:Active .\n')
 
 
+def test_laws_surface_and_pair_parity(tmp_path, monkeypatch):
+    """MCP must CONTAIN the lore, not just link it: the laws resource is
+    readable, cites the spine, and the pair-mode signature + docstring
+    laws are pinned — drift here once let a deadman sit unarmed while
+    every test stayed green (r2 lesson generalized by 86d5e9a)."""
+    resources = {str(r.uri): r for r in asyncio.run(server.mcp.list_resources())}
+    laws_uri = next((u for u in resources if u.endswith("laws")), None)
+    assert laws_uri is not None, "trainer://laws missing from the surface"
+    text = asyncio.run(server.mcp.read_resource(laws_uri))
+    if isinstance(text, str):
+        body = text
+    elif hasattr(text, "contents"):       # fastmcp ResourceResult
+        body = "".join(getattr(c, "content", "") or getattr(c, "text", "")
+                       for c in text.contents)
+    else:
+        items = list(text)
+        body = getattr(items[0], "text", "") if items else ""
+    for law in ("DEADMAN", "HOLDOUT LAW", "micro_batch_size", "tools",
+                "CO-TENANT", "whitelist", "scrub"):
+        assert law in body, f"law text missing: {law}"
+    # pair mode on the surface: parameter + its docstring laws
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    st = tools["submit_training"]
+    import inspect
+    sig = inspect.signature(st.fn)
+    assert "pair" in sig.parameters
+    doc = st.description or ""
+    assert "CO-TENANT" in doc and "micro_batch_size 1" in doc
+    assert "FFT" in doc  # the don't-pair-heavy-legs rule travels too
+
+    # plumbing: pair resolves and reaches dispatch.submit as a Path
+    seen = {}
+
+    def fake_submit(domain, recipe, **kw):
+        seen.update(kw, domain=domain, recipe=recipe)
+        kw["on_run_id"]("test-pair-run")
+        return {"run_id": "test-pair-run"}
+    monkeypatch.setattr(server.dispatch, "submit", fake_submit)
+    ra = tmp_path / "a.yaml"
+    ra.write_text("base_model: X/Y\n")
+    rb = tmp_path / "b.yaml"
+    rb.write_text("base_model: X/Z\n")
+    out = st.fn(domain="opencode", recipe=str(ra), pair=str(rb), mini=True)
+    assert out["run_id"] == "test-pair-run"
+    assert seen["pair"] == rb
+
+
 def test_synth_tools_chain(tmp_path, monkeypatch):
     """graph → manifest → bundle entirely through the MCP surface."""
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}

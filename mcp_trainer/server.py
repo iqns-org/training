@@ -30,14 +30,18 @@ from .auth import BearerGate
 mcp = FastMCP(
     "trainer",
     instructions=(
-        "Automated LoRA/QLoRA fine-tuning on rented GPUs. Typical flow: "
+        "Automated LoRA/QLoRA/FFT fine-tuning on rented GPUs. Typical flow: "
         "list_recipes -> gpu_catalog/preflight_report -> submit_training "
-        "(returns run_id) -> run_progress/job_status (poll; heartbeat "
-        "mid-run) -> artifacts land in runs/<id>/ on the PVC lane + one "
-        "rollup line in runs/index.jsonl (list_runs reads that index — the "
-        "UI-facing table). bench_models scores any OpenAI-compatible "
-        "endpoint. terminate_pod / reap_pods / janitor_pass manage "
-        "capacity; budget_report watches spend."),
+        "(returns run_id; pair= co-trains two models on one pod) -> "
+        "run_progress/job_status (poll; heartbeat mid-run) -> artifacts "
+        "land in runs/<id>/ on the PVC lane + one rollup line in "
+        "runs/index.jsonl (list_runs reads that index — the UI-facing "
+        "table). bench_models scores any OpenAI-compatible endpoint. "
+        "terminate_pod / reap_pods / janitor_pass manage capacity; "
+        "budget_report watches spend. READ trainer://laws BEFORE your "
+        "first submit — it is the fleet's operational law with run-id "
+        "citations (money caps, deadman, holdout, Qwen3.5 traps, pair "
+        "mode, scrub discipline)."),
 )
 
 LEDGER = "state/ledger.db"
@@ -45,6 +49,93 @@ LEDGER = "state/ledger.db"
 
 def _led() -> Ledger:
     return Ledger(ROOT / LEDGER)
+
+
+# ------------------------------------------------------------------- lore
+# THE LAWS SURFACE: an agent driving this fleet must not need tribal
+# knowledge (r2 died from a silent packaging law that lived only in a
+# human's head; f831b7 from a deadman law that lived only in a README).
+# Every law here has a run-id or commit citation — no vibes. Keep in
+# sync with SPEC; the pinned tests (test_mcp_server) fail if a law
+# leaves the surface.
+@mcp.resource("trainer://laws")
+def laws_resource() -> str:
+    """Operational laws of the training fleet, machine-readable."""
+    return """\
+FLEET LAWS (each cited; full text SPEC.md, tests are the enforcement):
+
+RECEIPTS & PROVENANCE
+- Every claim cites a run id answerable by `qtrain verify`. The lane
+  payload IS the job contract — relaunch reuses staged bytes, never
+  re-stages (dispatch relaunch).
+- 13ak: dataset/image/config bytes are attested IN-POD after sha-verify
+  (agent materialize -> attest.json -> manifest). Absence of complaint
+  is not proof.
+- HOLDOUT LAW v2 (13am): rows bucket by first-message template hash;
+  a template held out in round K is held out forever. Row-hash splitting
+  leaked ~100% (templated families share variants — synth measured).
+  val_set_size is forced 0 by render_config; eval happens post-train
+  against the served bytes.
+
+MONEY
+- Caps from history, not hope; jobs die at max_cost/max_runtime with a
+  stated reason. Over-ceiling offers are never launched: waiting beats
+  overbuying.
+- 13an DEADMAN: volume-lane pods watch the orchestrator ping; silence
+  past grace = save artifacts, stamp deadman, manifest, ask the
+  PLATFORM to stop the pod, then exit (r2 law: container exit alone
+  does NOT stop RunPod billing — restart loop, ~$3.3, 5 zombies).
+  The wiring itself is pinned by test_arm_deadman_wires_the_watchdog —
+  an indented-line refactor once SILENTLY DISARMED this while every
+  other test stayed green (fixed 86d5e9a). Trust wiring tests, not
+  docstrings.
+
+TRAINING
+- Qwen3.5 family: text-path LoRA targets ONLY (1a6ea5 VLM trap —
+  lora_target_linear bakes dead visual tensors and vLLM then refuses
+  the adapter); micro_batch_size 1 (425e6c: fla kernels reject batch>1
+  with packing cu_seqlens); per-LoRA chat templates do NOT exist fleet
+  wide (13ai) — identity/behavior lives in weights.
+- Tool-calling domains: `axolotl preprocess --debug` must show the
+  template's tools branch emitting tool-call TOKENS before any spend.
+  Otherwise the model pays full price to learn prose ABOUT tools.
+- Datasets carry per-row `tools` (field_tools); one arg key = one type
+  corpus-wide (HF datasets casting is fatal; extract_opencode.py
+  stringifies collisions and RECORDS it).
+- Teacher quality is a corpus receipt, not a hope: name the source
+  model in the extraction report (qwen3.8-flash self-distillation is
+  capability-PROOF, not capability-CEILING).
+- Tool NAME whitelist: transcripts carry teacher decoding damage
+  (`ash`, `shll`, `tool_use`, `invalid`) — drop, never schema-ify;
+  training hallucinated tool names INTO a small model is the tier-1
+  failure (extractor receipt 2026-11-27: 19 such calls).
+
+CO-TENANT PAIR MODE (one pod, two recipes)
+- Free because every regime is micro_batch 1 = launch-bound: the second
+  process fills SM idle time. ~1.5x aggregate throughput, one pod bill.
+- One run_id, one manifest (file map), per-slug output trees + per-slug
+  prepared dirs (shared prepared dir = HF fingerprint race). Gate
+  requires BOTH trees: half-success fails HONESTLY.
+- Never pair two sustained-memory-heavy legs (FFT vs big qlora): an OOM
+  kills both models in one manifest. Proven-fit pilot pair: 0.8B-lora +
+  4B-qlora.
+
+SAFETY SPINE
+- Corpora mounts read-only into RENTED pods: secret scrubbing runs at
+  extraction, with an alarm rate that FAILS the build (exit 2). Secrets
+  never reach the lane, the pod, or the product.
+- Every terminal path terminates the pod; keep-alive only when bytes
+  worth money sit on the instance (TrainingError keep_alive).
+- Family registry (recipes/_families.yaml, 13al): targets proven false
+  are REFUSED at submit_stage for free; re-asking needs new evidence.
+"""
+
+
+@mcp.resource("trainer://versions")
+def versions_resource() -> str:
+    """Runtime truth of this surface: banner + pinned laws present."""
+    return (f"mcp-trainer {__version__}; laws resource present; "
+            "submit_training pair-mode present")
 
 
 def _lane_get(key: str, provider: str = "runpod") -> bytes | None:
@@ -92,16 +183,48 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                     overrides: dict | None = None,
                     gpus: list[str] | None = None, tier: str | None = None,
                     max_runtime: int = 3600, max_cost: float | None = None,
-                    dry: bool = False, provider: str = "runpod") -> dict:
+                    dry: bool = False, provider: str = "runpod",
+                    pair: str | None = None) -> dict:
     """Launch a full training cycle in the background; returns as soon as
     the run is registered (seconds). mini=True is a cheap lane-validation
-    run (48 rows, 1 epoch). provider: runpod | local ($0 K8s Jobs).
+    run (48 rows, 1 epoch) — ALWAYS pilot mini before a real spend.
+    provider: runpod | local ($0 K8s Jobs).
     Budget: max_cost None = derived (runtime x rate); offers above the
     rate ceiling are never launched — waiting beats overbuying.
-    Track with job_status(run_id)."""
+    Track with job_status(run_id).
+
+    pair (recipe name): CO-TENANT — one pod trains both recipes
+    concurrently. LAWS (receipts in dispatch.submit + agent tests):
+    - WHY IT'S FREE: every regime here is micro_batch_size 1 (fla
+      gated-delta-rule kernels reject batch>1 with packing cu_seqlens,
+      425e6c) — steps are kernel-launch-bound, the SM idles, a second
+      process fills the gap. One pod's price, ~1.5x aggregate throughput.
+    - ONE run_id / manifest / budget; per-model output trees under
+      /work/outputs/<slug>; the artifact gate requires BOTH trees, so a
+      half-success fails honestly. One crash never masks the other
+      (per-pid waits in the sh -c chain).
+    - DO NOT pair the FFT regime (no `adapter:` key) against another
+      big leg: full-weight training is 10-12 GB sustained and the pair
+      OOMs — an OOM kills BOTH legs in one manifest. 0.8B-lora + 4B-qlora
+      is the proven-fit pilot pair.
+    - Deadman (13an) is re-armed as of 86d5e9a — a dead orchestrator
+      saves work and stops billing; before that fix, co-tenancy would
+      have doubled the r2 zombie exposure. Long pair runtimes are safe.
+
+    Agentic/tool domains (opencode): before ANY real submit, the
+    preprocess --debug gate must show the tokenizer template's tools
+    branch rendering tool calls into tokens — if the template has no
+    tools branch the model learns prose ABOUT tool calls instead of the
+    tokens, at full price. Teacher quality ships with the corpus receipt
+    (extract_opencode.py report), not vibes."""
     recipe_path = resolve_recipe(recipe)
     if not recipe_path.is_file():
         return {"error": f"recipe not found: {recipe}"}
+    pair_path = None
+    if pair:
+        pair_path = resolve_recipe(pair)
+        if not pair_path.is_file():
+            return {"error": f"pair recipe not found: {pair}"}
     holder: dict = {}
     gate = threading.Event()
 
@@ -115,7 +238,7 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                 domain, recipe_path, mini=mini, overrides=overrides or {},
                 gpus=gpus, tier=tier, max_runtime=max_runtime,
                 max_cost=max_cost, dry=dry, provider=provider,
-                on_run_id=_on_run_id)
+                pair=pair_path, on_run_id=_on_run_id)
         except Exception as e:                          # noqa: BLE001
             holder["error"] = f"{type(e).__name__}: {e}"
         finally:
