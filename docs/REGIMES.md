@@ -210,6 +210,32 @@ LIVE     cognition r1 trained+served+measured; r2 RELAUNCHED (04d2e9 died
            Returned-bucket fixture leak sealed (named AssertionError);
            paren/square hazard classes dropped (legal IR list literals =
            false positives). SPEC 13am amended (both clauses).
+           GUIDED WEDGE + RECOVERY (8b3a7f4 laws, engine pod restarted):
+           the first full --guided pass (limit 12, k 2, 512 tok) killed
+           EngineCore on Orin. Root cause = client/server timeout
+           mismatch: guided decodes ~0.5 s/token on masked CPU, 512 tok
+           needs MINUTES, http_json's 120 s timeout fired while the
+           server still worked — and a client timeout NEVER cancels
+           server work. Twelve serial timeouts piled ~20 concurrent
+           guided generations into one batch; the engine finished 6 of
+           them, then produced ZERO tokens (counter frozen 15:20:53 ->
+           15:35 while /health happily returned 200 — healthz only
+           tests the API loop). Rollout restart recovered; post-restart
+           single guided probe: 15 tok / 7.7 s, grammar-clean output —
+           guided IS viable at small doses, dead at orphan-storm scale.
+           Fix shipped: cmd_sample guided requests use a 600 s client
+           timeout (the client must outlive the server, serially,
+           always) + --guided help warns. Liveness protocol: watch
+           generation_tokens_total ADVANCE, never /health alone.
+           GUIDED VERDICT (safe protocol, limit 6 k 1, 256 tok): 0 of 6
+           rejects were IRError — vs UNGUIDED where 44/115 (38%) were
+           parser hazards. Grammar buys format purity (6 new DPO pairs
+           of pure-semantics fuel, dpo-guided.jsonl) and buys nothing
+           on craft (yield 0.0 at n=6 — small sample, honest bound).
+           r2b PRECONDITION beyond f831b7 closing: QTRAIN_POD_STOP_URL
+           is set by NOBODY yet (grep dispatch/runpod: zero refs) —
+           until the peer wires it, a deadman fire = container revival
+           (the exact r2 zombie drain); POD-STOP WIRE stays held.
            r2 = gaps output verbatim (derive+abstain --per-code 3 ->
            bundle 7482 rows -> 6727 train + 137 holdout, content-hash
            law verified) + num_epochs=4. Learnings landed in code:

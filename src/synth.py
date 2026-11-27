@@ -1269,8 +1269,14 @@ def cmd_sample(args):
                             "type": "structural_tag",
                             "format": {"type": "grammar",
                                        "grammar": grammar}}
+                    # guided costs ~0.5s/token on Orin: a 120s client on a
+                    # 512-token generation times out while the server is
+                    # still working -> the request is NOT cancelled ->
+                    # orphan pile-up wedged EngineCore (AS-BUILT 7). The
+                    # client must outlive the server, serially, always.
                     resp = http_json(args.url.rstrip("/")
-                                     + "/chat/completions", body)
+                                     + "/chat/completions", body,
+                                     timeout=(600 if grammar else 120))
                     completion = (resp["choices"][0]["message"]
                                   ["content"] or "").strip()
                 except Exception as exc:
