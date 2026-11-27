@@ -32,12 +32,13 @@ payload == pod attestation (agent>=0.3.0); `qtrain verify <run>` / MCP
 `verify` prints every leg incl. corpora+recipe drift and image
 ledger==manifest; stage rows carry their own inputs/sha legs (ap).
 
-**Holdout law (13am).** bin/prepare-domain splits ~2% by TEMPLATE-key
+**Holdout law (13am, (av) for the law seam).** bin/prepare-domain splits ~2% by TEMPLATE-key
 bucket (first-message hash — v2; row-content bucketing measured
 ~100% sibling leak; stable forever; append-safe); rides payload as sha-verified
 input; train NEVER sees it; scored POST-TRAIN by the holdout stage (this
 axolotl rejects in-train eval_strategy at val_set_size==0 — 3e7232 — and
-random val splits violate the stability law anyway).
+random val splits violate the stability law anyway). The law seam and
+re-measure plan: (av).
 
 **Eval history.** bench --record -> evals ledger table (model, run,
 summary "N/M", full rows); `qtrain evals` / MCP eval_history; check
@@ -57,7 +58,7 @@ every obs sample carries the EST table's profile version; bump
 EST_VERSION when a kind's work profile changes and stale samples
 auto-retire from estimation — evidence is never deleted, only trust. §9.
 
-**Deadman (13an).** `_watch` rewrites runs/<id>/ping every cycle
+**Deadman (13an, (av) for wiring).** `_watch` rewrites runs/<id>/ping every cycle
 (content-change, clock-free); pod watchdog (agent/deadman.py) arms at
 first ping (boot handshake), fires after DEADMAN_GRACE_S (default 600;
 knob at all pod-create sites) of unchanged ping: cancel -> finalize
