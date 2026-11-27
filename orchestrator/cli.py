@@ -492,10 +492,10 @@ def build_parser():
     s.add_argument("--wait", type=int, default=None,
                    help="capacity-wait seconds (default: $QTRAIN_MAX_WAIT "
                         "or 1800; 0 = fast-fail single wave)")
-    ap.add_argument("--fresh-holdout", action="store_true",
-                    help="holdout kind only: re-run the CURRENT bucketing "
-                         "law on the lineage's domain corpus and score "
-                         "THAT split (v1->v2 trend rebase, c3d7027)")
+    s.add_argument("--fresh-holdout", action="store_true",
+                   help="holdout kind only: re-run the CURRENT bucketing "
+                        "law on the lineage's domain corpus and score "
+                        "THAT split (v1->v2 trend rebase, c3d7027)")
     s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("register", help="deliver a run/stage artifact to a "
