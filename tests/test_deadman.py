@@ -206,3 +206,141 @@ def test_pod_kill_env_contract(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", angry)
     assert app_mod._pod_stop_best_effort() is False      # best-effort
+
+
+def test_pod_stop_token_derivation_single_source():
+    # the mint (dispatch) and the check (route) must be ONE function:
+    # drift silently disarms the deadman kill — the exact r2 failure
+    from orchestrator import dispatch
+    from mcp_trainer import server
+    assert server.pod_stop_token is dispatch.pod_stop_token
+    import os
+    os.environ["MCP_TRAINER_TOKEN"] = "sekret"
+    t = dispatch.pod_stop_token("20261127-150613-d2886a")
+    assert len(t) == 32 and dispatch.pod_stop_token("other-run") != t
+    del os.environ["MCP_TRAINER_TOKEN"]
+    assert dispatch.pod_stop_token("r") == ""      # no secret, no token
+
+
+def test_pod_stop_env_inert_until_configured(monkeypatch):
+    # default launch: NOT a single POD_STOP env key (current behavior
+    # preserved until an operator sets the base URL)
+    from orchestrator import dispatch
+    monkeypatch.delenv("QTRAIN_POD_STOP_URL_BASE", raising=False)
+    monkeypatch.setenv("MCP_TRAINER_TOKEN", "sekret")
+    assert dispatch._pod_stop_env("r1") == {}
+    monkeypatch.setenv("QTRAIN_POD_STOP_URL_BASE", "https://stop.test/")
+    env = dispatch._pod_stop_env("20261127-150613-d2886a")
+    assert env["QTRAIN_POD_STOP_URL"] == \
+        "https://stop.test/pod-stop/20261127-150613-d2886a"
+    assert env["QTRAIN_POD_STOP_TOKEN"] == \
+        dispatch.pod_stop_token("20261127-150613-d2886a")
+
+
+def test_pod_stop_route_auth_and_idempotence(tmp_path, monkeypatch):
+    # the gate EXEMPTS /pod-stop/* (auth is the handler's job, fail-
+    # closed); wrong token 401; valid token + no matching pod -> 200
+    # (a pod that wants to die treats "nothing live" as success)
+    import asyncio
+    from starlette.testclient import TestClient
+    from mcp_trainer import server
+    from orchestrator import dispatch
+
+    monkeypatch.setenv("MCP_TRAINER_TOKEN", "sekret")
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+
+    class NoPods:
+        def list_instances(self):
+            return []
+
+    monkeypatch.setattr(server, "get_provider", lambda p: NoPods())
+    client = TestClient(server.build_app())
+    rid = "20261127-150613-d2886a"
+
+    r = client.post(f"/pod-stop/{rid}",
+                    headers={"authorization": "Bearer wrong"})
+    assert r.status_code == 401
+    r = client.post(f"/pod-stop/{rid}")          # no auth header at all
+    assert r.status_code == 401
+    tok = dispatch.pod_stop_token(rid)
+    r = client.post(f"/pod-stop/{rid}",
+                    headers={"authorization": f"Bearer {tok}"})
+    assert r.status_code == 200 and r.json()["killed"] == []
+    # global token does NOT work on this route (capability is per-run)
+    r = client.post(f"/pod-stop/{rid}",
+                    headers={"authorization": "Bearer sekret"})
+    assert r.status_code == 401
+
+
+def test_pod_stop_token_single_source():
+    # mint (dispatch) and check (route) are LITERALLY the same function;
+    # drift silently disarms the deadman kill — the exact r2 failure mode
+    from mcp_trainer import server
+    from orchestrator import dispatch
+    assert server.pod_stop_token is dispatch.pod_stop_token
+    assert dispatch.pod_stop_token("run-x") == ""    # no secret -> inert
+
+
+def test_pod_stop_env_gate(tmp_path, monkeypatch):
+    from orchestrator import dispatch
+    monkeypatch.setenv("MCP_TRAINER_TOKEN", "sekret")
+    monkeypatch.delenv("QTRAIN_POD_STOP_URL_BASE", raising=False)
+    assert dispatch._pod_stop_env("r1") == {}        # unconfigured: inert
+    monkeypatch.setenv("QTRAIN_POD_STOP_URL_BASE", "https://x.test/")
+    env = dispatch._pod_stop_env("r1")
+    assert env["QTRAIN_POD_STOP_URL"] == "https://x.test/pod-stop/r1"
+    assert len(env["QTRAIN_POD_STOP_TOKEN"]) == 32
+
+
+def test_pod_stop_route_auth_and_idempotence(tmp_path, monkeypatch):
+    # gate EXEMPTS /pod-stop/*; handler fail-closed (no secret -> 401
+    # even with a "valid" derivation); with secret: wrong bearer 401,
+    # right bearer + no matching pod -> 200 (idempotent), tail match ->
+    # terminate called.
+    from starlette.testclient import TestClient
+    from mcp_trainer import server
+    from orchestrator import dispatch
+    from orchestrator.ledger import Ledger
+    from orchestrator.models import Instance
+
+    led = Ledger(tmp_path / "state" / "ledger.db")
+    rid = "20261127-150613-d2886a"
+    led.create("train", {"domain": "queer"}, provider="mock")
+    # exact id needs the real run_id — create returns generated; overwrite:
+    led.db.execute("UPDATE runs SET run_id=? WHERE run_id=(SELECT run_id "
+                   "FROM runs ORDER BY created_at DESC LIMIT 1)", (rid,))
+    led.db.commit()
+    led.update(rid, state="provisioning", instance_id="pod-abc")
+    monkeypatch.setattr(server, "ROOT", tmp_path)   # _led() resolves here
+    monkeypatch.setenv("MCP_TRAINER_TOKEN", "sekret")
+    term = []
+
+    class FakeProv:
+        def list_instances(self):
+            return [Instance(provider="mock", id="pod-abc", status="running",
+                             name=f"train-hint-{rid[-8:]}", gpu_type="",
+                             price_hr=0.1, raw={})]
+
+        def terminate(self, iid):
+            term.append(iid)
+            return True
+    monkeypatch.setattr(server, "get_provider", lambda p: FakeProv())
+    app = server.build_app()
+    client = TestClient(app)
+    url = f"/pod-stop/{rid}"
+    # no secret -> inert: even a correctly derived token must 401
+    good = dispatch.pod_stop_token(rid)
+    monkeypatch.delenv("MCP_TRAINER_TOKEN")
+    r = client.post(url, headers={"authorization": f"Bearer {good}"})
+    assert r.status_code == 401
+    monkeypatch.setenv("MCP_TRAINER_TOKEN", "sekret")
+    r = client.post(url, headers={"authorization": "Bearer nope"})
+    assert r.status_code == 401
+    good = dispatch.pod_stop_token(rid)
+    r = client.post(url, headers={"authorization": f"Bearer {good}"})
+    assert r.status_code == 200 and term == ["pod-abc"]
+    # terminal row -> idempotent 200, no terminate
+    term.clear()
+    led.update(rid, state="done", artifact_uri="x")
+    r = client.post(url, headers={"authorization": f"Bearer {good}"})
+    assert r.status_code == 200 and term == []
