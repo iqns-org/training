@@ -126,7 +126,7 @@ def cmd_stage(args):
         args.kind, args.from_run, base_model=args.base,
         provider=args.provider, dry=args.dry, max_runtime=args.max_runtime,
         max_cost=args.max_cost, max_price_hr=args.max_price,
-        max_wait=args.wait)
+        max_wait=args.wait, fresh_holdout=args.fresh_holdout)
     _print(res)
     raise SystemExit(0 if res.get("status") in ("succeeded", None)
                      and not res.get("error") else 1)
@@ -492,6 +492,10 @@ def build_parser():
     s.add_argument("--wait", type=int, default=None,
                    help="capacity-wait seconds (default: $QTRAIN_MAX_WAIT "
                         "or 1800; 0 = fast-fail single wave)")
+    ap.add_argument("--fresh-holdout", action="store_true",
+                    help="holdout kind only: re-run the CURRENT bucketing "
+                         "law on the lineage's domain corpus and score "
+                         "THAT split (v1->v2 trend rebase, c3d7027)")
     s.set_defaults(func=cmd_stage)
 
     s = sub.add_parser("register", help="deliver a run/stage artifact to a "

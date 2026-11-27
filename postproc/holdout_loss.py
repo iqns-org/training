@@ -26,6 +26,7 @@ cheaper). Prints one dict line so finalize scrapes holdout_loss into
 manifest.training.summary; lands holdout.json as the gate file.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -70,7 +71,10 @@ if a.dry_run:
             continue
         scored += 1
     rep = {"holdout_loss": None, "dry_run": True, "rows_scored": scored,
-           "rows_skipped": skipped, "rows_total": len(rows)}
+           "rows_skipped": skipped, "rows_total": len(rows),
+           "holdout_sha256": hashlib.sha256(
+               Path(a.holdout).read_bytes()).hexdigest(),
+           "holdout_law": 2}
     Path(a.out).mkdir(parents=True, exist_ok=True)
     (Path(a.out) / "holdout.json").write_text(json.dumps(rep, indent=1))
     print(rep, flush=True)
@@ -166,7 +170,13 @@ if scored == 0:
 loss = total_nll / max(total_tok, 1)
 rep = {"holdout_loss": round(loss, 4), "rows_scored": scored,
        "rows_skipped": skipped, "rows_total": len(rows),
-       "tokens_scored": total_tok, "adapter": shape}
+       "tokens_scored": total_tok, "adapter": shape,
+       # TREND SEAM (c3d7027): the split's bucketing law + the exact
+       # bytes scored ride the GATED ARTIFACT — a holdout.json states
+       # which world its number is comparable in, no archaeology.
+       "holdout_sha256": hashlib.sha256(
+           Path(a.holdout).read_bytes()).hexdigest(),
+       "holdout_law": 2}
 Path(a.out).mkdir(parents=True, exist_ok=True)
 (Path(a.out) / "holdout.json").write_text(json.dumps(rep, indent=1))
 print(rep, flush=True)          # scraped into manifest.training.summary

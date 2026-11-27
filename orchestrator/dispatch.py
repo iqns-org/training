@@ -299,6 +299,42 @@ def _pod_name(kind: str, run_id: str, hint: str = "") -> str:
     tail = f"{run_id[-8:]}"
     return "-".join(p for p in (kind.lower(), hint.lower().strip("-."),
                                 tail) if p)[:63].rstrip("-.")
+
+
+# ---------------------------------------------------------------------------
+# POD-STOP WIRING (r2 postmortem / REGIMES handoff item 1). RunPod's
+# CreatePodRequest has NO restartPolicy: an exited container is REVIVED,
+# so deadman's finalize+exit must be followed by a real kill. The pod may
+# not hold the scoped RunPod key (lives HERE), so dispatch hands it a
+# per-run capability token and the mcp server exposes /pod-stop/{run_id}
+# that checks it (single source: pod_stop_token — mint/check drift means
+# the deadman's kill 401s, i.e. the exact r2 failure mode, silently).
+# INERT BY DEFAULT: without QTRAIN_POD_STOP_URL_BASE + MCP_TRAINER_TOKEN
+# in the controller env, no pod-kill env is set and the agent keeps
+# logging 'exit alone will NOT stop billing' (v0.5.0 law). The base URL
+# must be reachable FROM the provider pod and point at an mcp-trainer
+# (>= m-v0.5.2) that carries the route — an infra-plane decision, not a
+# dispatch assumption.
+
+def pod_stop_token(run_id: str, secret: str | None = None) -> str:
+    """sha256(run_id|secret)[:32]; empty secret/env -> empty token. The
+    run_id is enumerable, never a credential — the secret binding is
+    what makes this a kill CAPABILITY scoped to exactly one run."""
+    s = (os.environ.get("MCP_TRAINER_TOKEN", "") if secret is None
+         else secret)
+    if not s:
+        return ""
+    return hashlib.sha256(f"{run_id}|{s}".encode()).hexdigest()[:32]
+
+
+def _pod_stop_env(run_id: str) -> dict:
+    base = os.environ.get("QTRAIN_POD_STOP_URL_BASE", "").rstrip("/")
+    tok = pod_stop_token(run_id)
+    if not base or not tok:
+        return {}
+    return {"QTRAIN_POD_STOP_URL": f"{base}/pod-stop/{run_id}",
+            "QTRAIN_POD_STOP_TOKEN": tok}
+
 # states whose work is OVER — a pod still alive under one of these is a
 # leak (crash between harvest and terminate), never a live task.
 SETTLED = {"done", "failed", "cancelled", "verified", "delivered", "lost"}
@@ -532,7 +568,8 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
                f"{payload['volume']['mount']}/runs/{run_id}/payload.json",
                "AGENT_TOKEN": token, "IMAGE_TAG": image,
                "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
-                                            "600")}
+                                            "600"),
+               **_pod_stop_env(run_id)}
         prov = get_provider(provider)
         lk = ({"volume_id": vol["bucket"], "volume_path": vol["mount"],
                "data_center": vol["dc"]} if provider == "runpod" else {})
@@ -1016,7 +1053,8 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                  # DEADMAN knob (SPEC 13an): flows to agent os.environ;
                  # always explicit (default 600) so pod forensics sees it
                  "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
-                                            "600")},
+                                            "600"),
+                 **_pod_stop_env(run_id)},
             lk=lk, run_id=run_id, kind="train",
             max_wait=_max_wait(max_wait))
         pod_id = inst.id
@@ -1206,6 +1244,33 @@ def _lineage_base(led: Ledger, run_id: str, depth: int = 4) -> str:
     return ""
 
 
+# BAKING STATUS: the (ar) audit asks whether laws are machines or
+# folklore. Three were folklore; they are now machines (13ar/av):
+# EST_VERSION (budget contamination), merge_law_error (no-op refusal),
+# hygiene.classify (proven-junk-only deletion). The pod-kill env
+# (QTRAIN_POD_STOP_*) and the holdout bucketing law below still carry
+# their audit pointers in (av)/(au) until wired — a constant is the
+# first draft of a machine.
+HOLDOUT_LAW = 2      # 1 = row-content hash (c3d7027: leaked templated
+                     # families); 2 = template-key bucketing
+
+
+def _holdout_fresh(led: Ledger, get_run, from_run: str) -> str:
+    """Domain at the head of the lineage (train row's spec carries it —
+    stage rows reference the parent). The rebase input: re-split NOW."""
+    cur = from_run
+    for _ in range(6):
+        row = next((r for r in led.list(include_terminal=True)
+                    if r["run_id"] == cur), None)
+        if row is None:
+            break
+        spec = json.loads(row["spec_json"] or "{}")
+        if spec.get("domain"):
+            return spec["domain"]
+        cur = spec.get("from_run") or ""
+    raise ProviderError(f"no domain in the lineage of {from_run}")
+
+
 def _lineage_holdout(get_run, run_id: str, depth: int = 5) -> dict | None:
     """Walk the artifact lineage (stage -> stage -> train) to the payload
     carrying the holdout input (SPEC 13am). Volume-lane payloads only:
@@ -1234,6 +1299,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                  max_cost: float | None = None, poll: int = 15,
                  dry: bool = False, max_price_hr: float | None = None,
                  max_wait: int | None = None,
+                 fresh_holdout: bool = False,
                  on_run_id: "callable | None" = None) -> dict:
     """Post-process a finished run's artifacts (merge|onnx|int8).
 
@@ -1341,20 +1407,37 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     if kind == "holdout":
         # HOLDOUT RESOLVER (SPEC 13am): re-attach the stable split from
         # the lineage; refuse honestly when it is absent (pre-13am runs).
-        hold = _lineage_holdout(get_run, from_run)
+        # fresh_holdout (TREND-SEAM FIX, (av)-2 / c3d7027): bucket law v2
+        # changed split semantics, so a v1-era lineage split scores
+        # memorization siblings — rebase by re-running the CURRENT splitter
+        # (bin/prepare-domain, template-key bucketing) against the lineage's
+        # domain corpus and score THAT. The fresh file is content-addressed
+        # to the same datasets/<domain>/<sha>/ convention, so comparisons
+        # land on identical bytes or they do not compare (sha rides the
+        # row, and the row now records the LAW too).
+        if fresh_holdout:
+            domain = _holdout_fresh(led, get_run, from_run)
+            _k, _p, _s, _n, hold = prepare_dataset(domain, vol=vol)
+        else:
+            hold = _lineage_holdout(get_run, from_run)
         if hold is None:
             err = (f"no holdout input in the lineage of {from_run} — "
                    "pre-13am train runs carry no stable split; submit "
-                   "again to stage one")
+                   "again to stage one (or --fresh-holdout to rebase)")
             led.update(run_id, state="failed", error=err)
             return {"status": "error", "run_id": run_id, "error": err}
-        inputs.append(hold)
+        if "path" not in hold:               # fresh: key -> mount path
+            hold = {**hold, "path": f"{mount}/{hold['key']}"}
+        inputs.append({"name": "holdout.jsonl", "path": hold["path"],
+                       "sha256": hold["sha256"]})
         cmd += " --holdout /work/inputs/holdout.jsonl"
         # RECORD the resolved sha on the row (4eed0a law: the books must
         # carry what the pod actually received — verify's holdout leg
         # reads spec['holdout_sha'], and "?" there is a recorder bug,
-        # not a data bug)
-        led.merge_spec(run_id, holdout_sha=hold["sha256"])
+        # not a data bug) + the bucketing LAW, so trend seams are
+        # self-documenting instead of archaeological (c3d7027).
+        led.merge_spec(run_id, holdout_sha=hold["sha256"],
+                       holdout_law=HOLDOUT_LAW)
     # Run CURRENT repo scripts, not the frozen /opt copies baked into the
     # p-v images: those are stranded at pre-fix builds (mirror stall), and
     # 6709e3 proved the failure class — llmcompressor's API drifted around
@@ -1443,7 +1526,8 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             env={**payload_env, "AGENT_TOKEN": token,
                  "IMAGE_TAG": stage_image,
                  "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
-                                            "600")}, lk=lk,
+                                            "600"),
+                 **_pod_stop_env(run_id)}, lk=lk,
             run_id=run_id, kind=kind, max_wait=_max_wait(max_wait))
         mc = (max_cost if max_cost is not None
               else budget.estimate(offer.price_hr or rate_bound, kind))

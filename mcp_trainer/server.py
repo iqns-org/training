@@ -168,14 +168,17 @@ def job_status(run_id: str) -> dict:
 @mcp.tool
 def submit_stage(kind: str, from_run: str, base_model: str | None = None,
                  provider: str = "runpod", max_runtime: int = 3600,
-                 max_cost: float | None = None, dry: bool = False) -> dict:
+                 max_cost: float | None = None, dry: bool = False,
+                 fresh_holdout: bool = False) -> dict:
     """Post-process a finished run: kind merge (needs base_model) | onnx
     | int8 | awq (GPU; calibrates on the source run's dataset). Cloud
     (runpod) by default; provider=local is the opt-in $0 fallback (cpu
     kinds only). Budget defaults are derived per stage (estimate = rate x
     est-minutes x margin); the rate ceiling refuses oversized cards.
     Non-blocking; track with job_status(). Stage outputs chain as the
-    next stage's from_run."""
+    next stage's from_run. fresh_holdout (holdout kind): re-split the
+    lineage's domain corpus under the CURRENT bucketing law and score
+    that — the trend rebase across the v1->v2 seam (c3d7027)."""
     holder: dict = {}
     gate = threading.Event()
 
@@ -714,6 +717,83 @@ def build_app():
     # gate ALWAYS wraps: refuse-all is the safe default without a token
     app.add_middleware(BearerGate)
     return app
+
+
+# ---------------------------------------------------------------------------
+# POD-STOP KILL ROUTE (deadman cost guard; SPEC 13an + r2 postmortem).
+# RunPod's CreatePodRequest has NO restartPolicy (OpenAPI-verified): an
+# exited container is REVIVED, so a deadman fire must end in a real pod
+# kill. The pod may not hold the scoped RunPod key (it lives HERE), so
+# dispatch hands each pod a per-run capability token:
+#     token = sha256(f"{run_id}|{MCP_TRAINER_TOKEN}")[:32]
+# Possibility of killing = knowledge of token + global secret; the token
+# binds to exactly one run (run_id is enumerable, NOT a credential; the
+# secret never leaves the orchestrator/server envs). BearerGate lets the
+# /pod-stop/ prefix reach THIS handler, which authenticates fail-closed:
+# no MCP_TRAINER_TOKEN set -> every call 401s (refuse-all chassis law).
+# Cross-controller honest: the server ledger is pod-local, so the kill
+# resolves by POD NAME prefix (trainer-<run8>-*, the same convention
+# doctor resolves by suffix) — a workstation-launched run is killable
+# without its row existing in this ledger.
+
+import hashlib as _hashlib
+import hmac as _hmac
+
+from starlette.responses import JSONResponse as _JSONResponse
+
+# SINGLE SOURCE: dispatch owns the per-run kill-token derivation
+# (workstation mints via _pod_stop_env, this route verifies) — drift
+# between mint and check silently disarms the deadman kill, which is
+# exactly the r2 failure mode this route exists to end.
+pod_stop_token = dispatch.pod_stop_token
+
+
+async def _pod_stop(request):
+    run_id = (request.path_params.get("run_id") or "").strip()
+    if len(run_id) < 15:                     # 20261127-150613-d2886a shape
+        return _JSONResponse({"error": "bad run id"}, status_code=400)
+    got = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    want = pod_stop_token(run_id)
+    if not want or not _hmac.compare_digest(got or "", want):
+        return _JSONResponse({"error": "unauthorized"}, status_code=401)
+    # ledger is corroboration only (pod-local DB — a workstation-
+    # launched row may not exist here at all; the TOKEN is the claim)
+    row = next((r for r in _led().list() if r["run_id"] == run_id), None)
+    if row is not None and row["state"] not in dispatch.OPEN_STATES \
+            and not row.get("instance_id"):
+        return _JSONResponse({"stopped": None,
+                              "note": f"already terminal ({row['state']})"})
+    provider = (row or {}).get("provider") or "runpod"
+    # _pod_name contract (SPEC 14b): names END with run_id[-8:] (kind
+    # prefix + hint before it) — reap/doctor map by that tail, so this
+    # route must too. startswith on run_id[:8] matches NOTHING.
+    tail = run_id[-8:]
+    killed = []
+    try:
+        insts = get_provider(provider).list_instances()
+    except Exception as e:                   # noqa: BLE001
+        return _JSONResponse({"error": f"list failed: {str(e)[:120]}"},
+                             status_code=502)
+    for i in insts:
+        if (i.name or "").endswith(tail):
+            try:
+                if get_provider(provider).terminate(i.id):
+                    killed.append(i.id)
+            except Exception as e:           # noqa: BLE001
+                return _JSONResponse(
+                    {"error": f"terminate {i.id}: {str(e)[:120]}"},
+                    status_code=502)
+    print(f"pod-stop: run {run_id} -> killed {killed or 'nothing live'}",
+          flush=True)
+    notify.emit("pod_stopped", run_id, killed=killed, source="pod-stop-route")
+    # idempotent: no live pod is a SUCCESS for a pod that wants to die now
+    return _JSONResponse({"stopped": bool(killed) or None,
+                          "killed": killed,
+                          "note": "" if killed else "no live pod matched"})
+
+
+mcp.custom_route("/pod-stop/{run_id}", methods=["POST"])(_pod_stop)
+
 
 
 def _port() -> int:
