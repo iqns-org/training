@@ -277,6 +277,7 @@ def test_submit_stage_awq_missing_source(tmp_path, monkeypatch):
                                  "dc": "EU-RO-1", "key": "k", "secret": "s",
                                  "endpoint": "e", "region": "EU-RO-1"})
     monkeypatch.setattr(dispatch.storage, "vol_get", lambda k: None)
+    monkeypatch.setattr(dispatch.storage, "vol_head", lambda k: 200)
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
     res = dispatch.submit_stage("awq", "ghost", provider="runpod")
     assert "no dataset in lineage" in res["error"]
@@ -552,3 +553,115 @@ def test_volume_tier_community_fails_fast(tmp_path, monkeypatch, fake_s3,
     assert "impossible" in (res.get("error") or "")
     assert res["lane"] == "volume"
     assert not fake_s3["put"]              # nothing staged, nothing waits
+
+
+def test_submit_stage_preflight_refuses_missing_artifact(tmp_path, monkeypatch):
+    """ARTIFACT PREFLIGHT (07bea4 law): the base-half rebase launched
+    TWO pods against a from-run whose artifacts.tar.gz had been GC'd
+    from the lane — each burned ~45 min of GPU discovering a fact the
+    ledger could answer in a HEAD. submit_stage must refuse before any
+    pod: status error + refused marker + terminal row (bookkeeping, not
+    a silent ghost). Dry runs skip the check: rehearsal is $0 and may
+    legitimately precede the bytes."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    monkeypatch.setattr(dispatch.storage, "vol_cfg",
+                        lambda: {"bucket": "v1", "mount": "/data",
+                                 "dc": "EU-RO-1", "key": "k", "secret": "s",
+                                 "endpoint": "e", "region": "EU-RO-1"})
+    monkeypatch.setattr(dispatch.storage, "vol_get", lambda k: None)
+    monkeypatch.setattr(dispatch.storage, "vol_head", lambda k: 404)
+    launched = []
+    monkeypatch.setattr(dispatch, "_wave_launch",
+                        lambda *a, **k: launched.append(a) or (_ for _ in ()).throw(
+                            AssertionError("must not launch")))
+    res = dispatch.submit_stage("merge", "gone-run",
+                                base_model="Qwen/Qwen3.5-0.8B",
+                                provider="runpod")
+    assert res["status"] == "error" and res["refused"] == "artifact-preflight"
+    assert "missing on lane" in res["error"] and not launched
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    assert led.get(res["run_id"])["state"] == "failed"
+
+
+def test_submit_stage_preflight_passes_present_artifact(tmp_path, monkeypatch):
+    # the other half of the law: a PRESENT tar sails through the gate
+    # (head == 200) — preflight must not become a phantom-refusal tax on
+    # honest lineage. Dry path keeps everything else stubbed identical.
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    monkeypatch.setattr(dispatch.storage, "vol_cfg",
+                        lambda: {"bucket": "v1", "mount": "/data",
+                                 "dc": "EU-RO-1", "key": "k", "secret": "s",
+                                 "endpoint": "e", "region": "EU-RO-1"})
+    monkeypatch.setattr(dispatch.storage, "vol_get", lambda k: None)
+    monkeypatch.setattr(dispatch.storage, "vol_head", lambda k: 200)
+    res = dispatch.submit_stage("merge", "present-run",
+                                base_model="Qwen/Qwen3.5-0.8B",
+                                provider="runpod", dry=True)
+    # dry skips the check itself, but with head stubbed 200 a real run
+    # reaches the same downstream gates (family/lineage) instead of the
+    # preflight marker:
+    assert res.get("refused") != "artifact-preflight" or res.get("dry")
+
+
+def test_submit_stage_dry_never_pays_the_preflight(tmp_path, monkeypatch):
+    # dry rehearsal on a lineage whose bytes don't exist yet (staged
+    # merge planned for later) must still produce its payload contract
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "postproc").mkdir()
+    (tmp_path / "postproc" / "merge_adapter.py").write_text("# s\n")
+    (tmp_path / "postproc" / "util.py").write_text("# s\n")
+    monkeypatch.setattr(dispatch.storage, "vol_cfg",
+                        lambda: {"bucket": "v1", "mount": "/data",
+                                 "dc": "EU-RO-1", "key": "k", "secret": "s",
+                                 "endpoint": "e", "region": "EU-RO-1"})
+    monkeypatch.setattr(dispatch.storage, "vol_head", lambda k: 404)
+    monkeypatch.setattr(dispatch.storage, "vol_put",
+                        lambda k, d, ct="": None)
+    monkeypatch.setattr(dispatch.storage, "vol_get", lambda k: None)
+    res = dispatch.submit_stage("merge", "planned-run",
+                                base_model="Qwen/Qwen3.5-0.8B",
+                                provider="runpod", dry=True)
+    assert res.get("dry"), res
+
+
+def test_holdout_score_base_flag_rides_cmd_and_row(tmp_path, monkeypatch):
+    """ONE POD, BOTH HALVES (07bea4 law): no-op-merge tars can be GC'd
+    from the lane — the base reference must be producible from the SAME
+    stage run that scores the persona bytes. The flag rides the pod
+    command AND the ledger spec (books match the launch)."""
+    import json
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    (tmp_path / "postproc").mkdir()
+    for f in ("holdout_loss.py", "util.py"):
+        (tmp_path / "postproc" / f).write_text("# stub\n")
+    (tmp_path / "state").mkdir()
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    tr = led.create("train", {"domain": "queer", "recipe": ""})
+    merged = led.create("stage", {"kind": "merge", "from_run": tr,
+                                  "base_model": "Qwen/Qwen3.5-0.8B"})
+    puts = {}
+    hpath = "/data/datasets/queer/abc/queer.holdout.jsonl"
+    # lineage payload: the merge's model input + a holdout input on the
+    # train payload for the resolver
+    monkeypatch.setattr(dispatch.storage, "host_get", lambda k: None)
+    monkeypatch.setattr(dispatch.storage, "host_put",
+                        lambda k, d, ct="": puts.__setitem__(k, d))
+    monkeypatch.setattr(dispatch, "_lineage_holdout",
+                        lambda g, r, depth=5: {"name": "holdout.jsonl",
+                                               "path": hpath,
+                                               "sha256": "e" * 64})
+    monkeypatch.setattr(dispatch.storage, "host_exists", lambda k: True)
+    res = dispatch.submit_stage("holdout", merged,
+                                base_model="Qwen/Qwen3.5-0.8B",
+                                provider="local", dry=True,
+                                score_base=True)
+    payload = json.loads(puts[f"runs/{res['run_id']}/payload.json"])
+    assert "--score-base" in payload["command"], payload["command"]
+    row = led.get(res["run_id"])
+    assert json.loads(row["spec_json"]).get("score_base") is True
+    # the default stays EXACTLY the old single-model command
+    res2 = dispatch.submit_stage("holdout", merged,
+                                 base_model="Qwen/Qwen3.5-0.8B",
+                                 provider="local", dry=True)
+    p2 = json.loads(puts[f"runs/{res2['run_id']}/payload.json"])
+    assert "--score-base" not in p2["command"]

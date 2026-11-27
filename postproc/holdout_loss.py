@@ -38,6 +38,12 @@ ap.add_argument("--base", required=True, help="base model id (HF)")
 ap.add_argument("--holdout", required=True, help="holdout .jsonl (messages rows)")
 ap.add_argument("--out", required=None, default="/tmp/holdout-out",
                 help="outputs dir")
+ap.add_argument("--score-base", action="store_true",
+                help="after scoring --in, free it, load the bare --base id "
+                     "and score THAT too: one pod yields BOTH halves of the "
+                     "trend pair on identical bytes (the no-op-merge route to "
+                     "base numbers died when those tars were GC'd from the "
+                     "lane — 07bea4 postmortem)")
 ap.add_argument("--dry-run", action="store_true",
                 help="no torch/tokenizer: exercise row guards + counts only")
 a = ap.parse_args()
@@ -118,65 +124,89 @@ model.eval()
 if torch.cuda.is_available():
     model = model.to("cuda")
 
-total_nll, total_tok, scored, skipped = 0.0, 0, 0, 0
-with torch.no_grad():
-    for r in rows:
-        msgs = r.get("messages") or []
-        # db2ede/740238: template quirks must SKIP with a count, never
-        # kill the run (see row_ok/span_ok for the exact corpus shapes)
-        if not row_ok(msgs):
-            skipped += 1
-            continue
-        try:
-            full = tok.apply_chat_template(msgs, tokenize=False)
-            ids = tok(full, add_special_tokens=False,
-                      return_tensors="pt").input_ids
-            if ids.shape[1] < 2:
+def score(mdl):
+    """Teacher-forced NLL pass with model mdl -> (loss, scored, skipped,
+    tokens). Guards identical for BOTH pair halves — the number and its
+    reference must be produced by the same code path."""
+    total_nll, total_tok, scored, skipped = 0.0, 0, 0, 0
+    with torch.no_grad():
+        for r in rows:
+            msgs = r.get("messages") or []
+            # db2ede/740238: template quirks must SKIP with a count, never
+            # kill the run (see row_ok/span_ok for the exact corpus shapes)
+            if not row_ok(msgs):
                 skipped += 1
                 continue
-            labels = ids.clone().fill_(-100)
-            spans = 0
-            for i, m in enumerate(msgs):
-                if m.get("role") != "assistant" or not span_ok(msgs[:i]):
+            try:
+                full = tok.apply_chat_template(msgs, tokenize=False)
+                ids = tok(full, add_special_tokens=False,
+                          return_tensors="pt").input_ids
+                if ids.shape[1] < 2:
+                    skipped += 1
                     continue
-                spans += 1
-                pre = tok(tok.apply_chat_template(
-                    msgs[:i], tokenize=False, add_generation_prompt=True),
-                    add_special_tokens=False).input_ids
-                thru = tok(
-                    tok.apply_chat_template([*msgs[:i], m], tokenize=False),
-                    add_special_tokens=False).input_ids
-                s, e = len(pre), min(len(thru), ids.shape[1])
-                if e > s:
-                    labels[0, s:e] = ids[0, s:e]
-                    spans -= 1          # counted: actually labelable
-            if spans or (labels != -100).sum() == 0:
-                # conditioned spans exist but produced no labels (tokenizer
-                # boundary surprises) -> skip the row rather than score 0
+                labels = ids.clone().fill_(-100)
+                spans = 0
+                for i, m in enumerate(msgs):
+                    if m.get("role") != "assistant" or not span_ok(msgs[:i]):
+                        continue
+                    spans += 1
+                    pre = tok(tok.apply_chat_template(
+                        msgs[:i], tokenize=False, add_generation_prompt=True),
+                        add_special_tokens=False).input_ids
+                    thru = tok(
+                        tok.apply_chat_template([*msgs[:i], m],
+                                                tokenize=False),
+                        add_special_tokens=False).input_ids
+                    s, e = len(pre), min(len(thru), ids.shape[1])
+                    if e > s:
+                        labels[0, s:e] = ids[0, s:e]
+                        spans -= 1      # counted: actually labelable
+                if spans or (labels != -100).sum() == 0:
+                    # conditioned spans exist but produced no labels
+                    # (tokenizer boundary surprises) -> skip the row rather
+                    # than score 0
+                    skipped += 1
+                    continue
+                dev = next(mdl.parameters()).device
+                out = mdl(ids.to(dev), labels=labels.to(dev))
+                nt = int((labels != -100).sum())
+                total_nll += float(out.loss) * nt
+                total_tok += nt
+                scored += 1
+            except Exception:                          # noqa: BLE001
                 skipped += 1
                 continue
-            dev = next(model.parameters()).device
-            out = model(ids.to(dev), labels=labels.to(dev))
-            nt = int((labels != -100).sum())
-            total_nll += float(out.loss) * nt
-            total_tok += nt
-            scored += 1
-        except Exception:                              # noqa: BLE001
-            skipped += 1
-            continue
+    if scored == 0:
+        raise SystemExit(f"zero rows scored ({skipped} skipped) — no metric")
+    return total_nll / max(total_tok, 1), scored, skipped, total_tok
 
-if scored == 0:
-    raise SystemExit(f"zero rows scored ({skipped} skipped) — no metric")
-loss = total_nll / max(total_tok, 1)
+
+loss, scored, skipped, tok_n = score(model)
 rep = {"holdout_loss": round(loss, 4), "rows_scored": scored,
        "rows_skipped": skipped, "rows_total": len(rows),
-       "tokens_scored": total_tok, "adapter": shape,
+       "tokens_scored": tok_n, "adapter": shape,
        # TREND SEAM (c3d7027): the split's bucketing law + the exact
        # bytes scored ride the GATED ARTIFACT — a holdout.json states
        # which world its number is comparable in, no archaeology.
        "holdout_sha256": hashlib.sha256(
            Path(a.holdout).read_bytes()).hexdigest(),
        "holdout_law": 2}
+if a.score_base:
+    # the second half of the pair on IDENTICAL bytes — free the scored
+    # model first (two 0.8B loads share one card), then score the bare
+    # base id. Same split sha, so the pair is comparable by construction.
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    base = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16)
+    base.eval()
+    if torch.cuda.is_available():
+        base = base.to("cuda")
+    bloss, bsc, bsk, btok = score(base)
+    rep["base_loss"] = round(bloss, 4)
+    rep["base_rows_scored"] = bsc
+    rep["base_tokens_scored"] = btok
+
 Path(a.out).mkdir(parents=True, exist_ok=True)
 (Path(a.out) / "holdout.json").write_text(json.dumps(rep, indent=1))
 print(rep, flush=True)          # scraped into manifest.training.summary

@@ -292,7 +292,8 @@ def job_status(run_id: str) -> dict:
 def submit_stage(kind: str, from_run: str, base_model: str | None = None,
                  provider: str = "runpod", max_runtime: int = 3600,
                  max_cost: float | None = None, dry: bool = False,
-                 fresh_holdout: bool = False) -> dict:
+                 fresh_holdout: bool = False,
+                 score_base: bool = False) -> dict:
     """Post-process a finished run: kind merge (needs base_model) | onnx
     | int8 | awq (GPU; calibrates on the source run's dataset). Cloud
     (runpod) by default; provider=local is the opt-in $0 fallback (cpu
@@ -314,6 +315,7 @@ def submit_stage(kind: str, from_run: str, base_model: str | None = None,
             holder["result"] = dispatch.submit_stage(
                 kind, from_run, base_model=base_model, provider=provider,
                 max_runtime=max_runtime, max_cost=max_cost, dry=dry,
+                fresh_holdout=fresh_holdout, score_base=score_base,
                 on_run_id=_on_run_id)
         except Exception as e:                          # noqa: BLE001
             holder["error"] = f"{type(e).__name__}: {e}"

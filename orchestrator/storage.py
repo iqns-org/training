@@ -227,6 +227,21 @@ def host_get(key: str) -> bytes | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def host_exists(key: str) -> bool:
+    """Existence WITHOUT byte transfer — the stage preflight witness
+    (07bea4 law: refuse a pod launch whose input tar was GC'd from the
+    lane; reading 1.5 GB through host_get to answer a yes/no is not an
+    option). Symmetric with host_get: direct lane stat, else ssh stat."""
+    direct = _lane_dir()
+    if direct:
+        return (Path(direct) / key).is_file()
+    r = subprocess.run(["ssh", "-o", "ConnectTimeout=10",
+                        "-o", "BatchMode=yes", _default_host(),
+                        f"test -f {shlex.quote(key_path(key))}"],
+                       capture_output=True, timeout=60)
+    return r.returncode == 0
+
+
 def ensure_bucket() -> None:
     c = _cfg()
     r = s3_request("PUT", c["endpoint"], c["region"], c["key"], c["secret"],

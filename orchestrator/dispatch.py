@@ -1407,6 +1407,7 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
                  dry: bool = False, max_price_hr: float | None = None,
                  max_wait: int | None = None,
                  fresh_holdout: bool = False,
+                 score_base: bool = False,
                  on_run_id: "callable | None" = None) -> dict:
     """Post-process a finished run's artifacts (merge|onnx|int8).
 
@@ -1483,6 +1484,33 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
     result["lane"] = lane
 
     in_key = f"runs/{from_run}/artifacts.tar.gz"
+    # ARTIFACT PREFLIGHT (07bea4 law): every stage reads the from-run's
+    # artifacts.tar.gz as its `model` input — if that object is not on
+    # the lane the pod boots, the agent fetches nothing, and the run
+    # dies at max_runtime having spent the whole GPU budget for zero
+    # signal (the 2026-11-27 base-half rebase burned 45 min + ~$0.43
+    # discovering the c7cde2 tar had been GC'd from evidence). Refuse
+    # BEFORE any pod, same shape as the family gate: a missing input is
+    # an operator/corpus fact known at dispatch, never something to pay
+    # a live card to learn. vol_head is the (ar) verify-after-delete
+    # witness — 200 = present, anything else = absent/unverifiable.
+    present = True   # dry runs rehearse against planned lineages: no pod,
+                     # no $, so the input may legitimately not exist yet
+    if not dry:
+        try:
+            present = (storage.host_exists(in_key) if lane == "host"
+                       else storage.vol_head(in_key) == 200)
+        except Exception:                              # noqa: BLE001
+            present = False                            # uncheckable -> refuse
+    if not present:
+        err = (f"from-run artifact missing on lane: {in_key} — the base/"
+               "merged bytes this stage must read are gone (evidence GC "
+               "or wrong from_run); refusing before any pod launch")
+        led.update(run_id, state="failed", error=err[:400])
+        notify.emit("run_failed", run_id, error=err[:300],
+                    reason="artifact-preflight")
+        return {"status": "error", "run_id": run_id, "error": err,
+                "refused": "artifact-preflight"}
     cmd = (f"python /work/inputs/{spec['script']} "
            f"--in /work/inputs/model --out /work/outputs")
     if spec.get("needs_base"):
@@ -1542,13 +1570,19 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
         inputs.append({"name": "holdout.jsonl", "path": hold["path"],
                        "sha256": hold["sha256"]})
         cmd += " --holdout /work/inputs/holdout.jsonl"
+        if score_base:
+            # ONE pod, BOTH pair halves (07bea4 law): no-op-merge tars are
+            # not guaranteed on the lane (they get GC'd), so the base
+            # reference must come from the same run that scores the
+            # persona bytes — identical split, identical guards.
+            cmd += " --score-base"
         # RECORD the resolved sha on the row (4eed0a law: the books must
         # carry what the pod actually received — verify's holdout leg
         # reads spec['holdout_sha'], and "?" there is a recorder bug,
         # not a data bug) + the bucketing LAW, so trend seams are
         # self-documenting instead of archaeological (c3d7027).
         led.merge_spec(run_id, holdout_sha=hold["sha256"],
-                       holdout_law=HOLDOUT_LAW)
+                       holdout_law=HOLDOUT_LAW, score_base=score_base)
     # Run CURRENT repo scripts, not the frozen /opt copies baked into the
     # p-v images: those are stranded at pre-fix builds (mirror stall), and
     # 6709e3 proved the failure class — llmcompressor's API drifted around
