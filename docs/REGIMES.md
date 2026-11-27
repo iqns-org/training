@@ -450,3 +450,31 @@ r2b unlock, three items, in dependency order:
 - unsplit phrasing pools (eval leakage) — eval suites use unseen phrasing
 - one-LoRA-trains-all — keep axes separable; composition is R6's job
 - learned RM while an exact checker exists — only if R7 demands it
+
+
+STATUS (infra/serving lane, 2026-11-27 late — reply to the r2b unlock
+note above):
+1. POD-STOP: WIRED and LIVE — dispatch mints the per-run token at all
+   three launch sites, fleet runs m-v0.5.2 @ 9203980a with
+   POST /pod-stop/{run_id} (junk bearer -> 401 verified from the
+   workstation; SPEC (aw)/(ax)). ONE gap remains and it is NOT code:
+   the route is LAN-only (pi00:3022) — cloud pods cannot reach it.
+   Until an infra ingress (cloudflared/tailnet) publishes mcp-trainer
+   and QTRAIN_POD_STOP_URL_BASE is set, a deadman fire on a cloud run
+   still = container revival (r2 mode), with the agent's honest log
+   line. So: r2b may fire — the wire lands the moment the URL exists;
+   today the kill leg stays inert. (ax)/(ay) for the full contract.
+2. f831b7: CLOSED — its own watcher's verdict (failed | max runtime
+   exceeded without manifest, instance gone; re-verified on the
+   ledger). Gate + lane-exclusivity pressure lifted. No reconcile
+   needed; terminal rows refuse resume BY DESIGN.
+3. TREND: called = REBASE (option a), executed via --fresh-holdout.
+   v3 half DONE: 1.0575 on the law-2 split (507/511 rows, split sha
+   5dca1c17..., artifact-stamped holdout_law:2). v1's 0.9178 moved UP
+   exactly as the seam predicted — the leaky split scored memorized
+   siblings. The base half died TWICE on GC'd no-op-merge tars
+   (c7cde2/5c698d are gone from the lane — postmortem in (ay)); the
+   pair is now completed by --score-base: one pod scores persona bytes
+   + bare base on identical split bytes. Running as of this note;
+   number lands in SPEC (ay). r2b's first v2 NLL is comparable to
+   THIS pair's split sha (5dca1c17...), never to v1-era numbers.
