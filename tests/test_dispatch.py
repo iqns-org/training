@@ -280,6 +280,94 @@ def test_mini_keeps_the_recipes_window(tmp_path, monkeypatch, recipe):
     assert cfg["gradient_accumulation_steps"] == 1
 
 
+def test_relaunch_carries_the_pair_floor(tmp_path, monkeypatch):
+    """9ddeb5: recovery must respect the CONTRACT. The janitor relaunched
+    a floor-48 pair and the old single-leg offers_fn picked a 16GB card,
+    re-burning the exact OOM the floor prevents. The pair shape rides
+    the lane payload (configs[]), so relaunch reads it from there."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "u")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "s")
+    monkeypatch.setenv("RUNPOD_S3_ENDPOINT", "https://x")
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {"domain": "q", "max_runtime": 60},
+                     provider="runpod")
+    payload = {"run_id": rid, "command": "x",
+               "volume": {"mount": "/data", "prefix": f"runs/{rid}"},
+               "configs": [{"name": "a", "config_yaml": "y"},
+                           {"name": "b", "config_yaml": "z"}],
+               "urls": {}}
+    monkeypatch.setattr(dispatch.storage, "vol_get",
+                        lambda k: (json.dumps(payload).encode()
+                                   if "payload" in k else None))
+    monkeypatch.setattr(dispatch, "get_provider", lambda n: object())
+    seen = {}
+
+    def fake_wave(prov, offers_fn, **kw):
+        offers_fn()                      # first pool pass, as wave does
+        raise dispatch.ProviderError("stop before launch")
+
+    def fake_pool(pr, gpus, tier, vol, ceiling, min_vram=0):
+        seen["min_vram"] = min_vram
+        return []
+
+    monkeypatch.setattr(dispatch, "_wave_launch", fake_wave)
+    monkeypatch.setattr(dispatch, "_train_pool", fake_pool)
+    res = dispatch.relaunch(rid)
+    assert res["status"] == "error"
+    assert seen["min_vram"] == dispatch.PAIR_MIN_VRAM
+
+
+def test_relaunch_attaches_live_pod_never_double_books(tmp_path,
+                                                       monkeypatch):
+    """Crash BETWEEN pod-create and the ledger instance write leaves a
+    live pod under a 'pending + no instance' row — relaunch attaches by
+    the name-suffix contract (SPEC 14b) instead of booking a second pod
+    onto one lane."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "u")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "s")
+    monkeypatch.setenv("RUNPOD_S3_ENDPOINT", "https://x")
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {"domain": "q", "max_runtime": 60},
+                     provider="runpod")
+    payload = {"run_id": rid, "command": "x",
+               "volume": {"mount": "/data", "prefix": f"runs/{rid}"},
+               "urls": {}}
+    monkeypatch.setattr(dispatch.storage, "vol_get",
+                        lambda k: (json.dumps(payload).encode()
+                                   if "payload" in k else None))
+
+    class Inst:
+        id, alive, base_url = "pod9", True, ""
+        name = f"train-q-{rid[-8:]}"
+
+    class Stub:
+        def list_instances(self):
+            return [Inst()]
+
+    monkeypatch.setattr(dispatch, "get_provider", lambda n: Stub())
+
+    def boom(*a, **k):
+        raise AssertionError("attach must not launch a second pod")
+
+    monkeypatch.setattr(dispatch, "_wave_launch", boom)
+    watched = {}
+
+    def fake_watch(rid2, get_run, result, led2, poll, **kw):
+        watched.update(kw)
+        return result
+
+    monkeypatch.setattr(dispatch, "_watch", fake_watch)
+    res = dispatch.relaunch(rid)
+    assert watched.get("inst_id") == "pod9"
+    row = led.get(rid)
+    assert row["instance_id"] == "pod9" and row["state"] == "provisioning"
+    assert res.get("status") != "error", res
+
+
 def test_watch_deadline_harvests_late_manifest(tmp_path, monkeypatch):
     """da62ed law: a passed deadline must not BLIND the harvest. A pod
     that published its manifest while nobody was watching is truth

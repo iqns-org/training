@@ -616,7 +616,15 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
             s = None
             image = _image_ref()
             ceiling = float(os.environ.get("QTRAIN_MAX_PRICE_HR", "1.50"))
-            offers_fn = lambda: _train_pool(prov, None, None, vol, ceiling)  # noqa: E731
+            # THE FLOOR RIDES THE CONTRACT (9ddeb5 post-mortem): a pair
+            # relaunch on single-leg thinking picked a 16GB card and
+            # re-burned the exact OOM the floor exists to prevent. Pair
+            # shape is readable straight off the lane payload (configs[]
+            # = two legs); recovery must respect it like submit does.
+            pair_floor = bool(payload.get("configs"))
+            offers_fn = lambda: _train_pool(  # noqa: E731
+                prov, None, None, vol, ceiling,
+                min_vram=(PAIR_MIN_VRAM if pair_floor else 0))
             rate_bound = ceiling
         env = {"JOB_PAYLOAD_PATH":
                f"{payload['volume']['mount']}/runs/{run_id}/payload.json",
@@ -628,6 +636,31 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
         prov = get_provider(provider)
         lk = ({"volume_id": vol["bucket"], "volume_path": vol["mount"],
                "data_center": vol["dc"]} if provider == "runpod" else {})
+        # CRASH-AFTER-LAUNCH (9ddeb5 class): if the original dispatch died
+        # between pod-create and the ledger instance write, the row is
+        # 'pending + no instance' YET A POD LIVES. The name contract
+        # (SPEC 14b: pod name ENDS with run_id[-8:]) lets relaunch ATTACH
+        # it — two pods racing one lane is the non-idempotency this path
+        # explicitly denies.
+        try:
+            ours = [i for i in prov.list_instances()
+                    if i.alive and (i.name or "").endswith(run_id[-8:])]
+        except Exception:                                  # noqa: BLE001
+            ours = []
+        if ours:
+            inst = ours[0]
+            pod_id = inst.id
+            result["kind"] = kind
+            led.update(run_id, state="provisioning", instance_id=inst.id,
+                       base_url=getattr(inst, "base_url", "") or "")
+            result["instance"] = {"id": inst.id, "attached": True}
+            notify.emit("relaunch_attach", run_id, kind=kind, pod=inst.id,
+                        note="crash-after-launch: attached live pod, "
+                             "no second launch")
+            _watch(run_id, get_run, result, led, poll,
+                   started=row["created_at"], max_runtime=max_runtime,
+                   prov=prov, inst_id=inst.id, put_run=put_run)
+            return result
         result["kind"] = kind
         result["estimate"] = round(budget.estimate(rate_bound, kind), 2)
         notify.emit("relaunching", run_id, kind=kind, lane=lane)

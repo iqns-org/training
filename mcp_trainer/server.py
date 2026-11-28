@@ -218,6 +218,13 @@ PIPELINE DEFAULTS (stage/budget audit, 2026-11-27 — read pipeline_report())
   close the row and terminate the zombie it claims. An unrun janitor is
   folklore: bin/supervise carries the timer.
 
+- Recovery rides the CONTRACT (9ddeb5): relaunch reads the pair shape
+  (configs[]) off the lane payload, so the VRAM floor applies on the
+  recovery path too — a janitor-healed pair on single-leg thinking
+  picked a 16GB card and re-burned the OOM; and a live pod matching the
+  run-name suffix is ATTACHED, never double-booked (crash between
+  pod-create and the ledger write leaves 'pending + no instance').
+
 SEQUENCE LAW (smoke 1ffca0, pinned by the window guard)
 - The WINDOW belongs to the DATA (rows + template render, including
   per-sample tools schemas). --mini trims ROWS and epochs — NEVER
