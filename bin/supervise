@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Fleet supervision timer (da62ed class). The janitor sweep is the
+# backstop for DEAD WATCHERS: it reaps stray pods, relaunches stale
+# staged-never-launched runs, and HEALS open rows past their pod
+# deadline — harvesting the lane's terminal manifest if one exists,
+# else closing the row and terminating the zombie it claims.
+#
+# Why a timer: the pod-side deadman can only self-kill when the
+# controller env carries QTRAIN_POD_STOP_URL_BASE + MCP_TRAINER_TOKEN
+# (infra wiring pending — launches journal 'deadman_inert' until then),
+# and the mcp image's own loop (QTRAIN_JANITOR=1) sees only ITS ledger.
+# Runs submitted from this box are claimed HERE — this timer is what
+# bounds zombie billing for them.
+#
+# Install (user cron, every 15 min):
+#   */15 * * * * /media/me/developer/cogs/training/bin/supervise \
+#       >> /tmp/qtrain-supervise.log 2>&1
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec .venv/bin/qtrain janitor "$@"

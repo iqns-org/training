@@ -7,6 +7,27 @@ from trainer_agent import app as app_mod
 from trainer_agent import runner as runner_mod
 
 
+def test_boot_idles_on_revival_with_published_manifest(tmp_path, monkeypatch):
+    """BOOT-REVIVE law (da62ed): RunPod REVIVES exited containers, so the
+    boot after a deadman's exit on a job that already published its
+    manifest must idle — not re-run the job (that re-run loop was the r2
+    billing incident, this time triggered by the watchdog itself)."""
+    import json as _json
+    vol = tmp_path / "mnt"
+    (vol / "runs" / "r1").mkdir(parents=True)
+    (vol / "runs" / "r1" / "manifest.json").write_text(
+        _json.dumps({"status": "failed"}))
+    monkeypatch.setattr(app_mod.joblane, "boot_from_env", lambda *a, **k: {
+        "run_id": "r1", "command": "true", "outputs_dir": "/work/outputs",
+        "urls": {}, "volume": {"mount": str(vol), "prefix": "runs/r1"}})
+
+    def boom(*a, **k):
+        raise AssertionError("revived boot must not construct Runner")
+
+    monkeypatch.setattr(app_mod, "Runner", boom)
+    app_mod.start_boot_job()          # returns silently: revival parked
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(runner_mod, "WORKDIR", tmp_path)

@@ -228,6 +228,22 @@ def _watch(run_id: str, get_run, result: dict, led: Ledger, poll: int,
                     f"instance {inst_id} {st} without manifest — run lost")
         _progress_tick(run_id, get_run, put_run, price_hr, started, memo)
         time.sleep(poll)
+    # DEADLINE IS NOT SILENCE (da62ed law): the manifest may sit terminal
+    # on the lane while the row still reads open — a watcher killed with
+    # its controller never saw it. One final read BEFORE the timeout
+    # error: harvest truth, else honestly call the timeout. Without this
+    # the recovery path could not heal a finished-but-unharvested run
+    # even with the bytes in hand (resume lied: "without manifest").
+    try:
+        manifest_raw = get_run(f"runs/{run_id}/manifest.json")
+    except Exception:                                  # noqa: BLE001
+        manifest_raw = None
+    if manifest_raw:
+        _harvest(run_id, manifest_raw, get_run, led, result)
+        _finish_done(run_id, started, price_hr, get_run, put_run,
+                     kind=result.get("kind") or "",
+                     status=result.get("status") or "succeeded", led=led)
+        return result
     raise ProviderError("max runtime exceeded without manifest")
 
 
@@ -342,6 +358,26 @@ def _pod_stop_env(run_id: str) -> dict:
         return {}
     return {"QTRAIN_POD_STOP_URL": f"{base}/pod-stop/{run_id}",
             "QTRAIN_POD_STOP_TOKEN": tok}
+
+
+# Fragmentation was a proven co-contributor in da62ed (a 64 MiB alloc
+# failed with 41 MiB free + "reserved but unallocated" hints). Env is
+# per-pod; expandable_segments is torch-official and side-effect free.
+_ALLOC_ENV = {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+
+
+def _warn_deadman_inert(run_id: str, env: dict, kind: str = "train") -> None:
+    """(da62ed class) Volume-lane pods arm the deadman; but without the
+    kill endpoint in the pod env, its final act — container exit — is
+    UNMADE by RunPod's revive-on-exit runtime: the pod lives, billing,
+    the job re-runs. Silent inertness was paid for in GPU-hours; journal
+    it on every such launch so 'why is the deadman not enough?' has a
+    dated answer."""
+    if "JOB_PAYLOAD_PATH" in env and not _pod_stop_env(run_id):
+        notify.emit("deadman_inert", run_id, kind=kind,
+                    note="QTRAIN_POD_STOP_URL_BASE/MCP_TRAINER_TOKEN unset:"
+                         " pod survives a dead watcher until janitor heals"
+                         " (run qtrain reconcile on a timer — bin/supervise)")
 
 # states whose work is OVER — a pod still alive under one of these is a
 # leak (crash between harvest and terminate), never a live task.
@@ -580,6 +616,7 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
         env = {"JOB_PAYLOAD_PATH":
                f"{payload['volume']['mount']}/runs/{run_id}/payload.json",
                "AGENT_TOKEN": token, "IMAGE_TAG": image,
+               **_ALLOC_ENV,
                "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
                                             "600"),
                **_pod_stop_env(run_id)}
@@ -668,6 +705,38 @@ def janitor_once(provider: str = "runpod", *, grace: int | None = None,
             out["relaunched"].append({"run_id": row["run_id"],
                                       "status": r2.get("status")
                                       or "watched to completion"})
+    # STALE-CLAIM HEAL (da62ed class): rows whose dispatch can no longer
+    # be watching — pod deadline + grace passed — are nobody's property.
+    # resume() now does the right thing on such rows: harvest a terminal
+    # manifest if the lane holds one, else close the row failed AND
+    # terminate the pod it claims (the zombie a deadman-without-kill-env
+    # cannot stop). An unrun janitor is folklore; run this on a timer
+    # (bin/supervise) or from cron.
+    out["healed"] = []
+    for row in led.list():
+        if (row["state"] not in ("provisioning", "running", "uploading")
+                or not row["instance_id"]
+                or (row["provider"] or "runpod") != provider):
+            continue
+        try:
+            spec = json.loads(row["spec_json"] or "{}")
+        except ValueError:
+            spec = {}
+        deadline = (row["created_at"]
+                    + int(spec.get("max_runtime") or 3600)
+                    + max(stale_after, 120))
+        if time.time() < deadline:
+            continue                       # a live dispatch may still own it
+        if dry:
+            out["healed"].append({"run_id": row["run_id"], "dry": True})
+            continue
+        r2 = resume(row["run_id"], poll=5, max_runtime=120)
+        out["healed"].append({"run_id": row["run_id"],
+                              "status": r2.get("status"),
+                              "terminated": r2.get("terminated")})
+        notify.emit("healed", row["run_id"], kind=row["kind"],
+                    status=r2.get("status"),
+                    note="janitor: stale claim past pod deadline")
     return out
 
 
@@ -1445,6 +1514,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             image=_image_ref(),
             env={**payload_env, "AGENT_TOKEN": token,
                  "IMAGE_TAG": _image_ref(),
+                 **_ALLOC_ENV,
                  # DEADMAN knob (SPEC 13an): flows to agent os.environ;
                  # always explicit (default 600) so pod forensics sees it
                  "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
@@ -1452,6 +1522,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                  **_pod_stop_env(run_id)},
             lk=lk, run_id=run_id, kind="train",
             max_wait=_max_wait(max_wait))
+        _warn_deadman_inert(run_id, payload_env, "train")
         pod_id = inst.id
         result["instance"] = {"id": inst.id, "gpu": offer.gpu_id,
                               "price_hr": offer.price_hr}
@@ -1982,10 +2053,12 @@ def submit_stage(kind: str, from_run: str, *, base_model: str | None = None,
             image=stage_image,
             env={**payload_env, "AGENT_TOKEN": token,
                  "IMAGE_TAG": stage_image,
+                 **_ALLOC_ENV,
                  "DEADMAN_GRACE_S": os.environ.get("QTRAIN_DEADMAN_GRACE_S",
                                             "600"),
                  **_pod_stop_env(run_id)}, lk=lk,
             run_id=run_id, kind=kind, max_wait=_max_wait(max_wait))
+        _warn_deadman_inert(run_id, payload_env, kind)
         mc = (max_cost if max_cost is not None
               else budget.estimate(offer.price_hr or rate_bound, kind))
         pod_id = inst.id

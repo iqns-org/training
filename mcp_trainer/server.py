@@ -209,6 +209,14 @@ PIPELINE DEFAULTS (stage/budget audit, 2026-11-27 — read pipeline_report())
   pod; the check itself is journaled (state 'unchanged'). retrain=True
   is the deliberate re-roll. A done row whose artifacts were GC'd is a
   receipt for nothing, so then a fresh run is the honest answer.
+- Watcher death is a class, now with three machines (da62ed): the agent
+  IDLES on boot-revival when a terminal manifest is already on the lane
+  (RunPod REVIVES exited containers — re-running was the r2 billing
+  loop); launches that arm a deadman without a kill endpoint journal
+  'deadman_inert' instead of failing silently; and the janitor HEALS
+  open rows past their pod deadline — harvest the lane's truth, else
+  close the row and terminate the zombie it claims. An unrun janitor is
+  folklore: bin/supervise carries the timer.
 
 SEQUENCE LAW (smoke 1ffca0, pinned by the window guard)
 - The WINDOW belongs to the DATA (rows + template render, including
@@ -1210,7 +1218,8 @@ def _janitor_loop() -> None:
     while True:
         try:
             out = dispatch.janitor_once(dry=False)
-            interesting = {k: out.get(k) for k in ("reaped", "relaunched")
+            interesting = {k: out.get(k) for k in ("reaped", "relaunched",
+                                                   "healed")
                            if out.get(k)}
             if interesting:
                 print("qtrain-janitor "

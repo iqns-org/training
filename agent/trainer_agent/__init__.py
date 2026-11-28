@@ -11,4 +11,4 @@ progress scraping. Presigned transfer + artifact gate/manifest land with P1.
 # unreachable ever since — repo 86d5e9a; this image is where the fleet
 # actually gets it back). Deployed 0.5.0 images train with the watchdog
 # DISARMED: this bump is the release that fixes safety, not just features.
-__version__ = "0.5.1"
+__version__ = "0.5.2"

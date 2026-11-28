@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -277,6 +278,60 @@ def test_mini_keeps_the_recipes_window(tmp_path, monkeypatch, recipe):
     assert cfg["sequence_len"] == 1024          # the RECIPE's window
     assert cfg["num_epochs"] == 1               # rows/epochs trimmed instead
     assert cfg["gradient_accumulation_steps"] == 1
+
+
+def test_watch_deadline_harvests_late_manifest(tmp_path, monkeypatch):
+    """da62ed law: a passed deadline must not BLIND the harvest. A pod
+    that published its manifest while nobody was watching is truth
+    recoverable after the fact — otherwise every controller death turns
+    a completed run into a 'without manifest' error lie."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {"domain": "queer"})
+    manifest = json.dumps({"status": "succeeded",
+                           "artifacts": {"a": {"sha256": "x"}}}).encode()
+
+    def get_run(key):
+        return manifest if key.endswith("manifest.json") else b"{}"
+
+    res = dispatch._watch(rid, get_run, {"run_id": rid}, led, poll=1,
+                          started=time.time() - 7200, max_runtime=3600)
+    assert res["status"] == "succeeded"
+    assert led.get(rid)["state"] == "done"
+
+
+def test_janitor_heals_stale_claim(tmp_path, monkeypatch):
+    """da62ed class: an OPEN row past its pod deadline belongs to nobody
+    — the janitor finishes it through the resume path (harvest terminal
+    truth, else close + terminate the zombie). This is the real backstop
+    while the deadman's kill endpoint is inert."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {"domain": "queer", "max_runtime": 60},
+                     provider="runpod")
+    led.update(rid, state="provisioning", instance_id="inst9")
+    led.db.execute("UPDATE runs SET created_at=? WHERE run_id=?",
+                   (time.time() - 7200, rid))
+    led.db.commit()
+    monkeypatch.setattr(dispatch, "reap",
+                        lambda p, **k: {"killed": [], "kept": []})
+    seen = {}
+
+    def fake_resume(run_id, **kw):
+        seen[run_id] = kw
+        led.update(run_id, state="done")   # the real resume closes rows
+        return {"status": "succeeded", "terminated": True}
+
+    monkeypatch.setattr(dispatch, "resume", fake_resume)
+    out = dispatch.janitor_once("runpod", stale_after=120)
+    assert rid in seen
+    assert out["healed"] == [{"run_id": rid, "status": "succeeded",
+                              "terminated": True}]
+    # a FRESH open row is nobody's to heal — a live dispatch owns it
+    rid2 = led.create("train", {"domain": "queer", "max_runtime": 3600},
+                      provider="runpod")
+    led.update(rid2, state="running", instance_id="instA")
+    assert dispatch.janitor_once("runpod", stale_after=120)["healed"] == []
 
 
 def test_unchanged_work_is_not_repurchased(tmp_path, monkeypatch, recipe):

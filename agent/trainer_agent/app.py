@@ -133,6 +133,24 @@ def start_boot_job() -> None:
     run = joblane.boot_from_env()
     if run is None:
         return
+    # BOOT-REVIVE LAW (da62ed): RunPod REVIVES an exited container, so a
+    # deadman exit on a pod whose job already published its manifest
+    # boots straight back into a re-run — the r2 billing loop, now with
+    # the watchdog itself as the trigger. If the lane already holds a
+    # terminal manifest, this boot is a revival: idle (a parked pod
+    # still bills, but the job runs ONCE and the lane stays honest;
+    # billing stops via pod-stop env or the janitor heal).
+    vol = run.get("volume")
+    if vol:
+        try:
+            from pathlib import Path as _P
+            if (_P(vol["mount"]) / vol["prefix"]
+                    / "manifest.json").is_file():
+                print("boot: terminal manifest already on lane — revival, "
+                      "not re-run; idling", flush=True)
+                return
+        except OSError:
+            pass
     runner = Runner(run["run_id"], run["command"],
                     outputs_dir=run["outputs_dir"],
                     post_hook=lambda state: finalize(

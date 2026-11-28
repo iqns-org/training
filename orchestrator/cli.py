@@ -648,7 +648,9 @@ def build_parser():
     s.set_defaults(func=cmd_reap)
 
     s = sub.add_parser("janitor", help="one full idempotency sweep: reap "
-                       "+ relaunch stale staged-never-launched runs")
+                       "+ relaunch stale staged-never-launched runs "
+                       "+ heal open rows past their pod deadline "
+                       "(harvest terminal lanes, terminate zombies)")
     prov_arg(s)
     s.add_argument("--dry", action="store_true")
     s.set_defaults(func=cmd_janitor)
