@@ -62,7 +62,10 @@ DEFAULT_QUESTIONS = [
 def _suite_field(key: str):
     """Corpora bench suites (all bench/*.json, name order) merged for one
     field. Best-effort: absent/broken corpora silently falls through to
-    the mechanical defaults above."""
+    the mechanical defaults above. The merge is deliberate (new suite
+    file = new trend ids, never a rewrite of pinned canonicals) BUT it
+    silently redefines "the bench" when a peer adds a file — so the
+    merged composition is LOUD at load (the STATUS §4 smell)."""
     try:
         from .config import corpora_dir
         d = corpora_dir() / "bench"
@@ -70,7 +73,7 @@ def _suite_field(key: str):
         return None
     if not d.is_dir():
         return None
-    merged, found = [], False
+    merged, found, parts = [], False, []
     for f in sorted(d.glob("*.json")):
         try:
             v = json.loads(f.read_text()).get(key)
@@ -78,7 +81,11 @@ def _suite_field(key: str):
             continue
         if v:
             merged.extend(v)
+            parts.append(f"{f.name}({len(v)})")
             found = True
+    if key == "questions" and len(parts) > 1:
+        print(f"bench: suite merged from {' + '.join(parts)} "
+              f"= {len(merged)} questions", file=sys.stderr)
     return merged if found else None
 
 

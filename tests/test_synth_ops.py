@@ -201,6 +201,81 @@ def test_openai_endpoint_forms(synth):
             == "http://h:8000/v1/chat/completions")
 
 
+def _pair(sys_name, user, gold, rejected, shape="dict"):
+    rej = ({"messages": [{"role": "user", "content": user},
+                         {"role": "assistant", "content": rejected}]}
+           if shape == "dict" else rejected)
+    return {"system": sys_name, "why": "test",
+            "messages": [{"role": "system", "content": sys_name},
+                         {"role": "user", "content": user},
+                         {"role": "assistant", "content": gold}],
+            "rejected": rej}
+
+
+def test_promote_precedence_quarantine_idempotent(synth, tmp_path,
+                                                  monkeypatch):
+    # the D7 home: precedence (real student negatives outvote curated),
+    # dedup named in receipt, holdout quarantine, malformed refuse,
+    # byte-stable rerun. _is_holdout patched to a marker predicate —
+    # the law itself is pinned by the mirror tests elsewhere.
+    src = tmp_path / "rft"
+    src.mkdir()
+    (src / "dpo-mining.jsonl").write_text("\n".join(json.dumps(r) for r in [
+        _pair("repair", "SAME Q", "GOLD", "real-student-bad"),
+        _pair("repair", "uniq q", "GOLD2", "HOLD-marker bad"),
+        _pair("repair", "uniq q2", "GOLD3", "GOLD3"),   # malformed: == gold
+        _pair("repair", "uniq q3", "GOLD4", "old string shape",
+              shape="str"),                              # both shapes work
+    ]) + "\n")
+    (src / "dpo-craft.jsonl").write_text(json.dumps(
+        _pair("repair", "SAME Q", "GOLD", "synthetic-neg")) + "\n")
+    monkeypatch.setattr(synth, "_is_holdout", lambda line: "HOLD" in line)
+    out = tmp_path / "datasets" / "cognition-dpo"
+    code, res = run(synth, ["promote", "--src", str(src), "--out", str(out)])
+    assert code == 0
+    assert res["kept"] == 2 and res["quarantined_holdout"] == 1
+    assert res["dedup_dropped"] == 1 and res["rejects"] == {"malformed": 1}
+    assert res["by_src"] == {"mining": 2}
+    kept = [json.loads(l) for l in
+            (out / "pairs.jsonl").read_text().splitlines()]
+    assert kept[0]["_src"] == "mining"       # curated twin was dropped
+    assert any("old string shape" in json.dumps(k["rejected"]) for k in kept)
+    ho = (out / "pairs.holdout.jsonl").read_text().splitlines()
+    assert len(ho) == 1 and "HOLD" in ho[0]
+    rec = json.loads((out / "receipt.json").read_text())
+    assert rec["sources"]["mining"] and rec["sources"]["craft"]
+    assert rec["drops"][0]["reason"] == "real-twin"   # curated twin of a
+    # real pair drops, but a DIFFERENT failure mode on an old prompt is
+    # kept: add one and it must survive
+    assert rec["distinct_prompts"] == 2
+    before = (out / "pairs.jsonl").read_bytes()   # idempotent: same input,
+    run(synth, ["promote", "--src", str(src), "--out", str(out)])
+    assert (out / "pairs.jsonl").read_bytes() == before    # same bytes
+    with open(src / "dpo-mining.jsonl", "a") as fh:
+        fh.write(json.dumps(_pair("repair", "SAME Q", "GOLD",
+                                  "second distinct failure")) + "\n")
+    code2, res2 = run(synth, ["promote", "--src", str(src),
+                              "--out", str(tmp_path / "d2")])
+    assert res2["kept"] == 3 and res2["negatives_per_prompt_max"] == 2
+
+
+def test_promote_real_law_census_consistent(synth, tmp_path):
+    # under the LIVE law, kept + quarantined == valid rows, always;
+    # and template-law bucketing is per-system, so 30 rows of ONE
+    # system land on one side together (the split-consistency point:
+    # a family whose SFT rows are holdout-side cannot train r3.5).
+    src = tmp_path / "rft"
+    src.mkdir()
+    (src / "dpo-mining.jsonl").write_text("\n".join(
+        json.dumps(_pair("abstain", f"q{i}", "G", "x"))
+        for i in range(30)) + "\n")
+    code, res = run(synth, ["promote", "--src", str(src),
+                            "--out", str(tmp_path / "d")])
+    assert res["kept"] + res["quarantined_holdout"] == 30
+    assert res["law"] in ("template", "gold")
+    assert res["kept"] in (0, 30)            # one bucket, one side
+
+
 def test_sample_cmd_fake_endpoint(synth, tmp_path, monkeypatch):
     d = tree(tmp_path)
     msgs, _ = next(iter(synth.check.expansions(NL_TEMPLATE)))
@@ -366,6 +441,40 @@ def test_profile_gold_leak_catches_formulaic_family(synth, tmp_path,
     assert code == 0
     assert fam["holdout_template_leak"] == 0.0    # v2 law does its job
     assert fam["holdout_gold_leak"] == 1.0        # ...and MISSES this
+
+
+def test_profile_program_rows_are_structural(synth, tmp_path):
+    """D4 closed: program-hood keys on the FIRST LINE's IR syntax, not
+    on keyword VOCABULARY anywhere — a prose verdict that QUOTES
+    MATCH/TYPE keeps its legal em-dash in hazards_in_prose_rows, and
+    a real program gold's dash is caught in the program column."""
+    d = tmp_path / "shape"
+    d.mkdir()
+    em = "\u2014"
+    prose = {"messages": [
+        {"role": "assistant", "content": "CTX"},
+        {"role": "user", "content": "why?"},
+        {"role": "assistant",
+         "content": f"INVALID: E1_DUP_TYPE {em} TYPE my:Particle "
+                    "is declared twice, MATCH never binds."}]}
+    program = {"messages": [
+        {"role": "assistant", "content": "CTX"},
+        {"role": "user", "content": "fix it"},
+        {"role": "assistant",
+         "content": f"BIND my:?x = 1 {em} .\nRETURN my:?x."}]}
+    prose2 = {"messages": [
+        {"role": "assistant", "content": "CTX"},
+        {"role": "user", "content": "why twice?"},
+        {"role": "assistant",
+         "content": f"INVALID: E2_SCOPE {em} READ sees no BIND."}]}
+    (d / "diagnosis.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in (prose, prose2, program)) + "\n")
+    code, res = run(synth, ["profile", "--path", str(d)])
+    assert code == 0
+    fam = res["diagnosis"]
+    assert fam["kind"] == "prose"                     # 1 of 3 rows IR
+    assert fam["hazards_in_program_rows"]["dash"] == 1   # the real program
+    assert fam["hazards_in_prose_rows"]["dash"] == 2     # quoted-keyword prose
 
 
 def test_holdout_mirror_matches_prepare_domain(synth, monkeypatch):

@@ -635,3 +635,36 @@ live in MY files, landed together):
    until it lands, any vllm-deploy.sh --apply silently drops r3).
    Numbers: 259 passed, 1 skipped, full suite green with all five new
    bench tests + endpoint test included.
+
+STATUS (pair promotion + D4, 2026-11-28 — second close-out block):
+1. DPO PAIRS PROMOTED (D7/G3 closed): `synth promote` gives mined
+   pairs a HOME the lane reads — datasets/cognition-dpo/pairs.jsonl,
+   receipt.json carries source-file shas, census by system/src, and
+   NAMED drops (no silent loses). THE LAW, in the tool: dedup key is
+   (prompt, rejected) — a NEW FAILURE MODE on an old prompt is signal,
+   not a dupe (raw census: 137 = 37 prompts x up to 5 distinct
+   negatives + 40 exact dupes); source precedence mining > guided >
+   craft means a curated twin of a real pair DROPS (real student
+   negatives are the on-policy half DPO needs; craft exists for
+   coverage only), while craft still fills uncovered prompts; the
+   LIVE holdout law quarantines holdout-side pairs to
+   pairs.holdout.jsonl (r3.5's NLL baseline, never its train data).
+   PROMOTED REALITY: 94 pairs / 37 prompts, 0 quarantined (all 12
+   families train-side under template law — consistent, since they
+   are the train families), receipt sha'd. Tests: precedence, both
+   rejected-shapes, quarantine, malformed refuse, idempotent bytes,
+   real-law census consistency.
+2. D4 CLOSED (profile dash quirk): program-hood was KEYWORD
+   VOCABULARY anywhere in the gold — prose verdicts that QUOTE
+   "MATCH"/"TYPE" classified as program rows, and their LEGAL
+   em-dashes counted as program hazards (diagnosis: 2,044 phantom).
+   Now structural: the FIRST statement line must be IR syntax
+   (keyword statement | prefixed-name statement | PREFIX IRI decl).
+   Measured on all 25,243 r3 rows before shipping: every family
+   separates 0.00-or-1.00, all kinds STABLE, only diagnosis's
+   phantom column moves (2044 -> 0 into the prose column). Falsifier
+   pinned in tests; re-profile evidence tmp/r3-profile-d4fixed.json.
+3. BENCH SUITE-MERGE MADE VISIBLE (the §4 smell): loader merges all
+   bench/*.json for trend-id stability, but silently redefines what
+   "the bench" is when a peer adds a file — now the merged sources +
+   question counts print to stderr at load.

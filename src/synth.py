@@ -1439,8 +1439,21 @@ STYLE_CLASSES = {          # prose-bleed fingerprints: chars NO legal IR
     "dash": "\u2014\u2013",   # program contains. (paren/square were
     "curly": "\u2018\u2019\u201c\u201d",  # dropped: IR has legal list
 }                          # literals — presence-based = false positives
-PROGRAM_MARK = re.compile(
-    r"\b(PREFIX|WORLD|MEMORY|READ|BIND|WRITE|MATCH|RETURN|EMIT)\b")
+# Program-hood is a STRUCTURAL property, not a vocabulary one: the
+# old anywhere-keyword regex classified a PROSE gold that QUOTES
+# "MATCH"/"TYPE" as a program row — so diagnosis-style golds (which
+# legitimately cite IR keywords inside English sentences) had their
+# legal em-dashes counted in hazards_in_program_rows (the D4 quirk,
+# r3-profile: 2,044). A row is program iff its FIRST statement line
+# is IR syntax (keyword statement, prefixed-name statement, or a
+# PREFIX IRI declaration) — measured on all 25,243 r3 rows, this is
+# family-exactly-separating (every family 0.00 or 1.00), so the
+# classifier never silently re-shapes a kind.
+PROGRAM_STATEMENT = re.compile(
+    r"(?:^(?:PREFIX|WORLD|MEMORY|READ|BIND|WRITE|MATCH|RETURN|EMIT"
+    r"|DEFINE|DELETE|TYPE)\b"
+    r"|^\w+:[\w?]+[\s.=<{]"
+    r"|^\w+:\s*<https?://)")
 
 
 def _norm(text: str) -> str:
@@ -1490,7 +1503,7 @@ def _observe(st: dict, gold: str, tmpl: str, held: bool) -> None:
     st["rows"] += 1
     st["gold_lens"].append(len(gold))
     st["uniq"].add(_norm(gold))
-    is_prog = bool(PROGRAM_MARK.search(gold))
+    is_prog = bool(PROGRAM_STATEMENT.match(gold.lstrip()))
     st["prog"] += int(is_prog)
     for cls, chars in STYLE_CLASSES.items():
         if any(c in gold for c in chars):
@@ -2197,6 +2210,133 @@ def cmd_bundle(args):
     return 0
 
 
+def cmd_promote(args):
+    """Mined DPO pairs GET A HOME (D7): tmp/ is agent scratch, datasets/
+    is the lane. Reads dpo-<tag>.jsonl from the rft dir, in FIXED
+    source order — mining, guided, craft — which IS the precedence:
+    a pair whose rejected is a REAL student failure outvotes a curated
+    synthetic negative (DPO gradient is strongest on-policy; craft
+    exists for coverage, not realism). Rules, all deterministic:
+      - dedup by normalized user-prompt, first source wins, drops
+        are NAMED in the receipt, never silent;
+      - malformed pair (no messages/rejected, chosen==rejected) ->
+        counted reject, fail-CLOSED like bundle;
+      - holdout hygiene: the LIVE split law (_is_holdout) quarantines
+        holdout-side pairs to pairs.holdout.jsonl — they exist for
+        the r3.5 run's NLL baseline, never for its training data;
+      - receipt.json carries source-file shas so the promoted corpus
+        is joinable to the run ledger by bytes, not by hope.
+    Idempotent: same inputs -> byte-identical pairs.jsonl."""
+    src = Path(args.src) if args.src else TMP / "rft"
+    dest = Path(args.out) if args.out else DATA_ROOT / "datasets" / args.domain
+    norm = lambda t: " ".join((t or "").split())
+
+    def rejected_text(row):
+        """Both mined shapes: a bare string or a {messages:[...]}
+        conversation (the real one from `synth sample`)."""
+        rej = row.get("rejected")
+        if isinstance(rej, str):
+            return rej
+        if isinstance(rej, dict):
+            msgs = rej.get("messages") or []
+            return next((m.get("content") or "" for m in reversed(msgs)
+                         if m.get("role") == "assistant"), "")
+        return ""
+
+    rows, quarantine, seen, real_prompts, dropped = [], [], set(), set(), []
+    rejects, src_sha = {}, {}
+    for tag in ("mining", "guided", "craft"):
+        f = src / f"dpo-{tag}.jsonl"
+        if not f.is_file():
+            continue
+        src_sha[tag] = hashlib.sha256(f.read_bytes()).hexdigest()[:16]
+        for line in f.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                rejects["unparseable"] = rejects.get("unparseable", 0) + 1
+                continue
+            msgs = row.get("messages") or []
+            user = next((m for m in msgs if m.get("role") == "user"), None)
+            gold = next((m for m in reversed(msgs)
+                         if m.get("role") == "assistant"), None)
+            bad = (not user or not gold or "rejected" not in row
+                   or norm(rejected_text(row)) in ("",
+                                                  norm(gold.get("content"))))
+            if bad:
+                rejects["malformed"] = rejects.get("malformed", 0) + 1
+                continue
+            p = norm(user["content"])
+            key = (p, norm(rejected_text(row)))
+            # dedup key is (prompt, rejected): a new FAILURE MODE on an
+            # old prompt is signal, not a dupe (r3.5 census: 137 raw =
+            # 37 prompts x up to 6 distinct negatives + 40 exact dupes).
+            # Craft precedence: synthetic negatives cover prompts the
+            # student never failed on — a curated twin of a REAL pair
+            # adds words, not on-policy weight, so it drops.
+            if key in seen:
+                dropped.append({"src": tag, "reason": "exact-dup",
+                                "prompt_sha":
+                                    hashlib.sha256(
+                                        p.encode()).hexdigest()[:12]})
+                continue
+            if tag == "craft" and p in real_prompts:
+                dropped.append({"src": "craft", "reason": "real-twin",
+                                "prompt_sha":
+                                    hashlib.sha256(
+                                        p.encode()).hexdigest()[:12]})
+                continue
+            seen.add(key)
+            if tag != "craft":
+                real_prompts.add(p)
+            row["_src"] = tag
+            (quarantine if _is_holdout(json.dumps(row))
+             else rows).append(row)
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, pop in (("pairs.jsonl", rows),
+                      ("pairs.holdout.jsonl", quarantine)):
+        with open(dest / name, "w") as fh:
+            for r in pop:
+                fh.write(json.dumps(r, ensure_ascii=False,
+                                    sort_keys=True) + "\n")
+    def _pkey(r):
+        return norm(next(m["content"] for m in r["messages"]
+                         if m["role"] == "user"))
+    per_prompt = {}
+    for r in rows:
+        per_prompt[_pkey(r)] = per_prompt.get(_pkey(r), 0) + 1
+    receipt = {
+        "law": os.environ.get("QTRAIN_HOLDOUT_LAW", "template").strip().lower(),
+        "sources": src_sha, "kept": len(rows),
+        "quarantined_holdout": len(quarantine),
+        "dedup_dropped": len(dropped), "drops": dropped[:20],
+        "drop_reasons": {r: sum(1 for d in dropped if d["reason"] == r)
+                         for r in {d["reason"] for d in dropped}},
+        "rejects": rejects,
+        "distinct_prompts": len(per_prompt),
+        "negatives_per_prompt_max": max(per_prompt.values(), default=0),
+        "by_system": {}, "by_src": {},
+    }
+    for r in rows:
+        s = r.get("system", "?")
+        receipt["by_system"][s] = receipt["by_system"].get(s, 0) + 1
+        receipt["by_src"][r["_src"]] = receipt["by_src"].get(r["_src"], 0) + 1
+    (dest / "receipt.json").write_text(json.dumps(receipt, indent=1,
+                                                  sort_keys=True))
+    print(json.dumps({"domain": args.domain, "out": str(dest),
+                      "kept": receipt["kept"],
+                      "quarantined_holdout": receipt["quarantined_holdout"],
+                      "dedup_dropped": receipt["dedup_dropped"],
+                      "distinct_prompts": receipt["distinct_prompts"],
+                      "negatives_per_prompt_max":
+                          receipt["negatives_per_prompt_max"],
+                      "rejects": rejects, "by_src": receipt["by_src"],
+                      "law": receipt["law"]}))
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="synth",
                                 description="deterministic IR corpus synthesis")
@@ -2246,6 +2386,15 @@ def main(argv=None):
                                  "(default: scenarios + derived)")
     b.add_argument("--dpo", help="override dpo.jsonl path (default tmp)")
     b.set_defaults(func=cmd_bundle)
+    pr = sub.add_parser("promote", help="D7: tmp-mined DPO pairs -> "
+                                        "$CORPORA_DIR/datasets/<domain>/ "
+                                        "(precedence-dedup, holdout "
+                                        "quarantine, sha'd receipt)")
+    pr.add_argument("--domain", default="cognition-dpo")
+    pr.add_argument("--src", help="dir holding dpo-<tag>.jsonl "
+                                  "(default tmp/synth/rft)")
+    pr.add_argument("--out", help="override dataset dir")
+    pr.set_defaults(func=cmd_promote)
     s = sub.add_parser("sample", help="R4: student-side RFT (serve -> k -> "
                                       "oracle keep -> rft.jsonl)")
     s.add_argument("--url", help="OpenAI-compatible endpoint, e.g. "
