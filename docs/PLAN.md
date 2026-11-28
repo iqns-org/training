@@ -131,7 +131,31 @@ law (peer's `c1c554d`+), and the r4 gold-diversity tranche.
 
 | # | Fork | Trigger | Branches |
 |---|------|---------|----------|
-| D1 | smoke #6 | result | RESOLVED, then refined by receipts: sequential mode SHIPPED (c10e1ea) but smoke #7 (c4f1ec) measured the QUIET-CARD truth: 25.2 GiB/leg — 24GB class holds NOTHING at 8192. The use_liger escape probe (2a7b95) died byte-identical: no CE path exists in this build, proven behaviorally twice. Final: PAIR_SEQ_MIN_VRAM=28 -> 32GB class (PRO 4500 Blackwell $0.72, DC-likely); smoke #9 pending |
+| D1 | smoke #6 | result | RESOLVED GREEN: sequential on PRO 4500 Blackwell 32GB ($0.72) trained 44/44 steps both legs (658ab2, done, 18 artifacts, train_loss 0.90, 18.1 min pod). Floors now: concurrent 48 (unsourceable in this volume DC — DC-alignment, not market: preflight shows A40/A6000/L40S in catalog), sequential 28 (quiet-card 25.2/leg + headroom, c4f1ec) |
+
+## Measured economics (658ab2 — the numbers that gate D2)
+
+Mini sequential, PRO 4500 Blackwell: 0.8B ~3.7 s/it, 4B ~5.2 s/it
+(5.15 avg incl. warmup), 0.917 packed steps per row at 8192.
+Full corpus (22,947 rows) per EPOCH:
+- 0.8B: ~21,000 steps x 5.15s ~= 30 h -> $21.6
+- 4B:   ~21,000 steps x 5.2s+  ~= 31-41 h -> $22-30
+- sequential pair: 1 epoch ~= $44-52; recipes' num_epochs=2 ~= $88-104
+Balance at cut: $7.41. The cap was set BEFORE the pilot measured this —
+D2 is now a real fork:
+
+| Path | Full-run cost | What it buys |
+|------|--------------|--------------|
+| F1: 5-6K stratified gen0, 2 epochs | ~$16-22 | real tier scores now; weekly deltas (~582 rows, ~$2/wk) fill in distribution anyway |
+| F2: full corpus, 1 epoch | ~$44-52 | maximal data pass; no epoch-2 generalization-repair |
+| F3: full corpus, 2 epochs | ~$88-104 | the textbook gen0; pays ~2x F2 for pass 2 |
+| F4: faster class (A100-80/H100) | ~$50-90 full-2ep | 3-4x s/it cut at 2-3x rate; net ~= F3, days -> hours of wall |
+
+Recommendation: F1 now (fits current balance + cap raise ~$25), F2/F3 as
+a deliberate compaction event later — the GENERATIONS design makes
+gen0-size a strategy choice, not a one-way door: deltas keep any gen
+current. Weekly delta run at 582 rows: ~$2-3, and DUP-POD makes the
+whole cron safely re-runnable.
 | D2 | budget raise | before full run | raise QTRAIN_BUDGET in .env with the measured estimate as the receipt (down-only knobs make this the honest path) |
 | D3 | FFT pilot | tier-2 stall at gen-0 | run `Qwen3.5-0.8B-fft.yaml` single-leg (gate/tooling already built) |
 | D4 | "all safety wired" claim | until O4.1 lands | janitor-cadence-bound is NOT wired; the plan's DoD #4 fails while pod-stop is inert — do not call the loop production-grade before the kill-test receipt |

@@ -201,7 +201,12 @@ PIPELINE DEFAULTS (stage/budget audit, 2026-11-27 — read pipeline_report())
 - Money gates (QTRAIN_BUDGET/_MARGIN/_RESERVE/QTRAIN_REAP_GRACE) are all
   env knobs WITH defaults stated in pipeline_report — the aggregate gate
   refuses BEFORE launch, the soft kill acts during, the deadman covers
-  watcher death. Three layers, one vocabulary.
+  watcher death. Three layers, one vocabulary. The gate number prices
+  INTENT: for full train runs it is max(profile, ceiling x max_runtime)
+  — a raised runtime cap is a declared worst case (658ab2 calibration:
+  the 60-min profile priced a 104-hour job as $0.77); mini stays on the
+  smoke profile (f44f27's other edge: over-pricing starves the cheap
+  validation lane), and stages stay profile-kill-consistent.
 - Remote tuning has a surface: fleet_settings (read values + provenance)
   and knob_set (audited writes). Whitelist exhaustive; money ceilings
   and rate caps DOWNWARD-only over the API, safety floors UPWARD-only —

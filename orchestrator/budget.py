@@ -133,6 +133,16 @@ def fits(offers, min_vram: int, ceiling_hr: float):
     return ok, best
 
 
+def worst_case(price_hr: float, max_runtime_s: float) -> float:
+    """Most a run CAN spend: the runtime kill cap is a hard money
+    ceiling (price x seconds/3600 — same arithmetic as the launch kill
+    threshold, 425e6c units law). The aggregate gate must never price a
+    run below its own cap: 658ab2 calibration showed the static 'train'
+    profile (60 min) describing a $0.77 job while max_runtime=104h made
+    it a $75 decision. max(profile, worst_case) = never optimistic."""
+    return price_hr * max_runtime_s / 3600.0
+
+
 def aggregate_gate(open_ests, est: float, total: float | None = None) -> str | None:
     """None = allowed; else the refusal reason. open_ests = the stored
     est_cost of every already-BILLED run (exact sum, not a count proxy)."""

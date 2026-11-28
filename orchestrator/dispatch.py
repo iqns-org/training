@@ -1611,6 +1611,18 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         # estimating kills good runs at the cap (cb059d); over-estimating
         # refuses cheap runs at the gate — both are calibration lies.
         est = budget.estimate(rate_bound, "smoke" if mini else "train")
+        # GATE PRICES THE CAP (658ab2 calibration): a run can spend up
+        # to price x max_runtime — the gate must never see less. The
+        # 60-min 'train' profile priced a 104-hour job as a $0.77
+        # decision; profile and worst-case both bound it now.
+        # MINI EXCLUDED (f44f27 keeps both edges): a caller RAISING
+        # max_runtime above the profile declares the run's worst case
+        # and must be gated at it; mini's default 1h cap is a kill
+        # switch, not intent — blending it would 4x-price the smoke and
+        # starve the validation lane that keeps the expensive lanes
+        # honest. The gate prices INTENT, not leftover defaults.
+        if not mini:
+            est = max(est, budget.worst_case(rate_bound, max_runtime))
         why = budget.aggregate_gate(
             [r.get("est_cost") or 0.0 for r in led.list()
              if r["state"] in budget.BILLED and r["run_id"] != run_id], est)
@@ -2330,12 +2342,17 @@ def preflight(kind: str = "train", *, provider: str = "runpod",
         out["decision"] = (f"refuse: no in-stock offer within "
                            f"${ceiling:.2f}/hr (cheapest fit: {cheap})")
         return out
-    est = budget.estimate(offers[0].price_hr or 0.0,
-                          kind if is_stage else "train")
-    # UNITS LAW (425e6c): max_runtime is SECONDS — the launch path kills
-    # at price*runtime/3600; this report must quote the SAME number or
-    # preflight lies by 60x (the original bug's shape, reborn here)
-    kill = est if is_stage else (offers[0].price_hr or 0.0) * max_runtime / 3600
+    profile = budget.estimate(offers[0].price_hr or 0.0,
+                              kind if is_stage else "train")
+    # UNITS LAW (425e6c): max_runtime is SECONDS — the train launch path
+    # kills at price*runtime/3600; this report must quote the SAME
+    # number or preflight lies by 60x (the original bug's shape, reborn
+    # here). 658ab2 calibration: the GATE number is likewise bounded by
+    # that cap (never optimistic), while stage kills stay profile-based
+    # — preflight mirrors the launch arithmetic for BOTH kinds.
+    kill = (profile if is_stage
+            else budget.worst_case(offers[0].price_hr or 0.0, max_runtime))
+    est = profile if is_stage else max(profile, kill)
     opens = [r.get("est_cost") or 0.0 for r in led.list()
              if r["state"] in budget.BILLED]
     why = budget.aggregate_gate(opens, est)

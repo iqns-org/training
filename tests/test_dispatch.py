@@ -537,6 +537,32 @@ def test_janitor_heals_stale_claim(tmp_path, monkeypatch):
     assert dispatch.janitor_once("runpod", stale_after=120)["healed"] == []
 
 
+def test_gate_prices_the_runtime_worst_case(tmp_path, monkeypatch, recipe):
+    """658ab2 calibration: the static 'train' profile (60 min) priced a
+    hypothetical 104-hour full-pair run as a $0.77 DECISION while its
+    own max_runtime admitted $156. The aggregate gate must price
+    max(profile, price x max_runtime) — the ceiling the run can actually
+    spend — so a long job cannot walk past the cap on a short job's
+    ticket. A default-capped run still passes the gate (and fails only
+    on the empty pool stub, proving the gate was not what stopped it)."""
+    _vol_puts(tmp_path, monkeypatch)
+
+    class Stub:
+        def catalog(self, gpus=None, tier=None):
+            return []
+
+        def balance(self):
+            return 99.0
+
+    monkeypatch.setattr(dispatch, "get_provider", lambda n: Stub())
+    monkeypatch.setattr(dispatch, "_max_wait", lambda e: 0)
+    res = dispatch.submit("queer", recipe, max_runtime=374_400)  # 104 h
+    assert "QTRAIN_BUDGET" in str(res.get("error")), res
+    res2 = dispatch.submit("queer", recipe)     # default 1 h cap
+    assert "QTRAIN_BUDGET" not in str(res2.get("error")), res2
+    assert "capacity" in str(res2.get("error")).lower(), res2
+
+
 def test_unchanged_work_is_not_repurchased(tmp_path, monkeypatch, recipe):
     """DUP-POD LAW: work_key = dataset sha x rendered configs. A DONE
     prior with artifacts ON HAND answers a repeat submit with its
