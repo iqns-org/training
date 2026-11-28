@@ -734,3 +734,33 @@ committed code. Results:
    reproducible). SFT component identical across all three r4-era
    ids — the census gate holds through the whole lineage.
 5. Suite at this state: 275 passed, 1 skipped (two new guard tests).
+
+STATUS (state-verify pass, 2026-11-28 late — "check it": numbers
+replayed, five bugs found, four paid):
+- CENSUS REPLAYS EXACTLY: derive→abstain→graph×2→equiv→bundle→
+  prepare-domain on committed code reproduced 27,755+662 / 595
+  gold-clean (90%) — the gate was a measurement, not a moment.
+- Canonical id cognition@8b78631b44b793dc; lineage 7dcd8731→
+  9c634348→8b78631b declared (SFT component byte-identical across
+  all three; only preference bytes moved, see below).
+- BUGS FOUND/FIXED: (A) bundle --dpo default silently swapped
+  promoted bytes — output-hashing guard + tests; it fired once,
+  honestly: r1's 960-pair file was unrecoverable (capture lost the
+  race to a same-day derive), canonical preference is the current
+  structural population edfa5396. Lesson: a sha at capture time or
+  it didn't happen. (B) conversion emitted extra keys — restored
+  2-key canonical, pinned. (C) SIGPIPE head-pipe truncated a write
+  once — practice fix: full logs, never head. (D) counterfactual
+  0/3 = program-gold STRING certification ceiling, named, answer-
+  SET metrics are the (open) fix. (E) equivalence stuck 54% —
+  cross-file vocabulary collisions (site1/shared suffix pools),
+  the r4.1 lever is entity-name widening, not more rotation.
+- SMELLS for the register: gold pools duplicated (synth.py vs the
+  authoring tool); the "\n\n" ctx/request seam has no assert; the
+  verify chain is muscle memory that should be `synth verify` with
+  regression exits; census evidence lives in gitignored tmp/ and is
+  cited by the ledger.
+- FARM STATE: untouched (0 dollars, 0 open runs); peer's code-corpus
+  saga visible in the ledger (5 failed train runs today; pair-floor
+  memory-law commits) — handoff note still owed by their side.
+  Engine probed: r3 still live on nano0 (direct, no tunnel needed).
