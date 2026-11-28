@@ -39,7 +39,12 @@ MINI_LINES = 48
 # legs (bf16 0.8B + 4-bit 4B + 2 CUDA ctx + activations at 8192) have not
 # and the sizing math says 12GB cannot end well. Floor applied ONLY when
 # pair is set; env knob to retune as the pilot measures real usage.
-PAIR_MIN_VRAM = int(os.environ.get("QTRAIN_PAIR_MIN_VRAM", "20"))
+# MEASURED (da62ed/d90d9a): the pinned axolotl materializes FULL logits
+# for CE (no chunked/liger/CCE knob in its schema — chunks_per_batch is
+# silently DROPPED, d90d9a schema dump proves it): ~21.3 GiB peak PER
+# LEG at 8192x151936. Concurrent pair = 2 legs at once = 48GB class;
+# 20GB cards failed three smokes exactly on this arithmetic.
+PAIR_MIN_VRAM = int(os.environ.get("QTRAIN_PAIR_MIN_VRAM", "48"))
 
 
 
@@ -2228,8 +2233,8 @@ def preflight(kind: str = "train", *, provider: str = "runpod",
 
 
 IMAGE_PIN = ("ghcr.io/iqns-org/trainer"
-             "@sha256:2eaa9e0a7e8d12c0741ae5bac3371d6ed8ae3def2e4544d9dcb99d632cffc4ec")
-IMAGE_TAG = "v0.5.1"
+             "@sha256:1e9687af539ea0d041b6e9910d6dfd3ce40932ecc713d9abdd60e2e16e890609")
+IMAGE_TAG = "v0.5.2"
 
 
 def _image_ref() -> str:

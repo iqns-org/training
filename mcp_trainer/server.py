@@ -224,6 +224,20 @@ SEQUENCE LAW (smoke 1ffca0, pinned by the window guard)
   sequence_len: forcing 256 under ~4.6K-token agentic rows produced
   num_samples=0 and step-0 death for both pair legs. submit refuses a
   starved window (bypass code window_starved) BEFORE any pod launches.
+
+MEMORY LAW (receipts da62ed + d90d9a)
+- Full-materialization cross-entropy costs ~21.3 GiB PER LEG at the
+  8192 window x 151,936 Qwen vocab (measured: 13.75 in-use + 7.58
+  attempt). Card sizing from this arithmetic: >=24 GB for one leg, 48 GB
+  for a concurrent pair — three smokes died on a 20 GB floor that could
+  never have held even a SINGLE leg.
+- The pinned axolotl schema has NO chunked/liger/CCE knobs AND unknown
+  keys are silently dropped: chunks_per_batch rode the recipe, appeared
+  nowhere in the 348-key boot config dump, and the OOM allocation was
+  byte-identical to the unchunked one. Validate recipe keys against the
+  BOOT DUMP, never against upstream docs — this build fails silent.
+- The 'sample_packing & sdpa => 0.0 loss' warning is neutralized in
+  this build by the sdpa_varlen cu_seqlens patch; attention stays sdpa.
 """
 
 
@@ -245,10 +259,11 @@ KNOBS: dict[str, dict] = {
     "QTRAIN_MAX_PRICE_HR": {"env": "QTRAIN_MAX_PRICE_HR", "default": 1.50,
                             "cast": float, "range": (0.0, None), "dir": "down",
                             "note": "rate ceiling $/hr (right-sizing, 13q)"},
-    "QTRAIN_PAIR_MIN_VRAM": {"env": "QTRAIN_PAIR_MIN_VRAM", "default": 20,
+    "QTRAIN_PAIR_MIN_VRAM": {"env": "QTRAIN_PAIR_MIN_VRAM", "default": 48,
                              "cast": int, "range": (8, None), "dir": "up",
-                             "note": "co-tenant VRAM floor GB (PRIOR from "
-                                     "smoke #1; pilot data retunes)"},
+                             "note": "co-tenant VRAM floor GB (MEASURED "
+                                     "d90d9a: ~21.3 GiB/leg full-CE at "
+                                     "8192x151936; 48 = 2 legs + ctx)"},
     "QTRAIN_DEADMAN_GRACE_S": {"env": "QTRAIN_DEADMAN_GRACE_S", "default": 600,
                                "cast": int, "range": (60, None), "dir": "up",
                                "note": "watcher-silence grace before pod "

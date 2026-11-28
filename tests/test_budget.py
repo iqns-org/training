@@ -188,10 +188,13 @@ def test_est_basis_names_its_guess(tmp_path, monkeypatch):
 
 
 def test_preflight_pair_floor_keeps_small_cards_out(tmp_path, monkeypatch):
-    """PAIR VRAM FLOOR (post-mortem of the first pair smoke, 2026-11-28):
-    the pool fitted $0.24/12GB for a TWO-leg job — the cheapest-fit logic
-    is single-leg thinking. pair=True must exclude sub-floor cards and
-    SAY it (assumed[]; the floor is a labeled PRIOR, env-retunable)."""
+    """PAIR VRAM FLOOR (post-mortem smokes 1ffca0→da62ed→d90d9a): the
+    cheapest-fit logic was single-leg thinking THREE times over —
+    measured full-CE legs need ~21.3 GiB EACH (d90d9a: 13.75 in-use +
+    7.58 attempt on a 19.55 card), so a concurrent pair needs the 48 GB
+    class and even a 24 GB card cannot hold TWO such legs. pair=True
+    must exclude sub-floor cards and SAY it (assumed[]; the floor is an
+    env-retunable MEASURED value, not folklore)."""
     from orchestrator import dispatch
     from orchestrator.models import Offer
 
@@ -200,7 +203,9 @@ def test_preflight_pair_floor_keeps_small_cards_out(tmp_path, monkeypatch):
             return [Offer(provider="runpod", gpu_id="RTX2000-Ada",
                           vram_gb=12, price_hr=0.24, secure=True),
                     Offer(provider="runpod", gpu_id="A5000", vram_gb=24,
-                          price_hr=0.69, secure=True)]
+                          price_hr=0.69, secure=True),
+                    Offer(provider="runpod", gpu_id="L40S", vram_gb=48,
+                          price_hr=0.86, secure=True)]
 
         def balance(self):
             return 9.0
@@ -210,11 +215,12 @@ def test_preflight_pair_floor_keeps_small_cards_out(tmp_path, monkeypatch):
     monkeypatch.setattr(dispatch, "ROOT", tmp_path)
     solo = dispatch.preflight("train")
     pair = dispatch.preflight("train", pair=True)
-    assert pair["candidates"][0]["gpu"] == "A5000"          # floor bites
+    assert pair["candidates"][0]["gpu"] == "L40S"           # floor bites
+    assert all(c["gpu"] != "A5000" for c in pair["candidates"])
     assert any("pair floor" in a for a in pair["assumed"])
     assert solo["candidates"][0]["gpu"] == "RTX2000-Ada"    # single-leg
     # kill thresholds must be SECONDS-derived on both paths
-    assert pair["kill_threshold"] <= 0.69 + 0.01
+    assert pair["kill_threshold"] <= 0.86 + 0.01
 
 
 def test_calibration_contamination_auto_retires(tmp_path, monkeypatch):

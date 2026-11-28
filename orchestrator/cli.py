@@ -468,7 +468,8 @@ def build_parser():
                    help="second recipe CO-TENANT on the same pod (one run, "
                         "two concurrent axolotl procs, per-model artifact "
                         "trees; gate requires both). e.g. train 0.8B+4B on "
-                        "one 24G card for the price of one pod")
+                        "one 48G card for the price of one pod (measured: "
+                        "full-CE legs need ~21 GiB each, d90d9a)")
     s.add_argument("--retrain", action="store_true",
                    help="force a fresh pod even if identical work "
                         "(same dataset sha + configs) already succeeded "
