@@ -368,6 +368,38 @@ def test_relaunch_attaches_live_pod_never_double_books(tmp_path,
     assert res.get("status") != "error", res
 
 
+def test_unknown_keys_guard_catches_silent_drops(tmp_path, monkeypatch,
+                                                 recipe):
+    """d90d9a class: a key never observed surviving a boot dump or
+    training from any fleet recipe is REFUSED before staging (bypassable,
+    cited). The linter is cache-reset per test — the fixture is ROOT-
+    scoped and tests redirect ROOT to tmp."""
+    from pathlib import Path as _P
+    fx = json.loads((_P(__file__).parents[1] / "tests" / "fixtures"
+                     / "axolotl_schema_keys.json").read_text())
+    monkeypatch.setattr(dispatch, "_SCHEMA_KEYS", set(fx["keys"]))
+    monkeypatch.setattr(dispatch, "_SCHEMA_KEYS_LOADED", True)
+    puts = _vol_puts(tmp_path, monkeypatch)
+    r = tmp_path / "lied.yaml"
+    r.write_text(recipe.read_text().replace(
+        "sequence_len:", "chunks_per_batch: 8\nsequence_len:"))
+    res = dispatch.submit("queer", r, dry=True)
+    assert res.get("error") and "unknown_keys" in res["error"], res
+    assert "d90d9a" in res["error"]
+    res2 = dispatch.submit("queer", r, dry=True,
+                           force_guards=["unknown_keys"])
+    assert not res2.get("error"), res2
+    spec = json.loads(dispatch.Ledger(tmp_path / "state"
+                                      / "ledger.db").get(
+                                          res2["run_id"])["spec_json"])
+    assert "unknown_keys" in spec["guards"]["bypassed"]
+    # and every REAL fleet recipe passes clean (the fixture's union
+    # covers them BY CONSTRUCTION — this pin catches fixture rot)
+    assert not [r_ for r_ in dispatch.config_guards(
+        yaml.safe_load(recipe.read_text()))[0]
+        if r_["code"] == "unknown_keys"]
+
+
 def test_watch_deadline_harvests_late_manifest(tmp_path, monkeypatch):
     """da62ed law: a passed deadline must not BLIND the harvest. A pod
     that published its manifest while nobody was watching is truth

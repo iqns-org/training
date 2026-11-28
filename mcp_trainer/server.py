@@ -239,10 +239,14 @@ MEMORY LAW (receipts da62ed + d90d9a)
   for a concurrent pair — three smokes died on a 20 GB floor that could
   never have held even a SINGLE leg.
 - The pinned axolotl schema has NO chunked/liger/CCE knobs AND unknown
-  keys are silently dropped: chunks_per_batch rode the recipe, appeared
-  nowhere in the 348-key boot config dump, and the OOM allocation was
-  byte-identical to the unchunked one. Validate recipe keys against the
-  BOOT DUMP, never against upstream docs — this build fails silent.
+  keys are silently dropped: chunks_per_batch rode the recipe, was
+  never observed surviving the post-parse boot dump, and the OOM
+  allocation came back BYTE-IDENTICAL (7.58 GiB) — proof by behavior.
+  (Boot dumps also omit ACCEPTED keys — gradient_checkpointing is absent
+  from d90d9a's dump yet demonstrably lived — so absence from a dump is
+  not schema truth. The machine: unknown_keys guard on the never-observed
+  signature, bypassable, fixture per docs/PLAN.md O4.3; v2 = dump the
+  schema from the pinned image itself.)
 - The 'sample_packing & sdpa => 0.0 loss' warning is neutralized in
   this build by the sdpa_varlen cu_seqlens patch; attention stays sdpa.
 """

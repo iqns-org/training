@@ -88,9 +88,16 @@ window).
    (pair=, retrain=, knobs, laws must exist on the deployed surface —
    the smoke #2 image-drift lesson generalized).
 3. Recipe-key linter (d90d9a class: lenient schema SILENTLY drops
-   unknown keys): extract the pinned image's accepted keys from a
-   boot-dump fixture, refuse unknown keys in submit with a bypass code
-   like every other footgun.
+   unknown keys): SHIPPED INTERIM — unknown_keys guard refuses recipe
+   keys never observed surviving a post-parse boot dump, never used by
+   a trained fleet recipe, nor injected by dispatch (union fixture,
+   tests/fixtures/axolotl_schema_keys.json). Limitation learned the
+   hard way: boot dumps omit even ACCEPTED keys (gradient_checkpointing
+   absent from d90d9a's yet demonstrably lived), so the fixture is
+   never-observed-union, not schema truth; refusal is bypassable with
+   receipt, and conftest resets the loader cache per test. v2: dump the
+   schema from the pinned image itself (cheap stage: python -c on the
+   axolotl base, artifacts = the key list) and replace the union.
 4. Recovery-path assumption audit (9ddeb5 class): every submit-era
    concept (floor, guards, dup-check, pair shape, est profile)
    re-checked through relaunch() and resume() — the two paths where

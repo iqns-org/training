@@ -1083,6 +1083,34 @@ def _cfg_slug(recipe: Path) -> str:
 # render_config overrides is now RECORDED on the ledger row.
 GUARD_BYPASS = "pass force_guards=[code] to override a refusal"
 
+# RECIPE-KEY LINTER (d90d9a class): a lenient schema that SILENTLY DROPS
+# unknown keys turns a recipe into a lie that still trains — we paid two
+# OOM smokes for a chunks_per_batch that never existed in this build.
+# Ground truth here is a LOW-FALSE-POSITIVE union fixture (keys observed
+# surviving the post-parse boot dump + every recipe that has actually
+# trained in this image + injected keys); absence therefore means
+# "never observed anywhere", exactly the silent-drop signature. NOT the
+# image schema itself (boot dumps omit even accepted keys — honesty
+# note; v2 = dump the schema from the image, docs/PLAN.md O4.3). A
+# missing/corrupt fixture turns the linter OFF with an advisory — a
+# refusal built on guessed data would be the same sin as the lenient
+# schema, only on our side.
+_SCHEMA_KEYS: "set[str] | None" = None
+_SCHEMA_KEYS_LOADED = False
+
+
+def _schema_known() -> "set[str] | None":
+    global _SCHEMA_KEYS, _SCHEMA_KEYS_LOADED
+    if not _SCHEMA_KEYS_LOADED:
+        try:
+            fx = json.loads((ROOT / "tests/fixtures/axolotl_schema_keys.json")
+                            .read_text())
+            _SCHEMA_KEYS = set(fx["keys"])
+        except (OSError, ValueError, KeyError):
+            _SCHEMA_KEYS = None
+        _SCHEMA_KEYS_LOADED = True
+    return _SCHEMA_KEYS
+
 KNOB_GUIDE = {
     "lora_r": "PRIOR not law: 32 is corpus convention (works 360M-4B). "
               "Scale to task capacity: format/persona skills often "
@@ -1121,9 +1149,27 @@ def config_guards(cfg: dict, pair_cfg: dict | None = None) -> tuple[list[dict], 
     via force_guards=[code]. Advisories: strong opinions, loosely held."""
     refusals: list[dict] = []
     advisories: list[str] = []
+    known = _schema_known()
+    if known is None:
+        advisories.append("schema key fixture missing — unknown_keys "
+                          "linter OFF (build it per O4.3 before trusting "
+                          "recipe honesty)")
     for tag, c in (("main", cfg), ("pair", pair_cfg)):
         if not c:
             continue
+        if known:
+            unk = sorted(k for k in c if k not in known)
+            if unk:
+                refusals.append({"code": "unknown_keys", "leg": tag,
+                                 "keys": unk, "reason":
+                    f"{tag}: recipe keys {unk} were NEVER observed "
+                    "surviving a post-parse boot dump or training from "
+                    "any fleet recipe in this image — the pinned axolotl "
+                    "silently DROPS unknown keys (d90d9a: chunks_per_batch "
+                    "rode the config, changed nothing, the OOM allocation "
+                    "was byte-identical). Either the key is real-but-"
+                    "unused here (bypass with receipt) or it is the lie; "
+                    "check the boot dump of THIS image. " + GUARD_BYPASS})
         bm = str(c.get("base_model", ""))
         fam = families.family_for(bm)
         fam_name = fam[0] if fam else ""
