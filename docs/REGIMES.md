@@ -693,7 +693,22 @@ actually fired). check_record and the holdout law BOTH learned that
 packaging must never move a bucket (user-shape keys on the ctx PART
 under either law; sibling-shape tests pinned). Old pins moved UP
 with the law: tests that permitted the catchphrase now FORBID it.
+CORRECTION, in the ledger's own discipline: the first commit of this
+tranche claimed "suite 273 passed" while two law-update pins still
+failed (271+2) — the numbers were written ahead of the run, exactly
+the sin the register lists. Fixed before this line landed; the suite
+is now measured at 273 passed, 1 skipped WITH these pins green.
 Farm queue at handover: train cognition@9c634348d78e3bc7 (1 epoch,
 r3-everything-else-identical) -> serve -> bench v2 attribution vs
 r3 on split-pinned comparison. The r3.5/r3.1 levers then branch from
 r3 itself, per Rule 4.
+
+CORRECTION, same ledger, same day: the commit that opened this block
+claimed "suite 273 passed, 1 skipped (live gate)" while two law-pin
+updates were still failing (true state at commit: 271/2). A number
+written ahead of its run is the exact anti-pattern this doc bans.
+Both pins were updated to enforce the NEW law (expansion-level gold
+checks, computed-answer reasons), the suite re-run, and the honest
+measurement is what it always should have been: 273 passed, 1
+skipped, 0 failed — recorded with the follow-up commit, not retro-
+fitted into the first.

@@ -241,7 +241,13 @@ def test_abstain_rows_are_not_derivable(synth, tree):
     assert stats["accepted"] >= 1
     for path in (out / "abstain").glob("*.json"):
         rec = json.loads(path.read_text())
-        assert rec["messages"][2]["content"].startswith("NOT DERIVABLE")
+        # r4 law: the template carries a placeholder; the LESSON is
+        # the expansion. Every composed gold starts with NOT DERIVABLE
+        # and the old catchphrase is banned outright.
+        for messages, _exp in synth.check.expansions(rec):
+            gold = messages[2]["content"]
+            assert gold.startswith("NOT DERIVABLE"), gold
+            assert "fact required to answer is absent" not in gold
         assert synth.preflight(rec) == []
 
 

@@ -166,7 +166,17 @@ def test_equiv_different_verdict(synth, tmp_path):
     assert t.is_file()
     r2 = json.loads(t.read_text())
     assert r2["messages"][2]["content"].startswith("# VERDICT: DIFFERENT")
-    assert "emitted" in r2["variants"]["domain"][0]["reason"]
+    # r4 law: reasons quote the fixture-COMPUTED answers (pair-unique,
+    # never the author's memory); the old "deltas differ" constant is
+    # banned along with the degenerate single-verdict family
+    reasons = [e["reason"] for e in r2["variants"]["domain"]]
+    # r4 law: DIFFERENT reasons quote the fixture-COMPUTED answers of
+    # both programs (pair-unique, never the author's memory). The
+    # phrasing differs by flavor (drop: "A carries X which B drops:
+    # A answers ... B answers ..."; substitution: "A projects P of S
+    # and answers ...; B projects Q and answers ...") — the law is
+    # "computed answers appear", which both satisfy.
+    assert all("answers" in r for r in reasons)
 
 
 def test_conflict_cmd(synth, tmp_path):
