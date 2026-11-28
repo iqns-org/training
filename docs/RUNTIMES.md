@@ -26,18 +26,19 @@ served as one callable voice, plus a grammar:
           + image-level GDN patch (qwen_gdn linear-attn kernels) and
           eager mode where graphs OOM the memcg (AS-BUILT §7)
   edge    Pi nodes (arm64, no CUDA): NO LLM today; ONNX = fleet's
-          established edge format for SMALL PREDICTORS (D-114:
-          "onnx = model format at the edge (deterministic artifact)";
-          registry/onnx.yaml + mcp-panoptes/iq onnx mounts, DECISIONS
-          1111: onnx stays on pi00 with the fact DB)
+          established edge format for SMALL PREDICTORS: chat-onnx
+          predictor (SMOKETESTS S4.13/D475), onnx+facts on pi00
+          (DECISIONS:1111), mcp-panoptes mounts — precedent that
+          fleet ONNX is small deterministic models, not LLMs
 
 So the loop's truth table lives in vLLM. Every runtime question below
 is really: which OTHER machines may carry which PART of that truth,
 and what certification gate must pass before a persona is served from
-anywhere else? (Precedent: D-472 — persona split GPU-orin vs
-CPU-pi; the 4B AWQ VL persona runs where sm_87 does, the 0.8B router
-wherever there's an engine. That split is already a runtime decision
-made once, in the right order: capability first, then hardware.)
+anywhere else? (Precedent lives in quadra.yaml's machine law: GPU
+work is nano0's job, the public front-end is the Pi's — a hardware-
+lane split already made once, in the right order. The 4B AWQ VL
+persona runs where sm_87 does; a GGUF twin would run where NO CUDA
+does.)
 
 ## 2. Hardware law of the farm (from infra configs, not vibes)
 
@@ -96,8 +97,9 @@ Workload properties that decide everything:
                  merge)    gbnf); NLL via   build)          MUST be merged first
                  --logprobs; CHAT-TEMPLATE
                  REWRITES TOKENIZATION-ADJACENT behavior —
-                 D-479 law applies verbatim: never compare v1-trained
-                 artifacts across a format change without re-cert.
+                 house law applies verbatim: never compare artifacts
+                 across a format change without re-cert — this repo's
+                 360→0.8B template-crutch story is the local proof.
   TensorRT-LLM   YES        no HF-grammar    YES (Jetson   NOT NOW: engine = build
                  (per-shape equivalence     is its home    step per artifact; sm_87
                   engines)  unproven        platform       is its weakest NVIDIA SKU;
@@ -130,7 +132,7 @@ certification travels with it:
   holdout/NLL -> engine-reported logprobs let the SAME split certify
                  on any runtime — but only cross-runtime if the
                  tokenizer chat-template path is byte-identical
-                 (D-479: format changes need re-cert, never re-use)
+                 (format change = re-cert, never re-use)
   bench v2    -> runtime-neutral HTTP; works unchanged against a
                  llama.cpp OpenAI shim (its server mode speaks
                  /v1/chat/completions — preflight + lint still fire)
@@ -173,8 +175,8 @@ D. (LATER, farm) the real use-cases worth a runtime slot:
    "capability tiers" doc wants this tier named, not improvised;
    3. workstation CI engine (vLLM fp8 IF the model ever fp8-works —
    sm_87 law says NOT on nano0; RTX-class only).
-   Each is a lane-assignment decision (D-472 precedent), not an
-   engine war.
+   Each is a lane-assignment decision (the quadra machine-lane
+   precedent), not an engine war.
 E. (AVOID) TensorRT-LLM until a concrete Orin throughput requirement
    exists; AVOID SGLang/ONNX for LLMs — no capability we lack, and
    ONNX's static-shape story fights our grammar lane directly.
@@ -206,8 +208,8 @@ loop's requirements. GGUF/llama.cpp is the only runtime that earns a
 second lane here (arm64 everywhere, our gbnf portable, Pi/nano1
 offline = real product), but ONLY under the bench-before-register law
 the peer's quantization registry already states. ONNX stays what the
-fleet decided it is — the edge predictor format (D-114), not an LLM
-serving play. TRT-LLM/sglang: parked until a throughput ticket
+fleet decided it is — the edge predictor format (D475/DECISIONS:1111),
+not an LLM serving play. TRT-LLM/sglang: parked until a throughput ticket
 exists. The immediate, free, high-value work is the runtime
 FINGERPRINT in the ledger — until every number knows the engine it
 came from, cross-runtime progress is a rumor.
