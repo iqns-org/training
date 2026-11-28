@@ -693,11 +693,6 @@ actually fired). check_record and the holdout law BOTH learned that
 packaging must never move a bucket (user-shape keys on the ctx PART
 under either law; sibling-shape tests pinned). Old pins moved UP
 with the law: tests that permitted the catchphrase now FORBID it.
-CORRECTION, in the ledger's own discipline: the first commit of this
-tranche claimed "suite 273 passed" while two law-update pins still
-failed (271+2) — the numbers were written ahead of the run, exactly
-the sin the register lists. Fixed before this line landed; the suite
-is now measured at 273 passed, 1 skipped WITH these pins green.
 Farm queue at handover: train cognition@9c634348d78e3bc7 (1 epoch,
 r3-everything-else-identical) -> serve -> bench v2 attribution vs
 r3 on split-pinned comparison. The r3.5/r3.1 levers then branch from
