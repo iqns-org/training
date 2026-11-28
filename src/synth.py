@@ -2412,6 +2412,16 @@ def cmd_bundle(args):
     if dpo.is_file():
         pdest = DATA_ROOT / "datasets" / f"{domain}-dpo"
         pdest.mkdir(parents=True, exist_ok=True)
+        # ids move deliberately: if promoted preference bytes already
+        # exist and the WRITTEN output differs, the rewrite is LOUD
+        # (r4 lesson: today's derive regenerated tmp/dpo.jsonl to a
+        # new population — a silent --dpo default would swap the r1
+        # corpus bytes the ledger cites). Hash the OUTPUT, not the
+        # source: the chosen/rejected conversion is deterministic, so
+        # stable bytes must stay silent.
+        prev = pdest / "preference.jsonl"
+        prev_sha = (hashlib.sha256(prev.read_bytes()).hexdigest()[:16]
+                    if prev.is_file() else None)
         with (pdest / "preference.jsonl").open("w") as fh:
             n = 0
             for line in dpo.read_text().splitlines():
@@ -2423,10 +2433,15 @@ def cmd_bundle(args):
                     "rejected": pair["rejected"]["messages"],
                 }, ensure_ascii=False) + "\n")
                 n += 1
+        new_sha = hashlib.sha256(
+            (pdest / "preference.jsonl").read_bytes()).hexdigest()[:16]
+        if prev_sha and prev_sha != new_sha:
+            print(f"bundle: WARNING preference.jsonl bytes moved "
+                  f"{prev_sha} -> {new_sha}; ids move deliberately — "
+                  f"pass the pinned --dpo source if unintended",
+                  file=sys.stderr)
         written["preference->" + f"{domain}-dpo"] = {
-            "rows": n,
-            "sha256": hashlib.sha256(
-                (pdest / "preference.jsonl").read_bytes()).hexdigest()[:16]}
+            "rows": n, "sha256": new_sha}
     total = sum(w["rows"] for w in written.values())
     print(json.dumps({"dataset": f"{domain}@{hashlib.sha256(str(sorted(written.items())).encode()).hexdigest()[:16]}",
                       "path": str(dest), "files": written, "rows": total,

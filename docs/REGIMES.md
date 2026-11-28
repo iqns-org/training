@@ -707,3 +707,30 @@ checks, computed-answer reasons), the suite re-run, and the honest
 measurement is what it always should have been: 273 passed, 1
 skipped, 0 failed — recorded with the follow-up commit, not retro-
 fitted into the first.
+
+STATUS (state verification, 2026-11-28 late — "check it" pass):
+The deterministic chain was RE-RAN end to end with the current
+committed code. Results:
+1. CENSUS REPRODUCES EXACTLY: 27,755 train + 662 held; 595 gold-clean
+   = 90% (abstain 100, repair 98, diagnosis 82, equivalence 54, six
+   families 100, counterfactual 0/3 named-limit, valid-program 89).
+   The gate verdict was a measurement, not a moment — it replays.
+2. UNIQ reproduces: equivalence 0.178, abstain 0.458, diagnosis 0.189,
+   repair 0.151.
+3. BUNDLE --DPO FOOTGUN, FOUND AND FIXED: the default source
+   tmp/dpo.jsonl is rewritten by every derive run; a bare bundle would
+   silently swap promoted preference bytes. Now the bundle hashes the
+   WRITTEN output and moves LOUD on drift (test-pinned). The guard
+   fired exactly once on its first pass: 5cd11878 (r1-era) ->
+   edfa53969524d63c — honest accounting: my afternoon backup captured
+   the ALREADY-REGENERATED derive population (the three-way derive
+   race this morning overwrote tmp/dpo.jsonl before the cp), so the
+   960-pair r1 file existed only in gitignored, content-hashed trees.
+   The regenerated structural-pair population (same generator law,
+   current scenarios) is now the canonical preference corpus.
+4. CANONICAL r4 ID: cognition@8b78631b44b793dc. Lineage declared:
+   7dcd8731 (r3) -> 9c634348 (r4 tranche; preference component
+   byte-unstable, see 3) -> 8b78631b (current code, everything
+   reproducible). SFT component identical across all three r4-era
+   ids — the census gate holds through the whole lineage.
+5. Suite at this state: 275 passed, 1 skipped (two new guard tests).
