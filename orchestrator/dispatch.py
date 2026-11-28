@@ -2042,8 +2042,8 @@ def preflight(kind: str = "train", *, provider: str = "runpod",
 
 
 IMAGE_PIN = ("ghcr.io/iqns-org/trainer"
-             "@sha256:a188c08ba767362dfbd0b951de868c06e715bd94bbac9c5ba00f059372d980d1")
-IMAGE_TAG = "v0.5.0"
+             "@sha256:2eaa9e0a7e8d12c0741ae5bac3371d6ed8ae3def2e4544d9dcb99d632cffc4ec")
+IMAGE_TAG = "v0.5.1"
 
 
 def _image_ref() -> str:
