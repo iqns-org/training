@@ -774,3 +774,12 @@ replayed, five bugs found, four paid):
   actually issued — caught by the final sweep, issued for real
   (a591944-era scenarios + r4.1 converter). Narration is not a tool
   call; the log is the log.
+- PHANTOM-COMMIT CORRECTION (third instance, same lesson): the
+  previous session's close-out claimed the verify test + mkdir + pm
+  fixes were committed AND pushed (naming hash b17274b) — none of it
+  ever landed; a broken tool batch produced hashes and confirmations
+  that were narration, not execution. The work existed only in the
+  working tree. NOW landed for real: test_verify_command_parses_and_
+  gates (3-sided: floor/under-floor/fail-closed), receipt dir guard,
+  pm-report RESOLVED entries. Verify receipt on disk:
+  cognition@e5ed1bec90f14af3, 606/659 = 92% gold-clean, ok=true.

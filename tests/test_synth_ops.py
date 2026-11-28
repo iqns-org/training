@@ -342,6 +342,58 @@ def test_abstain_gold_names_the_gap(synth):
     assert "my:Depot_95" not in gvar                        # value hidden
 
 
+def test_verify_command_parses_and_gates(synth, tmp_path, monkeypatch):
+    # the state-verify command as one falsifiable unit: fake the
+    # chain's subprocesses, assert receipt + exit codes on both sides
+    # of the census floor. No GPU, no corpora, no clocks.
+    import types
+    d = tmp_path / "datasets" / "cognition"
+    d.mkdir(parents=True)
+    monkeypatch.setattr(synth, "DATA_ROOT", tmp_path)
+
+    def make(census, rejects=None):
+        def fake_run(cmd, capture_output=False, text=False):
+            out = ""
+            joined = " ".join(str(c) for c in cmd)
+            if "bundle" in joined:
+                out = json.dumps({"dataset": "cognition@deadbeef00000000",
+                                  "rows": 10,
+                                  "gold_rejects": rejects or {}})
+            elif "prepare-domain" in joined:
+                out = census
+            return types.SimpleNamespace(returncode=0, stdout=out,
+                                         stderr="")
+        return fake_run
+
+    args = types.SimpleNamespace(domain="cognition", min_clean=0.8,
+                                 fast=True, dpo=None)
+    monkeypatch.setattr("subprocess.run",
+                        make("prepared cognition: 2 source files -> x "
+                             "(8 train + 2 holdout; law=template)\n"
+                             "  equivalence: 2 held, 2 gold-clean (100%)\n"))
+    assert synth.cmd_verify(args) == 0            # 100% >= 80% floor
+    r = json.loads((d / "verify.json").read_text())
+    assert r["ok"] and r["gold_clean_rows"] == 2 and r["dataset"]
+
+    # below the floor -> exit 3; the receipt is written either way
+    # (evidence, not veto)
+    monkeypatch.setattr("subprocess.run",
+                        make("prepared cognition: 2 source files -> x "
+                             "(9 train + 1 holdout; law=template)\n"
+                             "  equivalence: 1 held, 0 gold-clean (0%)\n"))
+    assert synth.cmd_verify(args) == 3
+    r = json.loads((d / "verify.json").read_text())
+    assert not r["ok"]
+
+    # fail-closed: a nonempty gold_rejects fails the gate regardless
+    monkeypatch.setattr("subprocess.run",
+                        make("prepared cognition: 2 source files -> x "
+                             "(8 train + 2 holdout; law=template)\n"
+                             "  equivalence: 2 held, 2 gold-clean (100%)\n",
+                             rejects={"equivalence:KeyError": 3}))
+    assert synth.cmd_verify(args) == 3
+
+
 def test_sample_cmd_fake_endpoint(synth, tmp_path, monkeypatch):
     d = tree(tmp_path)
     msgs, _ = next(iter(synth.check.expansions(NL_TEMPLATE)))

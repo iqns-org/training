@@ -1728,6 +1728,7 @@ def cmd_verify(args):
     pct = round(clean / max(1, held), 3)
 
     receipt_path = DATA_ROOT / "datasets" / domain / "verify.json"
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
     prev = {}
     if receipt_path.is_file():
         try:
