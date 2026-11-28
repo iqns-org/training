@@ -181,10 +181,11 @@ E. (AVOID) TensorRT-LLM until a concrete Orin throughput requirement
 
 ## 6. Open questions (answerable locally)
 
-1. llama.cpp's current Qwen3.5 GDN support state — check the GGUF
-   conversion matrix for qwen3_5 (architecture name?) BEFORE writing
-   the harness; a missing mapping is the whole bet's risk. (Web/
-   repo check, farm-free.)
+1. llama.cpp Qwen3.5 GDN support: RESOLVED in the affirmative by the
+   fleet registry itself ("llama.cpp implements hybrid GDN on CPU;
+   single-file artifact fits the OCI/registry law" — gguf: deferred,
+   waiting a CONSUMER not a capability). Verify the convert script
+   name for the qwen3_5 arch when the harness is written.
 2. Does llama.cpp honor --logprobs with the same tokenizer byte
    semantics as vLLM's? (Their OpenAI shim does; the NLL parity gate
    depends on this. Local experiment, CPU.)
