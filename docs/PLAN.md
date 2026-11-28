@@ -131,7 +131,7 @@ law (peer's `c1c554d`+), and the r4 gold-diversity tranche.
 
 | # | Fork | Trigger | Branches |
 |---|------|---------|----------|
-| D1 | smoke #6 | result | green → O0.2/3 · no-48-stock-in-DC → sequential-pair mode (new small tranche: `&&` chain, floor 24, same gate) · OOM-at-48 → per-leg FFT of memory or lift floor, re-bill |
+| D1 | smoke #6 | result | RESOLVED 21:3x: capacity fork hit — d009dd died "no instances" (8 waves/1800s, 48GB SECURE unsourceable in EU-RO-1) → SEQUENTIAL pair mode SHIPPED (pair_mode=sequential, floor 24 = PAIR_SEQ_MIN_VRAM, legs chained one-at-a-time; smoke #7 tests it) |
 | D2 | budget raise | before full run | raise QTRAIN_BUDGET in .env with the measured estimate as the receipt (down-only knobs make this the honest path) |
 | D3 | FFT pilot | tier-2 stall at gen-0 | run `Qwen3.5-0.8B-fft.yaml` single-leg (gate/tooling already built) |
 | D4 | "all safety wired" claim | until O4.1 lands | janitor-cadence-bound is NOT wired; the plan's DoD #4 fails while pod-stop is inert — do not call the loop production-grade before the kill-test receipt |

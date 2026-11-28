@@ -153,6 +153,48 @@ def test_submit_pair_dry(tmp_path, monkeypatch):
     assert spec["guards"]["pair_min_vram"] == dispatch.PAIR_MIN_VRAM
 
 
+def test_submit_pair_sequential_dry(tmp_path, monkeypatch):
+    """D1-b (d009dd: 48GB-class unsourceable — 8 waves/1800s, no
+    instances): pair_mode="sequential" chains the legs ONE AT A TIME so
+    the 21.3 GiB per-leg peak (d90d9a) never double-books a card, and
+    the floor drops to PAIR_SEQ_MIN_VRAM (24GB, plentiful). Same run,
+    same gate, both legs attempted, combined exit."""
+    ra = tmp_path / "a.yaml"
+    ra.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-0.8B",
+                                  "adapter": "qlora",
+                                  "lora_target_modules": ["q_proj"],
+                                  "datasets": [{"path": "x"}]}))
+    rb = tmp_path / "b.yaml"
+    rb.write_text(yaml.safe_dump({"base_model": "Qwen/Qwen3.5-4B",
+                                  "adapter": "qlora",
+                                  "lora_target_modules": ["q_proj"],
+                                  "datasets": [{"path": "x"}]}))
+    puts = _vol_puts(tmp_path, monkeypatch)
+    res = dispatch.submit("queer", ra, pair=rb, mini=True, dry=True,
+                          pair_mode="sequential")
+    assert not res.get("error"), res
+    payload = json.loads(dict(puts)[f"runs/{res['run_id']}/payload.json"])
+    cmd = payload["command"]
+    # chained, NOT concurrent: no background pids — legs never alive
+    # at the same time (that overlap is exactly what OOM'd da62ed/d90d9a)
+    assert "& p1=$!" not in cmd
+    assert "wait $p1" not in cmd
+    assert ("axolotl train /work/job/qwen3.5-0.8b.yaml || r=1; "
+            "axolotl train /work/job/qwen3.5-4b.yaml || r=1") in cmd
+    # gate unchanged: both trees still required
+    req = payload["gate"]["required_files"]
+    assert any(f.startswith("qwen3.5-0.8b/") for f in req)
+    assert any(f.startswith("qwen3.5-4b/") for f in req)
+    # mode rides the CONTRACT (payload meta) so relaunch inherits it,
+    # and the row records the SMALLER floor honestly
+    assert payload["meta"]["pair_mode"] == "sequential"
+    row = dispatch.Ledger(dispatch.ROOT / "state" / "ledger.db") \
+        .get(res["run_id"])
+    spec = json.loads(row["spec_json"])
+    assert spec["pair_mode"] == "sequential"
+    assert spec["guards"]["pair_min_vram"] == dispatch.PAIR_SEQ_MIN_VRAM
+
+
 def test_submit_pair_slug_collision(tmp_path, monkeypatch):
     """Two recipes with the SAME base_model (e.g. qlora + bf16-lora):
     identical slugs would make two jobs share one output dir — the gate
@@ -398,6 +440,47 @@ def test_unknown_keys_guard_catches_silent_drops(tmp_path, monkeypatch,
     assert not [r_ for r_ in dispatch.config_guards(
         yaml.safe_load(recipe.read_text()))[0]
         if r_["code"] == "unknown_keys"]
+
+
+def test_relaunch_sequential_reads_floor_from_contract(tmp_path,
+                                                       monkeypatch):
+    """The mode itself must survive controller death: a sequential pair
+    relaunched under the CONCURRENT floor (48) would capacity-wait
+    forever even though 24GB cards are plentiful. The contract (payload
+    meta pair_mode) decides the floor, not the live env or defaults."""
+    monkeypatch.setattr(dispatch, "ROOT", tmp_path)
+    monkeypatch.setenv("RUNPOD_VOLUME_ID", "vol1")
+    monkeypatch.setenv("RUNPOD_S3_ACCESS_KEY", "u")
+    monkeypatch.setenv("RUNPOD_S3_SECRET_KEY", "s")
+    monkeypatch.setenv("RUNPOD_S3_ENDPOINT", "https://x")
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    rid = led.create("train", {"domain": "q", "max_runtime": 60},
+                     provider="runpod")
+    payload = {"run_id": rid, "command": "x",
+               "volume": {"mount": "/data", "prefix": f"runs/{rid}"},
+               "meta": {"pair_mode": "sequential"},
+               "configs": [{"name": "a", "config_yaml": "y"},
+                           {"name": "b", "config_yaml": "z"}],
+               "urls": {}}
+    monkeypatch.setattr(dispatch.storage, "vol_get",
+                        lambda k: (json.dumps(payload).encode()
+                                   if "payload" in k else None))
+    monkeypatch.setattr(dispatch, "get_provider", lambda n: object())
+    seen = {}
+
+    def fake_wave(prov, offers_fn, **kw):
+        offers_fn()
+        raise dispatch.ProviderError("stop before launch")
+
+    def fake_pool(pr, gpus, tier, vol, ceiling, min_vram=0):
+        seen["min_vram"] = min_vram
+        return []
+
+    monkeypatch.setattr(dispatch, "_wave_launch", fake_wave)
+    monkeypatch.setattr(dispatch, "_train_pool", fake_pool)
+    res = dispatch.relaunch(rid)
+    assert res["status"] == "error"
+    assert seen["min_vram"] == dispatch.PAIR_SEQ_MIN_VRAM
 
 
 def test_watch_deadline_harvests_late_manifest(tmp_path, monkeypatch):

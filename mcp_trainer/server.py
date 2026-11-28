@@ -123,8 +123,13 @@ TRAINING
   failure (extractor receipt 2026-11-27: 19 such calls).
 
 CO-TENANT PAIR MODE (one pod, two recipes)
-- Free because every regime is micro_batch 1 = launch-bound: the second
-  process fills SM idle time. ~1.5x aggregate throughput, one pod bill.
+- MEMORY-GATED, not free: full-CE legs peak ~21.3 GiB EACH at 8192
+  (d90d9a — the old launch-bound "fills the idle SM" premise is dead,
+  the pair OOMed both legs at step 0). Concurrent pair needs the 48 GB
+  class; that class can be unsourceable in a volume's DC (d009dd: 8
+  waves / 1800s, no instances) while 24 GB is plentiful — so
+  pair_mode="sequential" chains legs one-at-a-time (PAIR_SEQ_MIN_VRAM
+  24): one run_id, one manifest, same gate, serialized wall-clock.
 - One run_id, one manifest (file map), per-slug output trees + per-slug
   prepared dirs (shared prepared dir = HF fingerprint race). Gate
   requires BOTH trees: half-success fails HONESTLY.
@@ -442,6 +447,7 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                     max_runtime: int = 3600, max_cost: float | None = None,
                     dry: bool = False, provider: str = "runpod",
                     pair: str | None = None,
+                    pair_mode: str = "concurrent",
                     force_guards: list[str] | None = None,
                     retrain: bool = False) -> dict:
     """Launch a full training cycle in the background; returns as soon as
@@ -457,12 +463,22 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
     prior_run} without buying a pod — re-submitting an unchanged corpus
     costs $0. retrain=True is the deliberate re-roll.
 
-    pair (recipe name): CO-TENANT — one pod trains both recipes
-    concurrently. LAWS (receipts in dispatch.submit + agent tests):
-    - WHY IT'S FREE: every regime here is micro_batch_size 1 (fla
-      gated-delta-rule kernels reject batch>1 with packing cu_seqlens,
-      425e6c) — steps are kernel-launch-bound, the SM idles, a second
-      process fills the gap. One pod's price, ~1.5x aggregate throughput.
+    pair (recipe name): CO-TENANT — one pod trains both recipes.
+    LAWS (receipts in dispatch.submit + agent tests):
+    - MEMORY IS THE CONSTRAINT, NOT LAUNCH: micro_batch_size 1 is a
+      kernel law (425e6c) but d90d9a proved co-running is NOT free at
+      the 8192 window — full-CE legs peak ~21.3 GiB EACH (13.75 in-use
+      + 7.58
+      attempt on a 19.55 GiB card, both legs dead at step 0). The old
+      "~1.5x throughput, one pod bill" premise was FALSE: the pair OOMs
+      before it computes. Concurrent pair therefore needs the 48 GB
+      class (2 legs + 2 CUDA ctx).
+    - pair_mode "concurrent" (default) enforces PAIR_MIN_VRAM=48 and
+      takes the capacity risk; "sequential" chains legs one-at-a-time
+      under PAIR_SEQ_MIN_VRAM=24 — same run_id, same both-trees gate,
+      same combined exit, serialized wall-clock. d009dd proved the 48 GB
+      class can be UNAVAILABLE (8 waves / 1800s, no instances) while 24
+      GB is plentiful, so sequential is the mode that actually ships.
     - ONE run_id / manifest / budget; per-model output trees under
       /work/outputs/<slug>; the artifact gate requires BOTH trees, so a
       half-success fails honestly. One crash never masks the other
@@ -509,6 +525,7 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                 gpus=gpus, tier=tier, max_runtime=max_runtime,
                 max_cost=max_cost, dry=dry, provider=provider,
                 pair=pair_path, force_guards=force_guards,
+                pair_mode=pair_mode,
                 retrain=retrain,
                 on_run_id=_on_run_id)
         except Exception as e:                          # noqa: BLE001
@@ -840,8 +857,11 @@ def reap_pods(provider: str = "runpod", dry: bool = True) -> dict:
 
 @mcp.tool
 def janitor_pass(provider: str = "runpod", dry: bool = True) -> dict:
-    """One full idempotency sweep: reap stray pods + relaunch stale
-    pending-but-never-launched runs (crashed dispatchers)."""
+    """One idempotency sweep: reap stray pods, relaunch stale
+    never-launched runs, and HEAL open rows past their pod deadline
+    (harvest a terminal lane, else fail the row + terminate its zombie
+    pod). This is the backstop for a dead watcher while the deadman's
+    kill endpoint stays inert; bin/supervise runs it on a timer."""
     return dispatch.janitor_once(provider, dry=dry)
 
 
@@ -849,15 +869,21 @@ def janitor_pass(provider: str = "runpod", dry: bool = True) -> dict:
 def preflight_report(kind: str = "train", provider: str = "runpod",
                      max_price_hr: float | None = None,
                      max_runtime: int = 3600,
-                     pair: bool = False) -> dict:
+                     pair: bool = False,
+                     pair_mode: str = "concurrent") -> dict:
     """Read-only launch decision (SPEC 13p): fitting cards, cost estimate,
     kill threshold, budget gate verdicts. Launches nothing, writes
     nothing — answers 'what would this cost, on what' before committing.
-    pair=True shows the CO-TENANT fit (VRAM floor applied — the first
-    pair smoke landed on a 12GB card that cannot host two legs)."""
+    pair=True shows the CO-TENANT fit. pair_mode selects the floor:
+    "concurrent" (48GB — 2 legs + 2 CUDA ctx alive at once) or
+    "sequential" (24GB — legs chained one at a time, serialized wall
+    clock). d009dd: the 48GB class returned NO INSTANCES across 8 waves
+    / 1800s in this volume's DC while 24GB had supply, so sequential is
+    the mode that actually gets a pod."""
     return dispatch.preflight(kind, provider=provider,
                               max_price_hr=max_price_hr,
-                              max_runtime=max_runtime, pair=pair)
+                              max_runtime=max_runtime, pair=pair,
+                              pair_mode=pair_mode)
 
 
 @mcp.tool

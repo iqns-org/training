@@ -112,6 +112,7 @@ def test_laws_surface_and_pair_parity(tmp_path, monkeypatch):
     import inspect
     sig = inspect.signature(st.fn)
     assert "pair" in sig.parameters and "retrain" in sig.parameters
+    assert "pair_mode" in sig.parameters
     doc = st.description or ""
     assert "CO-TENANT" in doc and "micro_batch_size 1" in doc
     assert "FFT" in doc  # the don't-pair-heavy-legs rule travels too

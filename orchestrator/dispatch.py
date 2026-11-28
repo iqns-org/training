@@ -45,6 +45,13 @@ MINI_LINES = 48
 # LEG at 8192x151936. Concurrent pair = 2 legs at once = 48GB class;
 # 20GB cards failed three smokes exactly on this arithmetic.
 PAIR_MIN_VRAM = int(os.environ.get("QTRAIN_PAIR_MIN_VRAM", "48"))
+# SEQUENTIAL pair mode (d009dd): RunPod answered "no instances available"
+# for SECURE + volume-DC + >=48GB across 8 waves / 30 min — the 48-class
+# concurrent pair is unsourceable in that DC at $1.50. But the 21.3 GiB
+# is PER-LEG PEAK: chained legs (one alive at a time) halve the card
+# requirement to the 24 GB class (Blackwell-24 $0.57, A5000 $0.69), at
+# the honest cost of serialized wall-clock. Same run/manifest/gate.
+PAIR_SEQ_MIN_VRAM = int(os.environ.get("QTRAIN_PAIR_SEQ_MIN_VRAM", "24"))
 
 
 
@@ -622,9 +629,13 @@ def relaunch(run_id: str, *, poll: int = 20, max_runtime: int = 4 * 3600,
             # shape is readable straight off the lane payload (configs[]
             # = two legs); recovery must respect it like submit does.
             pair_floor = bool(payload.get("configs"))
+            pmode = (payload.get("meta") or {}).get("pair_mode",
+                                                    "concurrent")
             offers_fn = lambda: _train_pool(  # noqa: E731
                 prov, None, None, vol, ceiling,
-                min_vram=(PAIR_MIN_VRAM if pair_floor else 0))
+                min_vram=((PAIR_SEQ_MIN_VRAM if pmode == "sequential"
+                           else PAIR_MIN_VRAM)
+                          if pair_floor else 0))
             rate_bound = ceiling
         env = {"JOB_PAYLOAD_PATH":
                f"{payload['volume']['mount']}/runs/{run_id}/payload.json",
@@ -1288,6 +1299,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            force_lane: str | None = None, max_price_hr: float | None = None,
            max_wait: int | None = None,
            pair: "Path | str | None" = None,
+           pair_mode: str = "concurrent",
            force_guards: "list[str] | None" = None,
            retrain: bool = False,
            on_run_id: "callable | None" = None) -> dict:
@@ -1296,14 +1308,19 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
     instant the ledger registers the run — lets async callers (mcp-trainer)
     return before staging finishes.
 
-    CO-TENANT (pair=): one pod, two recipes, two concurrent axolotl procs
-    (micro_batch_size=1 regimes are kernel-launch-bound — co-running is
-    nearly free throughput). One run_id, one manifest, per-slug artifact
-    trees + per-slug prepared dirs; the gate requires BOTH models' files,
-    so a half-success fails honestly. Relaunch-safe: the lane payload IS
-    the contract. Budget: price is per pod-hour, so the pair does two
-    models' work under one cap — that is the POINT, not a leak; the wave
-    loop still dies at max_runtime/max_cost as always.
+    CO-TENANT (pair=): one pod, two recipes, one run_id, one manifest,
+    per-slug artifact trees + per-slug prepared dirs; the gate requires
+    BOTH models' files, so a half-success fails honestly. Relaunch-safe:
+    the lane payload IS the contract. Budget: price is per pod-hour, so
+    the pair does two models' work under one cap.
+
+    pair_mode: "concurrent" runs both axolotl procs at once (micro_batch
+    1 was ASSUMED kernel-launch-bound — d90d9a proved otherwise at the
+    8192 window: full-CE legs peak ~21.3 GiB EACH, so concurrent pairs
+    need the 48 GB class, which d009dd showed the volume DC cannot
+    source). "sequential" chains the legs on one >=24 GB pod: one leg's
+    peak at a time, serialized wall-clock, identical contract (both
+    legs attempted, combined exit, same both-trees gate).
 
     IDEMPOTENCE (dup-pod law): if an identical run (same dataset sha +
     same rendered configs) already SUCCEEDED with artifacts on hand,
@@ -1342,6 +1359,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             rpair = str(pp)
         spec["pair_recipe"] = rpair
         spec["pair_recipe_sha"] = _sha(pp)[:12]
+        spec["pair_mode"] = pair_mode
     run_id = led.create("train", spec, provider=provider)
     if on_run_id:
         on_run_id(run_id)
@@ -1425,10 +1443,21 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                                report=cfg_report)
             # per-pid waits so ONE crash cannot orphan the other's finish;
             # sh -c because the runner execs shlex.split — no shell (law,
-            # same chain trick as stage preludes)
-            chain = (f"axolotl train /work/job/{s1}.yaml & p1=$!; "
-                     f"axolotl train /work/job/{s2}.yaml & p2=$!; "
-                     "r=0; wait $p1 || r=1; wait $p2 || r=1; exit $r")
+            # same chain trick as stage preludes). SEQUENTIAL mode (d009dd
+            # capacity fork): legs chained, one alive at a time — the
+            # 21.3 GiB peak (d90d9a) is per-leg, so a 24 GB card holds
+            # the pair as long as no two CE phases share the VRAM.
+            # Both legs are ATTEMPTED regardless of the first's verdict
+            # (same combined-exit honesty as concurrent); wall-clock
+            # doubles, pod count does not.
+            if pair_mode == "sequential":
+                chain = (f"r=0; axolotl train /work/job/{s1}.yaml || r=1; "
+                         f"axolotl train /work/job/{s2}.yaml || r=1; "
+                         "exit $r")
+            else:
+                chain = (f"axolotl train /work/job/{s1}.yaml & p1=$!; "
+                         f"axolotl train /work/job/{s2}.yaml & p2=$!; "
+                         "r=0; wait $p1 || r=1; wait $p2 || r=1; exit $r")
             train_cmd = "sh -c " + shlex.quote(chain)
             job_fields = {"configs": [
                 {"name": s1, "config_yaml": c1},
@@ -1443,6 +1472,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         meta = {"domain": domain, "recipe": str(recipe)}
         if pair is not None:
             meta["pair"] = str(pp)
+            meta["pair_mode"] = pair_mode
         # WINDOW GUARD on the dataset that WILL train (mini-truncated or
         # full), per rendered leg — 1ffca0's zero-sample death, prepaid
         import statistics as _st
@@ -1525,8 +1555,11 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                                "bypassed": sorted(bypass),
                                "forced": cfg_report.get("forced") or {},
                                "law_clash": cfg_report.get("law_clash") or [],
-                               "pair_min_vram": (PAIR_MIN_VRAM if pair
-                                                 is not None else 0)},
+                               "pair_min_vram": (
+                                   (PAIR_SEQ_MIN_VRAM
+                                    if pair_mode == "sequential"
+                                    else PAIR_MIN_VRAM)
+                                   if pair is not None else 0)},
                        **({"holdout_sha": hold["sha256"],
                            "holdout_lines": hold["lines"]} if hold else {}))
         if dry:
@@ -1592,8 +1625,11 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
               if (vol and not vol.get("local")) else {})
         inst, offer = _wave_launch(
             prov, lambda: _train_pool(prov, gpus, tier, vol, ceiling,
-                                      min_vram=(PAIR_MIN_VRAM
-                                                if pair is not None else 0)),
+                                      min_vram=(
+                                          (PAIR_SEQ_MIN_VRAM
+                                           if pair_mode == "sequential"
+                                           else PAIR_MIN_VRAM)
+                                          if pair is not None else 0)),
             name=_pod_name("train", run_id, _pod_hint(domain, recipe)),
             image=_image_ref(),
             env={**payload_env, "AGENT_TOKEN": token,
@@ -2231,7 +2267,8 @@ def pipeline_report(kind: str | None = None) -> dict:
 
 def preflight(kind: str = "train", *, provider: str = "runpod",
               max_price_hr: float | None = None,
-              max_runtime: int = 3600, pair: bool = False) -> dict:
+              max_runtime: int = 3600, pair: bool = False,
+              pair_mode: str = "concurrent") -> dict:
     """Read-only decision report (the plan's `--preflight`): which cards
     pass the fit, what the estimate/kill threshold would be, gate verdicts
     — launches NOTHING, writes NOTHING. Answers 'what would this job
@@ -2267,10 +2304,12 @@ def preflight(kind: str = "train", *, provider: str = "runpod",
                     "13q)"])
         all_ = raw_catalog
         if pair:
-            all_ = [o for o in all_ if (o.vram_gb or 0) >= PAIR_MIN_VRAM]
-            assumed.append(f"pair floor: vram >= {PAIR_MIN_VRAM}GB "
-                           "(co-tenant PRIOR, first-smoke sizing math; "
-                           "QTRAIN_PAIR_MIN_VRAM to retune)")
+            _floor = (PAIR_SEQ_MIN_VRAM if pair_mode == "sequential"
+                      else PAIR_MIN_VRAM)
+            all_ = [o for o in all_ if (o.vram_gb or 0) >= _floor]
+            assumed.append(f"pair floor ({pair_mode}): vram >= {_floor}GB "
+                           "(measured receipts da62ed/d90d9a/9ddeb5; "
+                           "QTRAIN_PAIR_MIN_VRAM/_SEQ_ to retune)")
         if storage.vol_cfg():
             all_ = [o for o in all_ if o.secure]
         offers = sorted((o for o in all_

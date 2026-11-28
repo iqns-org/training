@@ -114,6 +114,7 @@ def cmd_submit(args):
         args.domain, resolve_recipe(args.recipe), mini=args.mini,
         overrides=overrides,
         pair=resolve_recipe(args.pair) if args.pair else None,
+        pair_mode=args.pair_mode,
         force_guards=args.force_guard,
         retrain=args.retrain,
         provider=args.provider, gpus=args.gpu or None, tier=args.tier,
@@ -319,7 +320,7 @@ def cmd_preflight(args):
     res = dispatch.preflight(args.kind, provider=args.provider,
                              max_price_hr=args.max_price,
                              max_runtime=args.max_runtime,
-                             pair=args.pair)
+                             pair=args.pair, pair_mode=args.pair_mode)
     _print(res)
     raise SystemExit(0 if "launch" in str(res.get("decision", "")) else 1)
 
@@ -470,6 +471,12 @@ def build_parser():
                         "trees; gate requires both). e.g. train 0.8B+4B on "
                         "one 48G card for the price of one pod (measured: "
                         "full-CE legs need ~21 GiB each, d90d9a)")
+    s.add_argument("--pair-mode", choices=["concurrent", "sequential"],
+                   default="concurrent",
+                   help="concurrent: both legs at once (48GB class — "
+                        "d009dd: often unsourceable in a volume's DC). "
+                        "sequential: legs chained one-at-a-time on >=24GB, "
+                        "serialized wall-clock, same run/gate contract")
     s.add_argument("--retrain", action="store_true",
                    help="force a fresh pod even if identical work "
                         "(same dataset sha + configs) already succeeded "
@@ -572,6 +579,10 @@ def build_parser():
     s.add_argument("--max-runtime", type=int, default=3600)
     s.add_argument("--pair", action="store_true",
                    help="show the co-tenant fit (VRAM floor applied)")
+    s.add_argument("--pair-mode", choices=["concurrent", "sequential"],
+                   default="concurrent",
+                   help="48GB floor (concurrent) or 24GB chained legs "
+                        "(sequential — the mode d009dd proved sourceable)")
     s.set_defaults(func=cmd_preflight)
 
     s = sub.add_parser("watch", help="follow a run until terminal state")
