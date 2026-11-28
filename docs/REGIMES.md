@@ -783,3 +783,19 @@ replayed, five bugs found, four paid):
   gates (3-sided: floor/under-floor/fail-closed), receipt dir guard,
   pm-report RESOLVED entries. Verify receipt on disk:
   cognition@e5ed1bec90f14af3, 606/659 = 92% gold-clean, ok=true.
+
+RUNTIMES (analysis doc, 2026-11-28 night): docs/RUNTIMES.md maps the
+loop's artifacts (BF16 0.8B GDN-hybrid + LoRA r32 + GBNF grammar)
+against every plausible runtime and the farm's real hardware law —
+Orin sm_87 (no fp8, eager vLLM, 650M int4-KV budget), Pi arm64 CPU
+(the ONNX lane is fleet law for predictors, D-114 — not LLMs),
+workstation RTX (fp8-capable, training GPU). Verdict: vLLM stays the
+measurement ground truth (the only runtime with LoRA hot-attach +
+grammar + logprobs together); GGUF/llama.cpp is the only runtime
+that earns a SECOND lane (edge/offline personas — merge-first,
+bench-before-register per the registry's #50059 law, which generalizes
+to "any endpoint, any format"); TensorRT-LLM/ONNX/SGLang parked with
+named reasons, not vibes. The free, highest-value item is the
+RUNTIME FINGERPRINT in eval rows — a number that doesn't know its
+engine is a rumor. Open questions in doc §6 (llama.cpp GDN support
+state — the whole GGUF bet hinges on it; verify before harness code).
