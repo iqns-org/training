@@ -764,3 +764,13 @@ replayed, five bugs found, four paid):
   saga visible in the ledger (5 failed train runs today; pair-floor
   memory-law commits) — handoff note still owed by their side.
   Engine probed: r3 still live on nano0 (direct, no tunnel needed).
+- COUNT CORRECTION (same honesty rule the file preaches): the
+  `synth verify` commit message claimed "suite 277 passed" — the
+  measured truth is 276 passed + 1 skipped (277 COLLECTED; the
+  commit conflated collected with passed). One transient FAILED run
+  observed during the peer's checkout landing mid-test; three
+  consecutive green runs after (276/1 stable at 22a43c5). Also: a
+  corpora commit described in prose earlier this session was never
+  actually issued — caught by the final sweep, issued for real
+  (a591944-era scenarios + r4.1 converter). Narration is not a tool
+  call; the log is the log.
