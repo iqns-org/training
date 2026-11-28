@@ -213,6 +213,42 @@ def test_laws_cover_pipeline_defaults():
         assert law in body, f"pipeline law missing: {law}"
 
 
+def test_knob_surface_gates_and_audits(tmp_path, monkeypatch):
+    """Remote tuning: whitelist exhaustive, direction-biased (a
+    compromised surface may TIGHTEN money gates and RAISE safety floors,
+    never the reverse), budget actually MOVES (resync, not just the
+    string), every write audited via notify.emit."""
+    tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    assert {"fleet_settings", "knob_set"} <= set(tools)
+    settings = tools["fleet_settings"].fn()
+    assert "QTRAIN_BUDGET" in settings["knobs"]
+    assert settings["knobs"]["QTRAIN_BUDGET"]["source"] in ("env", "default")
+    assert settings["law"]
+    events = []
+    monkeypatch.setattr(server.notify, "emit",
+                        lambda *a, **kw: events.append((a, kw)))
+    monkeypatch.delenv("QTRAIN_BUDGET", raising=False)
+    from orchestrator import budget as bud
+    monkeypatch.setattr(bud, "TOTAL", 5.0)
+    # raising the purse remotely: refused
+    r = tools["knob_set"].fn("QTRAIN_BUDGET", 500.0)
+    assert "DOWNWARD-only" in r["error"]
+    # lowering: allowed, resynced, audited
+    r = tools["knob_set"].fn("QTRAIN_BUDGET", 3.0)
+    assert r["new"] == 3.0 and bud.TOTAL == 3.0 and not r["persisted"]
+    assert events and events[-1][0][0] == "knob"
+    # unlisted names refuse with the exhaustive-argument
+    assert "not whitelisted" in tools["knob_set"].fn("TRAINER_IMAGE",
+                                                     "evil")["error"]
+    # safety floor may only rise (value in-range but BELOW current=20);
+    # the range clamp itself bites first and hard
+    assert "UPWARD-only" in tools["knob_set"].fn(
+        "QTRAIN_PAIR_MIN_VRAM", 15)["error"]
+    assert ">= 8" in tools["knob_set"].fn("QTRAIN_PAIR_MIN_VRAM", 2)["error"]
+    # the impl writes os.environ directly — undo it for sibling tests
+    monkeypatch.delenv("QTRAIN_BUDGET", raising=False)
+
+
 def test_synth_tools_chain(tmp_path, monkeypatch):
     """graph → manifest → bundle entirely through the MCP surface."""
     tools = {t.name: t for t in asyncio.run(server.mcp.list_tools())}

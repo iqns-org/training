@@ -1072,6 +1072,30 @@ def config_guards(cfg: dict, pair_cfg: dict | None = None) -> tuple[list[dict], 
 # ---------------------------------------------------------------------------
 
 
+# WINDOW GUARD (receipt 1ffca0): if the TYPICAL row cannot fit the
+# configured window, packing yields zero (or truncated-mush) samples —
+# both pair legs died at step 0 with num_samples=0 when mini forced
+# sequence_len 256 under ~4.6K-token agentic rows. Sequence length is a
+# property of the DATA; a recipe whose window starves its own corpus is
+# a config bug, refused before any pod (bypass code window_starved).
+DEFAULT_SEQ_LEN = 512   # axolotl's own default when a recipe omits one
+
+
+def window_guard(leg_cfgs: "list[tuple[str, dict]]", est_tokens: float,
+                 ) -> list[dict]:
+    out = []
+    for leg, cfg in leg_cfgs:
+        seq = int(cfg.get("sequence_len") or DEFAULT_SEQ_LEN)
+        if est_tokens > 0.95 * seq:
+            out.append({"code": "window_starved", "leg": leg, "reason":
+                f"{leg}: median row ~{est_tokens:.0f} tokens exceeds "
+                f"sequence_len={seq} — packing would yield zero/truncated "
+                "samples (1ffca0: num_samples=0, step-0 death). Raise the "
+                "window to fit the corpus, or the corpus to fit the "
+                "window; do not launch. " + GUARD_BYPASS})
+    return out
+
+
 def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            overrides: dict | None = None, provider: str = "runpod",
            gpus: list[str] | None = None, tier: str | None = None,
@@ -1165,11 +1189,13 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 "or use --lane presign")
         ov = dict(overrides or {})
         if mini:
-            # micro_batch_size stays 1 — the recipe's own lesson (packing
-            # + cu_seqlens: FLA kernel requires batch dim 1; 425e6c died
-            # at step 0, and c4b9eb/8250dc re-proved it via the override)
-            ov.update({"sequence_len": 256, "num_epochs": 1,
-                       "gradient_accumulation_steps": 1,
+            # mini trims ROWS (48) and epochs — NEVER the window. (Forcing
+            # sequence_len 256 here killed smoke 1ffca0: agentic rows are
+            # ~4.6K tokens incl. per-sample tools schema, so packing
+            # produced num_samples=0 and both pair legs died at step 0.
+            # The window is a property of the DATA; the cheapness lever
+            # is line count. micro_batch stays 1 — 425e6c fla law.)
+            ov.update({"num_epochs": 1, "gradient_accumulation_steps": 1,
                        "saves_per_epoch": 1})
         # GUARDS (2026-11-27 assumption audit): refuse burned footguns on
         # the RESOLVED config (recipe+overrides) BEFORE staging a single
@@ -1226,6 +1252,28 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
         meta = {"domain": domain, "recipe": str(recipe)}
         if pair is not None:
             meta["pair"] = str(pp)
+        # WINDOW GUARD on the dataset that WILL train (mini-truncated or
+        # full), per rendered leg — 1ffca0's zero-sample death, prepaid
+        import statistics as _st
+        _lens = []
+        with open(dataset_path, encoding="utf8") as _f:
+            for _i, _ln in enumerate(_f):
+                if _i >= 500:
+                    break
+                _lens.append(len(_ln))
+        est_tok = (_st.median(_lens) / 4.0) if _lens else 0.0
+        legs = [("main", yaml.safe_load(job_fields["config_yaml"]))] \
+            if "config_yaml" in job_fields else \
+            [(c["name"], yaml.safe_load(c["config_yaml"]))
+             for c in job_fields["configs"]]
+        wblocked = [r for r in window_guard(legs, est_tok)
+                    if r["code"] not in bypass]
+        if wblocked:
+            raise ProviderError(
+                "config guards refused: "
+                + " | ".join(r["reason"] for r in wblocked)
+                + f" (bypass knowingly: force_guards="
+                  f"{sorted({r['code'] for r in wblocked})})")
 
         if vol:  # pod sees the dataset THROUGH the mount
             pod_ds_path = f"{vol['mount']}/{dataset_key}"

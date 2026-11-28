@@ -196,7 +196,144 @@ PIPELINE DEFAULTS (stage/budget audit, 2026-11-27 — read pipeline_report())
   env knobs WITH defaults stated in pipeline_report — the aggregate gate
   refuses BEFORE launch, the soft kill acts during, the deadman covers
   watcher death. Three layers, one vocabulary.
+- Remote tuning has a surface: fleet_settings (read values + provenance)
+  and knob_set (audited writes). Whitelist exhaustive; money ceilings
+  and rate caps DOWNWARD-only over the API, safety floors UPWARD-only —
+  a compromised surface can tighten the purse and raise the floors,
+  never the reverse. Writes are process-lifetime; persistence is git's
+  job (env file/infra, reviewed like code). Image pins and the holdout
+  law are git-only by design.
+
+SEQUENCE LAW (smoke 1ffca0, pinned by the window guard)
+- The WINDOW belongs to the DATA (rows + template render, including
+  per-sample tools schemas). --mini trims ROWS and epochs — NEVER
+  sequence_len: forcing 256 under ~4.6K-token agentic rows produced
+  num_samples=0 and step-0 death for both pair legs. submit refuses a
+  starved window (bypass code window_starved) BEFORE any pod launches.
 """
+
+
+KNOBS: dict[str, dict] = {
+    # name -> {env, default, cast, clamp, note}. Whitelist IS the law:
+    # set_knob knows ONLY these. Money ceilings are DOWNWARD-ONLY over
+    # remote (raise requires the env/git path); floors are upward-only
+    # (raising a safety floor is always allowed). Pins and holdout law
+    # are absent by design — those move via commit+CI, never a socket.
+    "QTRAIN_BUDGET": {"env": "QTRAIN_BUDGET", "default": 5.0, "cast": float,
+                      "range": None, "dir": "down",
+                      "note": "concurrent-estimate ceiling ($)"},
+    "QTRAIN_BUDGET_MARGIN": {"env": "QTRAIN_BUDGET_MARGIN", "default": 1.5,
+                             "cast": float, "range": (1.0, 3.0), "dir": "down",
+                             "note": "estimate padding (lower = tighter caps)"},
+    "QTRAIN_RESERVE": {"env": "QTRAIN_RESERVE", "default": 2.0, "cast": float,
+                       "range": (0.0, None), "dir": "up",
+                       "note": "balance floor left untouched ($)"},
+    "QTRAIN_MAX_PRICE_HR": {"env": "QTRAIN_MAX_PRICE_HR", "default": 1.50,
+                            "cast": float, "range": (0.0, None), "dir": "down",
+                            "note": "rate ceiling $/hr (right-sizing, 13q)"},
+    "QTRAIN_PAIR_MIN_VRAM": {"env": "QTRAIN_PAIR_MIN_VRAM", "default": 20,
+                             "cast": int, "range": (8, None), "dir": "up",
+                             "note": "co-tenant VRAM floor GB (PRIOR from "
+                                     "smoke #1; pilot data retunes)"},
+    "QTRAIN_DEADMAN_GRACE_S": {"env": "QTRAIN_DEADMAN_GRACE_S", "default": 600,
+                               "cast": int, "range": (60, None), "dir": "up",
+                               "note": "watcher-silence grace before pod "
+                                       "self-harm (13an)"},
+}
+
+
+def fleet_settings_impl() -> dict:
+    """Current value + provenance of every remote-tunable knob: 'env'
+    (something set it) vs 'default' (nobody overrode the code value).
+    Read via MCP; writes go through set_knob (whitelisted + audited)."""
+    out = {}
+    for name, spec in KNOBS.items():
+        raw = os.environ.get(spec["env"])
+        out[name] = {"value": (spec["cast"](raw) if raw not in (None, "")
+                               else spec["default"]),
+                     "source": "env" if raw not in (None, "") else "default",
+                     "direction": spec["dir"],
+                     "range": spec.get("range"),
+                     "note": spec["note"]}
+    return {"knobs": out,
+            "law": "whitelist is exhaustive; image pins & holdout law are "
+                   "git-only (commit+CI), never remote-settable",
+            "audit": "events.db knob rows carry old/new + ts + host user"}
+
+
+def set_knob_impl(name: str, value) -> dict:
+    """Audited runtime knob change (assumption-audit doctrine, 2026-11-28):
+    enumerated whitelist, direction-biased clamps (money ceilings DOWN-only,
+    safety floors UP-only), every write lands an 'knob' event row. The
+    change applies to THIS orchestrator process for values read at call
+    time (budget module reads os.environ live via module attrs — those
+    are re-synced); launcher-spawned children inherit the new env."""
+    spec = KNOBS.get(name)
+    if spec is None:
+        return {"error": f"knob not whitelisted (have: "
+                         f"{', '.join(sorted(KNOBS))}); image pins and "
+                         "holdout law are git-only by design"}
+    cast = spec["cast"]
+    try:
+        v = cast(value)
+    except (TypeError, ValueError):
+        return {"error": f"value {value!r} is not a {cast.__name__}"}
+    lo, hi = spec.get("range") or (None, None)
+    if lo is not None and v < lo:
+        return {"error": f"{name} >= {lo} ({spec['note']})"}
+    if hi is not None and v > hi:
+        return {"error": f"{name} <= {hi} ({spec['note']})"}
+    old = os.environ.get(spec["env"])
+    old_v = cast(old) if old not in (None, "") else spec["default"]
+    if spec["dir"] == "down" and v > old_v:
+        return {"error": f"{name} is DOWNWARD-only over the API "
+                         f"(current {old_v:g}); raising it is an env/git "
+                         "act, so a compromised surface cannot loosen "
+                         "the purse"}
+    if spec["dir"] == "up" and v < old_v:
+        return {"error": f"{name} is UPWARD-only over the API: lowering a "
+                         f"safety value (current {old_v:g}) is an env/git act"}
+    os.environ[spec["env"]] = str(v)
+    # budget.py read MARGIN/TOTAL/RESERVE at import — resync so a knob
+    # set actually MOVES the gate, not just the string (drift here was a
+    # real failure class: mint/check)
+    _budget_resync()   # same-module function — `from . import` here would
+                       # import from the PACKAGE and silently no-op via
+                       # the except below (the drift class itself)
+    notify.emit("knob", kind="knob", knob=name,
+                old=None if old is None else str(old), new=str(v),
+                source=str(os.environ.get("USER", "unknown")),
+                law="runtime-set; restart does NOT persist (env is "
+                    "ephemeral by design — persistence is git's job)")
+    return {"knob": name, "old": old_v, "new": v, "persisted": False,
+            "note": "process-lifetime change; durable tuning belongs in "
+                    "the server's env file / infra, reviewed like code"}
+
+
+def _budget_resync() -> None:
+    from orchestrator import budget
+    budget.MARGIN = float(os.environ.get("QTRAIN_BUDGET_MARGIN", "1.5"))
+    budget.TOTAL = float(os.environ.get("QTRAIN_BUDGET", "5.0"))
+    budget.RESERVE = float(os.environ.get("QTRAIN_RESERVE", "2.0"))
+
+
+@mcp.tool
+def fleet_settings() -> dict:
+    """Current value + provenance ('env' vs 'default') of every
+    remote-tunable fleet knob (budget, rate/pair/deadman tuning) — read
+    before set_knob. Image pins and the holdout law are ABSENT by
+    design: those move via commit+CI so pin drift stays git-visible."""
+    return fleet_settings_impl()
+
+
+@mcp.tool
+def knob_set(name: str, value) -> dict:
+    """Audited runtime tuning, whitelist-only: enumerated knobs,
+    direction-biased clamps (money ceilings/price caps DOWNWARD-only
+    over the API; safety floors UPWARD-only), every write journal-
+    audited (event 'knob', old/new/source) and process-lifetime ONLY —
+    persistence is git's job. Unlisted names refuse with evidence."""
+    return set_knob_impl(name, value)
 
 
 @mcp.tool

@@ -265,6 +265,43 @@ def test_guard_bypass_records_choice(tmp_path, monkeypatch, fake_s3):
     assert isinstance(spec["guards"]["advisories"], list)
 
 
+def test_mini_keeps_the_recipes_window(tmp_path, monkeypatch, recipe):
+    """1ffca0 lesson, pinned: --mini trims ROWS and epochs, NEVER
+    sequence_len — forcing 256 under long corpora produced num_samples=0
+    and step-0 death for BOTH pair legs. The recipe owns the window."""
+    puts = _vol_puts(tmp_path, monkeypatch)
+    res = dispatch.submit("queer", recipe, mini=True, dry=True)
+    assert not res.get("error"), res
+    payload = json.loads(dict(puts)[f"runs/{res['run_id']}/payload.json"])
+    cfg = yaml.safe_load(payload["config_yaml"])
+    assert cfg["sequence_len"] == 1024          # the RECIPE's window
+    assert cfg["num_epochs"] == 1               # rows/epochs trimmed instead
+    assert cfg["gradient_accumulation_steps"] == 1
+
+
+def test_window_guard_refuses_starved_dataset(tmp_path, monkeypatch):
+    """A majority of rows larger than the window = zero packed samples:
+    refused pre-launch (1ffca0), per-leg, bypassable by code. Short rows
+    against the same window pass untouched."""
+    puts = _vol_puts(tmp_path, monkeypatch)
+    big = json.dumps({"messages": [{"role": "user", "content": "x" * 30000},
+                                   {"role": "assistant",
+                                    "content": "y" * 30000}]})
+    (tmp_path / "tmp/queer.jsonl").write_text("\n".join([big] * 40))
+    r = tmp_path / "small.yaml"
+    r.write_text(yaml.safe_dump({"base_model": "HuggingFaceTB/SmolLM2-360M",
+                                 "adapter": "qlora", "sequence_len": 1024,
+                                 "datasets": [{"path": "x"}]}))
+    res = dispatch.submit("queer", r, dry=True)
+    assert res.get("error") and "window_starved" in res["error"], res
+    row = dispatch.Ledger(tmp_path / "state" / "ledger.db").get(res["run_id"])
+    assert "1ffca0" in row["error"]          # the refusal cites its burn
+    # bypass proceeds (the operator, not the machine, owns the call)
+    res2 = dispatch.submit("queer", r, dry=True,
+                           force_guards=["window_starved"])
+    assert not res2.get("error"), res2
+
+
 def test_submit_volume_lane_dry(tmp_path, monkeypatch, recipe):
     """Volume lane selected automatically when RunPod volume env is set;
     payload carries volume mount + pod dataset path, no presigned urls."""
