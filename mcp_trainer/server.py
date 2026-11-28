@@ -129,7 +129,8 @@ CO-TENANT PAIR MODE (one pod, two recipes)
   class; that class can be unsourceable in a volume's DC (d009dd: 8
   waves / 1800s, no instances) while 24 GB is plentiful — so
   pair_mode="sequential" chains legs one-at-a-time (PAIR_SEQ_MIN_VRAM
-  24): one run_id, one manifest, same gate, serialized wall-clock.
+  28 — quiet-card 25.2/leg + headroom, c4f1ec): one run_id, one
+  manifest, same gate, serialized wall-clock.
 - One run_id, one manifest (file map), per-slug output trees + per-slug
   prepared dirs (shared prepared dir = HF fingerprint race). Gate
   requires BOTH trees: half-success fails HONESTLY.
@@ -237,21 +238,25 @@ SEQUENCE LAW (smoke 1ffca0, pinned by the window guard)
   num_samples=0 and step-0 death for both pair legs. submit refuses a
   starved window (bypass code window_starved) BEFORE any pod launches.
 
-MEMORY LAW (receipts da62ed + d90d9a)
-- Full-materialization cross-entropy costs ~21.3 GiB PER LEG at the
-  8192 window x 151,936 Qwen vocab (measured: 13.75 in-use + 7.58
-  attempt). Card sizing from this arithmetic: >=24 GB for one leg, 48 GB
-  for a concurrent pair — three smokes died on a 20 GB floor that could
-  never have held even a SINGLE leg.
-- The pinned axolotl schema has NO chunked/liger/CCE knobs AND unknown
-  keys are silently dropped: chunks_per_batch rode the recipe, was
-  never observed surviving the post-parse boot dump, and the OOM
-  allocation came back BYTE-IDENTICAL (7.58 GiB) — proof by behavior.
-  (Boot dumps also omit ACCEPTED keys — gradient_checkpointing is absent
-  from d90d9a's dump yet demonstrably lived — so absence from a dump is
-  not schema truth. The machine: unknown_keys guard on the never-observed
-  signature, bypassable, fixture per docs/PLAN.md O4.3; v2 = dump the
-  schema from the pinned image itself.)
+MEMORY LAW (receipts da62ed + d90d9a + c4f1ec + 2a7b95)
+- Full-materialization cross-entropy costs ~25.2 GiB PER LEG at the
+  8192 window x 151,936 Qwen vocab — QUIET-CARD measurement (c4f1ec:
+  17.62 in-use + 7.58 attempt on a 23.43 GiB Blackwell; the earlier
+  21.3 was a collision-corrupted number). Consequences: the 24 GB class
+  cannot hold ANY single leg at 8192; sequential pairs need the 32 GB
+  class (floor 28); concurrent pairs need 48 — and d009dd showed the
+  volume's DC may not source 48 AT ALL despite catalogs (DC alignment,
+  not market absence: preflight later listed A40/A6000/L40S at $0.59+).
+- The pinned axolotl has NO CE-optimization path, PROVEN BY TWO
+  BEHAVIORAL PROBES: chunks_per_batch (d90d9a) and use_liger (2a7b95)
+  both rode the config, left ZERO trace in the pod log, and the OOM
+  allocation came back byte-identical at 7.58 GiB — silent drops, no
+  error, no effect. Boot dumps also omit ACCEPTED keys
+  (gradient_checkpointing lived yet never appears in serialization), so
+  absence-from-dump is not schema truth — absence-plus-inert-behavior
+  is. The machine: unknown_keys guard on the never-observed signature
+  (bypassable, receipted — 2a7b95 BYPASSED it deliberately to run this
+  very probe). v2 = dump the schema from the image itself (O4.3).
 - The 'sample_packing & sdpa => 0.0 loss' warning is neutralized in
   this build by the sdpa_varlen cu_seqlens patch; attention stays sdpa.
 """
@@ -277,9 +282,14 @@ KNOBS: dict[str, dict] = {
                             "note": "rate ceiling $/hr (right-sizing, 13q)"},
     "QTRAIN_PAIR_MIN_VRAM": {"env": "QTRAIN_PAIR_MIN_VRAM", "default": 48,
                              "cast": int, "range": (8, None), "dir": "up",
-                             "note": "co-tenant VRAM floor GB (MEASURED "
-                                     "d90d9a: ~21.3 GiB/leg full-CE at "
-                                     "8192x151936; 48 = 2 legs + ctx)"},
+                             "note": "concurrent-pair VRAM floor GB "
+                                     "(2 legs full-CE + 2 ctx alive at "
+                                     "once, d90d9a/c4f1ec measured)"},
+    "QTRAIN_PAIR_SEQ_MIN_VRAM": {
+        "env": "QTRAIN_PAIR_SEQ_MIN_VRAM", "default": 28, "cast": int,
+        "range": (8, None), "dir": "up",
+        "note": "sequential-pair VRAM floor GB (25.2/leg quiet-card "
+                "measured c4f1ec + headroom; targets 32GB class)"},
     "QTRAIN_DEADMAN_GRACE_S": {"env": "QTRAIN_DEADMAN_GRACE_S", "default": 600,
                                "cast": int, "range": (60, None), "dir": "up",
                                "note": "watcher-silence grace before pod "

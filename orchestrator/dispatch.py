@@ -47,11 +47,15 @@ MINI_LINES = 48
 PAIR_MIN_VRAM = int(os.environ.get("QTRAIN_PAIR_MIN_VRAM", "48"))
 # SEQUENTIAL pair mode (d009dd): RunPod answered "no instances available"
 # for SECURE + volume-DC + >=48GB across 8 waves / 30 min — the 48-class
-# concurrent pair is unsourceable in that DC at $1.50. But the 21.3 GiB
-# is PER-LEG PEAK: chained legs (one alive at a time) halve the card
-# requirement to the 24 GB class (Blackwell-24 $0.57, A5000 $0.69), at
-# the honest cost of serialized wall-clock. Same run/manifest/gate.
-PAIR_SEQ_MIN_VRAM = int(os.environ.get("QTRAIN_PAIR_SEQ_MIN_VRAM", "24"))
+# concurrent pair is unsourceable in that DC at $1.50. But the CE peak
+# is PER LEG: chained legs (one alive at a time) halve the card
+# requirement. MEASURED QUIET-CARD (c4f1ec, single legs on 23.43 GiB):
+# 17.62 + 7.58 attempt ~= 25.2 GiB per leg, BOTH knobs proven inert
+# (chunks_per_batch d90d9a, use_liger 2a7b95 — silent drops, byte-
+# identical allocation). Floor 28 = 25.2 + allocator/context headroom,
+# targeting the 32GB class (PRO 4500 Blackwell $0.72; the 24GB class
+# cannot hold ANY leg at 8192 — c4f1ec proved it).
+PAIR_SEQ_MIN_VRAM = int(os.environ.get("QTRAIN_PAIR_SEQ_MIN_VRAM", "28"))
 
 
 

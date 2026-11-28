@@ -3,7 +3,11 @@
   "NOT_authoritative": "this is a LOW-FALSE-POSITIVE known set, not the pinned axolotl schema \u2014 boot dumps omit accepted keys (gradient_checkpointing is absent from d90d9a's), so absence here means 'never observed', the exact signature of a silently-dropped key (chunks_per_batch, use_liger: both ABSENT here AND behaviorally dead in d90d9a). v2: dump the schema from the image itself (docs/PLAN.md O4.3).",
   "axolotl_base": "axolotlai/axolotl:main-py3.12-cu130-2.13.0@sha256:dd4a1734",
   "built": "2026-11-28",
-  "method": "union: keys surviving the d90d9a post-parse config serialization + keys used by every corpora recipe that has trained in this image + dispatch-injected keys"
+  "method": "union: keys surviving the d90d9a post-parse config serialization + keys used by every corpora recipe that has trained in this image + dispatch-injected keys",
+  "verified_dead_by_probe": {
+   "chunks_per_batch": "d90d9a: byte-identical 7.58 GiB OOM, zero log trace",
+   "use_liger": "2a7b95: byte-identical 7.58 GiB OOM, zero liger mentions"
+  }
  },
  "keys": [
   "activation_checkpointing",
