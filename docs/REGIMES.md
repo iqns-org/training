@@ -668,3 +668,32 @@ STATUS (pair promotion + D4, 2026-11-28 — second close-out block):
    bench/*.json for trend-id stability, but silently redefines what
    "the bench" is when a peer adds a file — now the merged sources +
    question counts print to stderr at load.
+
+STATUS (r4 tranche, 2026-11-28 — pre-registered gate RUN and PASSED):
+The report named the levers; this tranche ships them as law-in-tool.
+Bundle: cognition@9c634348d78e3bc7 (28,417 SFT+derived rows;
+gold_rejects {} — fail-closed verified; r1 preference bytes pinned
+5cd11878 untouched). CENSUS (law=template, 662 held): 595 gold-clean
+= 90% (r3: 47%; gate: >=80% PASS). Per family: abstain 100%, repair
+98%, diagnosis 82%, equivalence 54%, valid-program 89%, six families
+100%; counterfactual 0/3 = program-shaped golds can't certify (named
+limit, not hidden). UNIQ (profile): equivalence 0.001->0.178 (178x),
+abstain 0.008->0.458 (57x), diagnosis 0.015->0.189, repair 0.023->
+0.151. The law behind every number: a gold is only certifiable if it
+is slot-UNIQUE, and slot-uniqueness means QUOTING the row's own
+entities — subject, predicate, and (equivalence) the fixture-COMPUTED
+answer (_ans(da) — never the author's memory). Three mechanisms now
+carry it: scenario authoring tool (tools/author_r4_gold_variants.py,
+deterministic, idempotent), synth-side derived writers (ip/rp quote
+the rejected statement; abstain quotes the gap, never the removed
+value; equiv quotes computed answers), and the bundle's USER-SHAPE
+rotation (~1/3 of verdict/QA families: ctx fused into the user turn
+— the D1 lesson, taught at the message-form seam where the bleed
+actually fired). check_record and the holdout law BOTH learned that
+packaging must never move a bucket (user-shape keys on the ctx PART
+under either law; sibling-shape tests pinned). Old pins moved UP
+with the law: tests that permitted the catchphrase now FORBID it.
+Farm queue at handover: train cognition@9c634348d78e3bc7 (1 epoch,
+r3-everything-else-identical) -> serve -> bench v2 attribution vs
+r3 on split-pinned comparison. The r3.5/r3.1 levers then branch from
+r3 itself, per Rule 4.

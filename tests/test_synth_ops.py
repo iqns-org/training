@@ -276,6 +276,62 @@ def test_promote_real_law_census_consistent(synth, tmp_path):
     assert res["kept"] in (0, 30)            # one bucket, one side
 
 
+def test_user_shape_sibling_bucket(synth, monkeypatch):
+    # r4 law completion: a row's PACKAGING must never move its holdout
+    # bucket. The same ctx shipped 3-message and user-shape must land
+    # on the same side under BOTH laws (prepare-domain and the mirror
+    # agree — tested via the mirror here, the shared law test pins the
+    # pair).
+    import json as _json
+    ctx = "PREFIX my: <http://e/>.\nWORLD {\n    my:a ai:p my:b .\n}"
+    row3 = _json.dumps({"messages": [
+        {"role": "assistant", "content": ctx},
+        {"role": "user", "content": "equivalent?"},
+        {"role": "assistant", "content": "# VERDICT: EQUIVALENT"}]})
+    shape = synth.to_user_shape(json.loads(row3)["messages"])
+    row2 = _json.dumps({"messages": shape})
+    for law in ("template", "gold"):
+        monkeypatch.setenv("QTRAIN_HOLDOUT_LAW", law)
+        assert synth._is_holdout(row3) == synth._is_holdout(row2), law
+
+
+def test_user_shape_oracle_roundtrip(synth):
+    # the oracle unpacks the fused user turn and applies the task
+    # contract unchanged — a gold that passed packed must pass fused
+    msgs = [
+        {"role": "assistant",
+         "content": "PREFIX my: <http://e/>.\nPREFIX ai: <http://p/>.\n"
+                    "WORLD {\n    my:s ai:q my:d .\n}"},
+        {"role": "user", "content": "Same or not?"},
+        {"role": "assistant", "content": "# VERDICT: EQUIVALENT"}]
+    rec = {"system": "abstain", "messages": msgs,
+           "assert": {"not_derivable": True,
+                      "program": "READ WORLD my:s ai:x my:?v . ONE.\n"
+                                 "RETURN my:?v."}}
+    # abstain preflight-style: fused form keeps the gold verbatim
+    fused = synth.to_user_shape(msgs)
+    assert fused[0]["content"].endswith("Same or not?")
+    assert fused[1]["content"] == "# VERDICT: EQUIVALENT"
+    assert len(fused) == 2 and [m["role"] for m in fused] == [
+        "user", "assistant"]
+
+
+def test_abstain_gold_names_the_gap(synth):
+    # D3 law in data terms: composed golds QUOTE the missing fact and
+    # NEVER the removed value. Build one graph-domain abstain pool the
+    # way cmd_graph does and assert both halves of the law.
+    dom = {"subj": "my:site1", "pred": "ai:riskScore_27",
+           "slabel": "site 1", "plabel": "risk score 27",
+           "obj": "my:Depot_95"}
+    gvar = synth.pick_variant(0, synth.ABSTAIN_GOLDS).format(
+        gap=f"no {dom['plabel']} fact for {dom['slabel']} "
+            f"({dom['subj']} {dom['pred']} is what the question needs)")
+    assert gvar.startswith("NOT DERIVABLE")
+    assert "risk score 27" in gvar and "my:site1" in gvar
+    assert "\u2014" not in gvar and "\u2013" not in gvar   # dash-free
+    assert "my:Depot_95" not in gvar                        # value hidden
+
+
 def test_sample_cmd_fake_endpoint(synth, tmp_path, monkeypatch):
     d = tree(tmp_path)
     msgs, _ = next(iter(synth.check.expansions(NL_TEMPLATE)))

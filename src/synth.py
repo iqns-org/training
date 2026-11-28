@@ -84,6 +84,31 @@ ABSTAIN_PHRASINGS = [
     "Resolve the request against the current state; refuse to invent.",
 ]
 
+FIX_CLAUSES = {   # r4 gold-diversity: the advice sentence ROTATES per
+    "default": [    # pool entry, so the repair/diagnosis families stop
+        "Fix it before running.", "The program must not run until this "
+        "is resolved.", "Repair the declaration above before executing.",
+        "Correct this first; nothing downstream is trustworthy.",
+    ],
+}
+
+
+def _why_clauses(msg):
+    """Per-error WHY sentences for repair golds: the message is already
+    unique to the mutant, the phrasing rotates over four openings so
+    the gold is not one template wearing the same jacket 5,950 times.
+    Message-derived (no {…} braces; they would parse as placeholders).
+    The msg tail is lowercased ONLY after any leading word: sentence-
+    mid lowercase of acronyms is fine, no meaning rides on case."""
+    tail = msg[0].lower() + msg[1:] if msg and msg[0].isupper() else msg
+    return [
+        f"this exact program fails: {tail}",
+        f"the failing rule is right there: {tail}",
+        f"as written the checker stops here: {tail}",
+        f"the error is not theoretical: {tail}",
+    ]
+
+
 ERROR_HINTS = {
     "E1_DUP_PREFIX": "the prefix is declared twice — keep exactly one PREFIX per prefix.",
     "E1_DUP_TYPE": "the type is declared twice — keep a single TYPE declaration per name.",
@@ -688,16 +713,35 @@ def cmd_derive(args):
         for (sid, code), pool in sorted(accepted_ip.items()):
             stats["by_template"][sid] = stats["by_template"].get(sid, 0) + 1
             var = pool[0]["var"]
-            diag = (f"INVALID: {code} — variable my:?{var} is illegal "
-                    f"here. {ERROR_HINTS[code]}" if var
-                    else f"INVALID: {code} — {ERROR_HINTS[code]}")
+            # r4 gold-diversity (D3): each mutant keeps its OWN var, so
+            # a cell of 4 mutants ships 4 distinct golds instead of
+            # pool[0]'s sentence pasted 4x. Dash-free: new golds carry
+            # no em/en dashes (the program-bleed fingerprint).
+            for j, e in enumerate(pool):
+                hint = ERROR_HINTS[code].replace(" — ", "; ")
+                fix = pick_variant(j, FIX_CLAUSES["default"])
+                # r4: quote the offending statement — the diagnosis is
+                # mutant-unique by construction, names WHERE to look,
+                # and never re-teaches one sentence per code (19% leak)
+                stmt = next((ln.strip() for ln in
+                             e["mutant"].splitlines()
+                             if ln[:1].isspace() and ln.strip()
+                             and not re.match(r"(?i)\b(?:PREFIX|WORLD"
+                                              r"|MEMORY)\b", ln.strip())
+                             ), "")[:70]
+                e["gvar"] = (f"INVALID: {code}: variable my:?{e['var']} "
+                             f"is illegal here. {hint} {fix} "
+                             f"Offending statement: {stmt}"
+                             if e.get("var") else
+                             f"INVALID: {code}. {hint} {fix} "
+                             f"Offending statement: {stmt}")
             assertion = {"valid": False, "errors": [
                 {"code": code, "variable": f"my:?{var}"} if var
                 else {"code": code}]}
             ip = make_template("invalid-program", sid, code, [
                 {"role": "assistant", "content": "{domain.mutant}"},
                 {"role": "user", "content": "{phrasing}"},
-                {"role": "assistant", "content": diag},
+                {"role": "assistant", "content": "{domain.gvar}"},
             ], assertion)
             ip["variants"]["domain"] = pool
             if preflight(ip):
@@ -706,12 +750,28 @@ def cmd_derive(args):
                 continue
             write_template(ip, out_root)
         for (sid, code), pool in sorted(accepted_rp.items()):
+            # r4: gold gets a per-entry WHY clause (the validator msg
+            # is already mutant-unique; the rotation keeps the framing
+            # from re-freezing it into one template)
+            for j, e in enumerate(pool):
+                clause = pick_variant(j, _why_clauses(e["msg"]))
+                # r4: the code names the cell, the mutant names the
+                # statement — WHY becomes mutant-unique, so golds that
+                # share a program body across cells stop colliding
+                bad = next((ln.strip() for ln in
+                            e["mutant"].splitlines()
+                            if ln[:1].isspace() and ln.strip()
+                            and not re.match(r"(?i)\b(?:PREFIX|WORLD"
+                                             r"|MEMORY)\b", ln.strip())
+                            ), "")[:70]
+                e["why"] = clause + " The rejected statement: " + bad
             rp = make_template("repair", sid, code, [
                 {"role": "assistant",
                  "content": "{domain.mutant}\n\n# ERROR " + code
                             + ": {domain.msg}"},
                 {"role": "user", "content": "{phrasing}"},
-                {"role": "assistant", "content": "{domain.stmts}"},
+                {"role": "assistant",
+                 "content": "{domain.stmts}\n\n# WHY: {domain.why}"},
             ], {"valid": True}, extra={"input_error": code})
             rp["variants"]["domain"] = pool
             if preflight(rp):
@@ -773,20 +833,30 @@ def cmd_abstain(args):
                         continue
                 except Exception:
                     continue
+                toks = line.strip().rstrip(".").split()
                 ab = make_template("abstain", rec["id"], "ABSTAIN", [
                     {"role": "assistant", "content": reduced},
                     {"role": "user", "content": "{phrasing}"},
-                    {"role": "assistant", "content":
-                     "NOT DERIVABLE — the fact required to answer is absent "
-                     "from the supplied graph. Name what is missing; do not "
-                     "invent facts."},
+                    {"role": "assistant", "content": "{domain.gvar}"},
                 ], {"not_derivable": True, "program": stmts.strip(),
                     "removed": line.strip()})
-                ab["variants"] = {"phrasing": [
-                    ABSTAIN_PHRASINGS[0].format(request=user),
-                    ABSTAIN_PHRASINGS[1],
-                    ABSTAIN_PHRASINGS[2],
-                ]}
+                # gold-diversity (r4/D3): the removed TRIPLE names the
+                # subject and predicate of the gap; the gold QUOTES
+                # them (per-file rotation over ABSTAIN_GOLDS) instead
+                # of one catchphrase 120x. The removed VALUE (toks[2])
+                # never appears: a refusal that recites the answer it
+                # refuses teaches the wrong law.
+                ab["variants"] = {
+                    "domain": [{"gvar": pick_variant(
+                        stats["accepted"], ABSTAIN_GOLDS).format(
+                        gap=f"no {label(toks[1])} fact for "
+                            f"{label(toks[0])} ({toks[0]} {toks[1]} "
+                            "is what the question needs)")}],
+                    "phrasing": [
+                        ABSTAIN_PHRASINGS[0].format(request=user),
+                        ABSTAIN_PHRASINGS[1],
+                        ABSTAIN_PHRASINGS[2],
+                    ]}
                 fails = preflight(ab)
                 if fails:
                     stats["preflight_fail"].append({"id": ab["id"], "errors": fails})
@@ -1117,16 +1187,24 @@ def cmd_graph(args):
                 {"role": "assistant", "content": "{domain.ctx}"},
                 {"role": "user", "content":
                  "What is the {domain.plabel} of the {domain.slabel}?"},
-                {"role": "assistant", "content":
-                 "NOT DERIVABLE — the fact required to answer is absent "
-                 "from the supplied graph. Name what is missing; do not "
-                 "invent facts."},
+                {"role": "assistant", "content": "{domain.gvar}"},
             ], {"not_derivable": True,
                 "program": ("READ WORLD {domain.subj} {domain.pred} my:?v "
                             ". ONE.\nRETURN my:?v.")})
             ab["id"] = f"graph/{domain}/{stem}--abstain"
             ab["comment"] = f"abstention over {f.name}@{gsha} (FRAMEWORK P12)"
-            ab["variants"] = {"domain": ab_entries}
+            # r4 gold-diversity (D3): every entry carries its OWN full
+            # gold sentence (ABSTAIN_GOLDS rotation keyed by entry):
+            # it QUOTES the missing plabel of the subject and never
+            # the removed VALUE — the obj is excluded by construction,
+            # a refusal that recites the answer teaches the wrong law.
+            # 120 rows / 1 gold becomes ~120 distinct refusals.
+            ab["variants"] = {"domain": [dict(
+                e, gvar=pick_variant(j, ABSTAIN_GOLDS).format(
+                    gap=f"no {e['plabel']} fact for {e['slabel']} "
+                        f"({e['subj']} {e['pred']} is what the "
+                        "question needs)"))
+                for j, e in enumerate(ab_entries)]}
             if preflight(ab) == []:
                 write_template(ab, out_root)
                 stats["templates"] += 1
@@ -1468,8 +1546,10 @@ HOLDOUT_MODULO = 50   # mirrors bin/prepare-domain's named constant:
 def _is_holdout(line: str) -> bool:
     """Mirror of bin/prepare-domain's holdout law (v2 template default;
     QTRAIN_HOLDOUT_LAW=gold selects gold-key bucketing — the mirror
-    test pins agreement under BOTH laws; if the law moves there and
-    not here, it fails loud)."""
+    test pins agreement under BOTH laws, on rows chosen so the laws
+    DISAGREE; if the law moves there and not here, it fails loud).
+    USER-SHAPE rows (r4: ctx fused into the first user turn) key on
+    the ctx part: a row's packaging must never move its bucket."""
     value = os.environ.get("QTRAIN_HOLDOUT_LAW", "template").strip().lower()
     if value not in ("template", "gold"):
         raise SystemExit(f"QTRAIN_HOLDOUT_LAW={value!r} is not a law; "
@@ -1485,6 +1565,9 @@ def _is_holdout(line: str) -> bool:
                     if m.get("role") == "assistant"), "")
     if not key:
         key = norm(msgs[0].get("content")) if msgs else ""
+        if (msgs and msgs[0].get("role") == "user" and len(msgs) == 2
+                and "\n\n" in (msgs[0].get("content") or "")):
+            key = norm(msgs[0]["content"].rpartition("\n\n")[0])
     key = key or line.strip()
     return (int(hashlib.sha256(key.encode()).hexdigest()[:8], 16)
             % HOLDOUT_MODULO == 0)
@@ -1791,6 +1874,16 @@ def _run_program(ctx_text, program):
             for k, v in delta.items()}
 
 
+def _ans(delta):
+    """Human-readable answer clause for equivalence reasons: the
+    fixture's own RETURN (never invented), so reasons carry the
+    computed answer and become pair-unique for free."""
+    v = (delta or {}).get("returned")
+    if isinstance(v, (list, tuple)):
+        v = ", ".join(str(x) for x in v)
+    return str(v or "(no rows)")[:44]
+
+
 def _preflight_equivalence(rec):
     try:
         for messages, _expected in check.expansions(rec):
@@ -1798,6 +1891,54 @@ def _preflight_equivalence(rec):
         return True
     except Exception:
         return False
+
+
+# Gold-diversity pools (r4/D3). LAW: the abstain family shipped with
+# exactly ONE distinct gold across 120 rows (bundle census) — a policy
+# sentence worn as a catchphrase. These entries carry the FULL gold:
+# every one starts with "NOT DERIVABLE" (preflight asserts it), names
+# the specific gap via {gap}, and NEVER states the removed VALUE — a
+# refusal that recites the answer it refuses teaches the wrong law.
+# Dash-free: these golds also withdraw the em-dash training signal
+# from the verdict families (the program-row bleed fingerprint).
+ABSTAIN_GOLDS = [
+    "NOT DERIVABLE: {gap}. Name the gap; invent nothing.",
+    "NOT DERIVABLE. {gap}; answering anyway would mean inventing a "
+    "fact, and invented facts are worse than silence.",
+    "NOT DERIVABLE from this graph: {gap}. Say what is missing instead "
+    "of guessing.",
+    "NOT DERIVABLE. I can only answer from the supplied graph, and "
+    "{gap}. The honest move is to stop and name the hole.",
+    "NOT DERIVABLE: {gap}. Guessing a value would fabricate data the "
+    "reader is relying on me not to invent.",
+    "NOT DERIVABLE. {gap}, so the correct answer is the refusal plus "
+    "the missing piece, named plainly.",
+    "NOT DERIVABLE: {gap}. A grounded answer requires exactly that "
+    "statement, and it is not here.",
+    "NOT DERIVABLE. {gap}; I will not answer with a fact the graph "
+    "does not carry.",
+]
+QA_USER_SHAPE_SYSTEMS = ("abstain", "conflict", "equivalence",
+                         "invalid-program", "repair")
+USER_SHAPE_EVERY = 3   # every third row of a verdict/QA family ships
+                       # in user-shape (ctx fused into the user turn)
+
+
+def pick_variant(i, pool):
+    return pool[i % len(pool)]
+
+
+def to_user_shape(messages):
+    """r4/D1 format-robustness: the same row with the preamble fused
+    into the USER turn. The bleed was gated on MESSAGE FORM (a bare
+    user ctx makes the model speak AS the ctx, IR tokens and all) —
+    the corpus fix is rows that teach ctx arriving from OUTSIDE, in
+    the turn where it actually arrives in the failing bench case.
+    Applied to verdict/QA systems at bundle time; content is never
+    rewritten, only repackaged, so gold-verification still holds."""
+    first, user, last = (m["content"] for m in messages)
+    return [{"role": "user", "content": first + "\n\n" + user},
+            {"role": "assistant", "content": last}]
 
 
 EQUIV_PHRASINGS = [
@@ -1831,8 +1972,13 @@ def cmd_equiv(args):
     stats = {"sources": len(index), "pairs": 0, "equivalent": 0,
              "different": 0, "undecidable": 0, "templates": 0}
     by_v = {"EQUIVALENT": [], "DIFFERENT": []}
+    half = max(1, args.max_pairs // 2)
     for sid, ctx, a in sorted(index):
-        if len(by_v["EQUIVALENT"]) + len(by_v["DIFFERENT"]) >= args.max_pairs:
+        # balanced fill (r4): the old break counted BOTH pools against
+        # max_pairs, and renames were tried first — so a healthy run
+        # of EQUIVALENT candidates starved DIFFERENT out of existence
+        # (r3 shipped ZERO different-verdict rows in the bundle).
+        if len(by_v["EQUIVALENT"]) >= half and len(by_v["DIFFERENT"]) >= half:
             break
         da = _run_program(ctx, a)
         if da is None:
@@ -1841,7 +1987,7 @@ def cmd_equiv(args):
         # EQUIVALENT candidate: uniform rename of every variable
         vars_ = sorted({m.group(1) for m in re.finditer(r"my:\?(\w+)", a)},
                        key=len, reverse=True)
-        if vars_:
+        if vars_ and len(by_v["EQUIVALENT"]) < half:
             b = a
             for i, v in enumerate(vars_):
                 b = re.sub(rf"my:\?{re.escape(v)}\b", f"my:?r{i}", b)
@@ -1851,12 +1997,53 @@ def cmd_equiv(args):
                 stats["equivalent"] += 1
                 by_v["EQUIVALENT"].append({
                     "ctx": ctx, "a": a, "b": b,
-                    "reason": "identical execution delta (uniform rename)"})
+                    # reason per pair, not a constant: naming the
+                    # renamed variables AND the first bound fact makes
+                    # the gold slot-unique per source program
+                    "reason": "renaming " + ", ".join(
+                        "?" + v for v in vars_[:4])
+                    + " changes nothing: A and B read the same WORLD, "
+                    + (re.search(r"READ WORLD (\S+) (\S+)", a).group(0)
+                       [11:] if re.search(r"READ WORLD (\S+) (\S+)", a)
+                       else "same facts")
+                    + ", same writes, same answer: " + _ans(da)})
+        # DIFFERENT candidate, substitution flavor (r4): on ONE-read
+        # programs every line-deletion breaks the binding (r3 census:
+        # 143/143 undecidable, ZERO different rows shipped). Swapping
+        # a READ's predicate for ANOTHER fact the same subject carries
+        # keeps both programs executable and the delta HONESTLY
+        # different — the fixture verifies, never the author.
+        if len(by_v["DIFFERENT"]) < half:
+            facts = re.findall(r"(my:\S+)\s+(ai:\S+)\s+(\S+)", ctx)
+            for rd in re.findall(r"^READ WORLD (\S+) (\S+) my:\?(\w+) \. "
+                                 r"\S+\.$", a, re.M):
+                s, p, v = rd
+                for s2, p2, o2 in facts:
+                    if s2 != s or p2 == p:
+                        continue
+                    b2 = a.replace(f"READ WORLD {s} {p} my:?{v}",
+                                   f"READ WORLD {s2} {p2} my:?{v}", 1)
+                    dc2 = _run_program(ctx, b2)
+                    stats["pairs"] += 1
+                    if dc2 is not None and da != dc2:
+                        stats["different"] += 1
+                        by_v["DIFFERENT"].append({
+                            "ctx": ctx, "a": a, "b": b2,
+                            "reason": "A projects " + p + " of " + s
+                                      + " and answers " + _ans(da)
+                                      + "; B projects " + p2 + " and "
+                                        "answers " + _ans(dc2)})
+                        break
+                else:
+                    continue
+                break
         # DIFFERENT candidate: delete a BIND/EMIT/READ line that is
         # OBSERVABLE in the delta — each drop is tried until one changes
         # the outcome (drops that break binding are undecidable, skipped)
         lines = a.split("\n")
         for k, l in enumerate(lines):
+            if len(by_v["DIFFERENT"]) >= half:
+                break
             if not re.match(r"\s*(BIND|EMIT|READ)\b", l):
                 continue
             c = "\n".join(x for i, x in enumerate(lines) if i != k)
@@ -1867,10 +2054,17 @@ def cmd_equiv(args):
                 continue
             if da != dc:
                 stats["different"] += 1
+                keys = "; ".join(key for key in da
+                                 if da.get(key) != dc.get(key))[:80]
                 by_v["DIFFERENT"].append({
                     "ctx": ctx, "a": a, "b": c,
-                    "reason": "deltas differ: " + "; ".join(
-                        key for key in da if da.get(key) != dc.get(key))[:80]})
+                    # reason per pair: the deleted statement is visible
+                    # in A's text, so the gold teaches WHAT made them
+                    # diverge, not just THAT they did
+                    "reason": "A carries " + l.strip()[:70]
+                              + " which B drops: A answers "
+                                + _ans(da) + ", B answers " + _ans(dc)
+                                + " (deltas differ on " + keys + ")"})
                 break
     for verdict, pool in sorted(by_v.items()):
         if not pool:
@@ -2105,6 +2299,25 @@ def cmd_bundle(args):
     buckets = {}
     seen = set()
     gold_rejects = {}
+    shape_i, shape_n = {}, {}
+
+    def ship(tag, sysname, messages, recheck=None):
+        """r4/D1 format-robustness: every USER_SHAPE_EVERY-th row of a
+        verdict/QA family ships USER-SHAPE (ctx fused into the user
+        turn, blank line, request) — teaching that facts arrive from
+        OUTSIDE, the exact condition where the r3 bleed fired. Content
+        is never rewritten, only repackaged; where the path has a
+        per-row oracle, recheck proves the repackaged row still
+        satisfies it, else the row ships in canonical shape."""
+        i = shape_i.get(tag, 0)
+        shape_i[tag] = i + 1
+        if (sysname in QA_USER_SHAPE_SYSTEMS
+                and i % USER_SHAPE_EVERY == USER_SHAPE_EVERY - 1):
+            cand = to_user_shape(messages)
+            if recheck is None or recheck(cand):
+                shape_n[tag] = shape_n.get(tag, 0) + 1
+                return cand
+        return messages
     for root in roots:
         if not root.is_dir():
             continue
@@ -2140,7 +2353,8 @@ def cmd_bundle(args):
                 for messages, _exp in check.expansions(rec):
                     _d, rep = validate(messages[0]["content"])
                     if rep is not None and rep["valid"] and not rep["warnings"]:
-                        rows.append({"messages": messages})
+                        rows.append({"messages": ship(tag, "conflict",
+                                                      messages)})
                     else:
                         gold_rejects[f"{tag}:conflict-ctx-invalid"] = \
                             gold_rejects.get(f"{tag}:conflict-ctx-invalid", 0) + 1
@@ -2158,7 +2372,8 @@ def cmd_bundle(args):
                         f"{tag}:preflight", 0) + len(fails)
                     continue
                 for messages, _exp in check.expansions(rec):
-                    rows.append({"messages": messages})
+                    rows.append({"messages": ship(tag, rec["system"],
+                                                  messages)})
                 continue
             for messages, expected in check.expansions(rec):
                 try:
@@ -2169,7 +2384,15 @@ def cmd_bundle(args):
                     key = f"{tag}:{type(exc).__name__}"
                     gold_rejects[key] = gold_rejects.get(key, 0) + 1
                     continue
-                rows.append({"messages": messages})
+
+                def _recheck(m, _rec=rec, _exp=expected):
+                    try:
+                        check.check_record(_rec, m, _exp)
+                        return True
+                    except Exception:
+                        return False
+                rows.append({"messages": ship(tag, sysname, messages,
+                                              recheck=_recheck)})
     written = {}
     for tag, rows in sorted(buckets.items()):
         out = dest / f"{tag}.jsonl"
@@ -2177,7 +2400,9 @@ def cmd_bundle(args):
             for row in rows:
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         written[tag] = {"rows": len(rows),
-                        "sha256": hashlib.sha256(out.read_bytes()).hexdigest()[:16]}
+                        "user_shape": shape_n.get(tag, 0),
+                        "sha256": hashlib.sha256(
+                            out.read_bytes()).hexdigest()[:16]}
     # P23 preference pairs: axolotl chat_preference format ({chosen,
     # rejected}) written into a SEPARATE dataset domain — prepare-domain
     # merges every jsonl under datasets/<domain>/, so preference rows

@@ -41,6 +41,10 @@ def holdout_key(line: str) -> str:
     template (default, v2): the conversation's first message — every
       variant of a scenario crosses the line together. Measures: can
       the model respond to a template family it never trained on?
+      USER-SHAPE rows (r4 packaging: ctx fused into the first user
+      turn) key on the CTX PART, not the fused string: bucketing is
+      a property of WHERE the facts came from, never of which chair
+      they sat in. A row's shape copies cross together by law.
 
     gold: the last assistant message — formulaic families (pair
       6909eb: 53% of template-law holdout GOLD STRINGS appear verbatim
@@ -59,6 +63,9 @@ def holdout_key(line: str) -> str:
         if gold:
             return gold
     first = _norm(msgs[0].get("content")) if msgs else ""
+    if (msgs and msgs[0].get("role") == "user" and len(msgs) == 2
+            and "\n\n" in (msgs[0].get("content") or "")):
+        first = _norm(msgs[0]["content"].rpartition("\n\n")[0])
     return first or line.strip()
 
 

@@ -263,9 +263,22 @@ class Fixture:
 
 
 def check_record(record, messages, expected):
-    assert [m["role"] for m in messages] == ["assistant", "user", "assistant"]
-    assert all(m["content"].strip() for m in messages)
-    first, user, last = [m["content"] for m in messages]
+    roles = [m["role"] for m in messages]
+    if roles == ["user", "assistant"]:
+        # r4 user-shape (D1 format-robustness): ctx and request fused
+        # into ONE user turn, separated from the request by a blank
+        # line. Unpack to the canonical (ctx, request, gold) triple —
+        # every task contract below then applies UNCHANGED. That is
+        # the point: the same lesson, different packaging; an answer
+        # must not depend on which chair the facts sat in.
+        head, _, request = messages[0]["content"].rpartition("\n\n")
+        assert head.strip() and request.strip(), \
+            "user-shape row needs ctx, blank line, request"
+        first, user, last = head, request, messages[1]["content"]
+    else:
+        assert roles == ["assistant", "user", "assistant"], roles
+        assert all(m["content"].strip() for m in messages)
+        first, user, last = (m["content"] for m in messages)
     assert not re.search(r"\b(?:PREFIX|WORLD|MEMORY|BIND|WRITE|RETURN)\b.*[{:;]", user), "user must be a natural-language request"
     task = record["system"]
     if task == "ir-to-nl":
