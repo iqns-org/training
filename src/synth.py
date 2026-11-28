@@ -1661,6 +1661,99 @@ def cmd_profile(args):
     return 0
 
 
+# ── verify: the whole deterministic chain as one command ──────────────
+
+def cmd_verify(args):
+    """Replay the corpus chain (derive → abstain → graph×2 → equiv →
+    conflict → bundle → prepare-domain), parse the census, and write a
+    persistent state receipt next to the corpus — turning tonight's
+    shell ritual into ONE command with regression exits.
+
+    Exits: 0 = census >= --min-clean floor; 3 = BELOW FLOOR (the gate
+    is a machine, not a habit); 4 = chain step failed (named). An id
+    CHANGES nothing's validity but is reported LOUD against the prior
+    receipt — corpus ids move deliberately, and now the drift itself
+    moves loudly. --fast skips generation steps (re-bundle + census
+    only) for iterating on writers."""
+    import subprocess
+    domain = args.domain
+    synth_py = str(Path(__file__).resolve())
+    ex = str(sys.executable)
+    ex = str(Path(ex).resolve()) if Path(ex).is_file() else ex
+    examples = DATA_ROOT / "generate" / "examples"
+    steps = [("derive", ["derive", "--per-code", "4"]),
+             ("abstain", ["abstain", "--per-code", "2"]),
+             ("graph", ["graph", str(examples / "site-register.ttl"),
+                        "--domain", "construction"]),
+             ("graph", ["graph", str(examples / "jobsite-register.ttl"),
+                        "--domain", "jobsite"]),
+             ("equiv", ["equiv", "--max-pairs", "240"]),
+             ("conflict", ["conflict", str(examples / "site-register.ttl"),
+                           str(examples / "site-register-rev2.ttl")])]
+    if not args.fast:
+        for name, cmd in steps:
+            r = subprocess.run([ex, synth_py] + cmd,
+                               capture_output=True, text=True)
+            if r.returncode:
+                print(json.dumps({"ok": False, "failed_step": name,
+                                  "stderr": r.stderr[-300:]}))
+                return 4
+
+    bargs = [ex, synth_py, "bundle", "--domain", domain]
+    if args.dpo:
+        bargs += ["--dpo", args.dpo]
+    rb = subprocess.run(bargs, capture_output=True, text=True)
+    if rb.returncode:
+        print(json.dumps({"ok": False, "failed_step": "bundle",
+                          "stderr": rb.stderr[-300:]}))
+        return 4
+    bundle = json.loads(rb.stdout)
+
+    rp = subprocess.run([ex, str(ROOT / "bin" / "prepare-domain"), domain],
+                        capture_output=True, text=True)
+    if rp.returncode:
+        print(json.dumps({"ok": False, "failed_step": "prepare-domain",
+                          "stderr": rp.stderr[-300:]}))
+        return 4
+    held = clean = train = 0
+    families = {}
+    for line in (rp.stdout + rp.stderr).splitlines():
+        m = re.search(r"\((\d+) train \+ (\d+) holdout", line)
+        if m:
+            train, held = int(m.group(1)), int(m.group(2))
+        m = re.match(r"\s+(\S+): (\d+) held, (\d+) gold-clean", line)
+        if m:
+            families[m.group(1)] = [int(m.group(2)), int(m.group(3))]
+            clean += int(m.group(3))
+    pct = round(clean / max(1, held), 3)
+
+    receipt_path = DATA_ROOT / "datasets" / domain / "verify.json"
+    prev = {}
+    if receipt_path.is_file():
+        try:
+            prev = json.loads(receipt_path.read_text())
+        except ValueError:
+            prev = {}
+    id_moved = prev.get("dataset") and prev["dataset"] != bundle["dataset"]
+    receipt = {"dataset": bundle["dataset"], "train_rows": train,
+               "held_rows": held, "gold_clean_rows": clean,
+               "gold_clean_pct": pct, "families": families,
+               "rows_total": bundle["rows"],
+               "gold_rejects": bundle["gold_rejects"]}
+    receipt_path.write_text(json.dumps(receipt, indent=1, sort_keys=True)
+                            + "\n")
+    if id_moved:
+        print(f"verify: IDS MOVED {prev['dataset']} -> "
+              f"{bundle['dataset']} — deliberate? declare it in REGIMES",
+              file=sys.stderr)
+    ok = pct >= args.min_clean and not bundle["gold_rejects"]
+    receipt["ok"] = ok
+    receipt_path.write_text(json.dumps(receipt, indent=1, sort_keys=True)
+                            + "\n")
+    print(json.dumps(receipt, indent=1, sort_keys=True))
+    return 0 if ok else 3
+
+
 # ── R5: data-mixing regression (grid primitive) ───────────────────────
 
 def cmd_mix(args):
@@ -2308,11 +2401,15 @@ def cmd_bundle(args):
         OUTSIDE, the exact condition where the r3 bleed fired. Content
         is never rewritten, only repackaged; where the path has a
         per-row oracle, recheck proves the repackaged row still
-        satisfies it, else the row ships in canonical shape."""
+        satisfies it, else the row ships in canonical shape.
+        Seam law: the request must be ONE block — a blank-line
+        request would rpartition mid-sentence at unpack (bucket key
+        AND oracle), so such rows are never fused."""
         i = shape_i.get(tag, 0)
         shape_i[tag] = i + 1
         if (sysname in QA_USER_SHAPE_SYSTEMS
-                and i % USER_SHAPE_EVERY == USER_SHAPE_EVERY - 1):
+                and i % USER_SHAPE_EVERY == USER_SHAPE_EVERY - 1
+                and "\n\n" not in messages[1]["content"]):
             cand = to_user_shape(messages)
             if recheck is None or recheck(cand):
                 shape_n[tag] = shape_n.get(tag, 0) + 1
@@ -2635,6 +2732,17 @@ def main(argv=None):
                                   "(default tmp/synth/rft)")
     pr.add_argument("--out", help="override dataset dir")
     pr.set_defaults(func=cmd_promote)
+    vf = sub.add_parser("verify", help="state-verify: replay the whole "
+                        "deterministic chain, parse the census, write "
+                        "datasets/<domain>/verify.json, exit nonzero "
+                        "on regression (0.8 default gold-clean floor)")
+    vf.add_argument("--domain", default="cognition")
+    vf.add_argument("--min-clean", type=float, default=0.8)
+    vf.add_argument("--fast", action="store_true",
+                    help="skip generation steps (re-bundle + census)")
+    vf.add_argument("--dpo", help="pinned preference source (default: "
+                                  "the promoted file in the tree)")
+    vf.set_defaults(func=cmd_verify)
     s = sub.add_parser("sample", help="R4: student-side RFT (serve -> k -> "
                                       "oracle keep -> rft.jsonl)")
     s.add_argument("--url", help="OpenAI-compatible endpoint, e.g. "
