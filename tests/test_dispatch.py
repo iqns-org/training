@@ -279,6 +279,43 @@ def test_mini_keeps_the_recipes_window(tmp_path, monkeypatch, recipe):
     assert cfg["gradient_accumulation_steps"] == 1
 
 
+def test_unchanged_work_is_not_repurchased(tmp_path, monkeypatch, recipe):
+    """DUP-POD LAW: work_key = dataset sha x rendered configs. A DONE
+    prior with artifacts ON HAND answers a repeat submit with its
+    receipt — no pool, no pod, no spend. A GC'd prior is a receipt for
+    nothing (launch must proceed), dry rows never dup, retrain=True
+    forces the re-roll."""
+    puts = _vol_puts(tmp_path, monkeypatch)
+    r1 = dispatch.submit("queer", recipe, mini=True, dry=True)
+    assert not r1.get("error"), r1          # verified != done: never dup's
+    payload = json.loads(dict(puts)[f"runs/{r1['run_id']}/payload.json"])
+    wk = dispatch._work_key(r1["dataset_sha256"], [payload["config_yaml"]])
+    led = dispatch.Ledger(tmp_path / "state" / "ledger.db")
+    prior = led.create("train", {"domain": "queer"}, provider="runpod")
+    led.merge_spec(prior, work_key=wk)
+    led.update(prior, state="done")
+    assert dispatch._prior_work(led, wk) is None      # artifacts missing
+    # tripwire: reaching pool selection raises ProviderError -> res error
+    monkeypatch.setattr(
+        dispatch, "get_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            dispatch.ProviderError("pool selection reached")))
+    res = dispatch.submit("queer", recipe, mini=True)
+    assert "pool selection reached" in str(res.get("error")), res
+    # artifacts on hand -> the SAME work answers with the receipt,
+    # returning BEFORE the tripwire could fire
+    d = tmp_path / "runs" / prior
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "artifacts.tar.gz").write_bytes(b"weights")
+    res2 = dispatch.submit("queer", recipe, mini=True)
+    assert res2["status"] == "unchanged" and res2["prior_run"] == prior
+    row = led.get(res2["run_id"])
+    assert row["state"] == "unchanged" and prior in row["error"]
+    # retrain=True: deliberate re-roll trips the wire past the check
+    res3 = dispatch.submit("queer", recipe, mini=True, retrain=True)
+    assert "pool selection reached" in str(res3.get("error")), res3
+
+
 def test_window_guard_refuses_starved_dataset(tmp_path, monkeypatch):
     """A majority of rows larger than the window = zero packed samples:
     refused pre-launch (1ffca0), per-leg, bypassable by code. Short rows

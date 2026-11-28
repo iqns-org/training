@@ -166,7 +166,8 @@ class Ledger:
 
     def live_instances(self, provider: str) -> set[str]:
         """Instance ids the ledger believes are not finished."""
-        settled = sorted(TERMINAL | {"verified", "delivered", "lost"})
+        settled = sorted(TERMINAL | {"verified", "delivered", "lost",
+                                     "unchanged"})
         q = ("SELECT instance_id FROM runs WHERE provider=? "
              "AND state NOT IN (%s) AND instance_id != ''"
              % ",".join("?" * len(settled)))

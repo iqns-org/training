@@ -345,7 +345,8 @@ def _pod_stop_env(run_id: str) -> dict:
 
 # states whose work is OVER — a pod still alive under one of these is a
 # leak (crash between harvest and terminate), never a live task.
-SETTLED = {"done", "failed", "cancelled", "verified", "delivered", "lost"}
+SETTLED = {"done", "failed", "cancelled", "verified", "delivered", "lost",
+           "unchanged"}
 
 
 def _max_wait(explicit: int | None) -> int:
@@ -1096,6 +1097,36 @@ def window_guard(leg_cfgs: "list[tuple[str, dict]]", est_tokens: float,
     return out
 
 
+# IDEMPOTENCE (DUP-POD LAW): every train row is keyed on the bytes of
+# THE WORK — dataset sha x rendered configs. Re-submitting an unchanged
+# corpus must not buy a second pod. Provider/card/image are deliberately
+# NOT in the key: they are HOW work runs, not WHAT it is. Idempotence
+# asks "has this exact training already succeeded, and are its weights
+# still on hand?" — a done row whose artifacts were GC'd is a receipt for
+# nothing, so the honest answer then is a fresh run, not a pointer.
+def _work_key(dataset_sha: str, cfg_yamls: list[str]) -> str:
+    blob = json.dumps({"data": dataset_sha,
+                       "cfgs": sorted(cfg_yamls)}, sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _prior_work(led: Ledger, wk: str) -> dict | None:
+    cands = []
+    for r in led.list(state="done"):
+        if r["kind"] != "train":
+            continue
+        try:
+            spec = json.loads(r["spec_json"] or "{}")
+        except ValueError:
+            continue
+        if spec.get("work_key") == wk:
+            cands.append(r)
+    for r in sorted(cands, key=lambda x: x["created_at"], reverse=True):
+        if (ROOT / "runs" / r["run_id"] / "artifacts.tar.gz").exists():
+            return r
+    return None
+
+
 def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            overrides: dict | None = None, provider: str = "runpod",
            gpus: list[str] | None = None, tier: str | None = None,
@@ -1105,6 +1136,7 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
            max_wait: int | None = None,
            pair: "Path | str | None" = None,
            force_guards: "list[str] | None" = None,
+           retrain: bool = False,
            on_run_id: "callable | None" = None) -> dict:
     """Full cycle; returns ledger-shaped result dict. NEVER leaves a pod
     behind: every terminal path terminates. on_run_id (if given) fires the
@@ -1119,6 +1151,12 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
     the contract. Budget: price is per pod-hour, so the pair does two
     models' work under one cap — that is the POINT, not a leak; the wave
     loop still dies at max_runtime/max_cost as always.
+
+    IDEMPOTENCE (dup-pod law): if an identical run (same dataset sha +
+    same rendered configs) already SUCCEEDED with artifacts on hand,
+    this returns {status: "unchanged", prior_run} without touching a
+    provider — re-submitting an unchanged corpus costs $0. retrain=True
+    is the deliberate re-roll.
     """
     led = Ledger(ROOT / "state" / "ledger.db")  # ROOT-scoped: tests redirect
     cdir = corpora_dir()
@@ -1319,12 +1357,16 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
                 "application/json")
         result.update({"dataset_key": dataset_key, "dataset_sha256": dataset_sha,
                        "payload_key": f"runs/{run_id}/payload.json"})
+        wk = _work_key(dataset_sha,
+                       [job_fields["config_yaml"]]
+                       if "config_yaml" in job_fields
+                       else [c["config_yaml"] for c in job_fields["configs"]])
         # provenance INTO the ledger (SPEC 13ak): the row must exist before
         # staging (async callers grab the id), so the staged contract is
         # merged after — dataset sha/lines + exact image bytes. Without
         # this, "did the pod train on the data we think?" is unanswerable
         # (de3c7d post-mortem, 2026-11-25).
-        led.merge_spec(run_id, dataset_sha=dataset_sha,
+        led.merge_spec(run_id, work_key=wk, dataset_sha=dataset_sha,
                        dataset_lines=dataset_lines, image=_image_ref(),
                        guards={"advisories": advisories,
                                "bypassed": sorted(bypass),
@@ -1338,6 +1380,29 @@ def submit(domain: str, recipe: Path, *, model: str = "", mini: bool = False,
             led.update(run_id, state="verified", note=f"dry-run: {lane} lane staged")
             result["dry"] = True
             return result
+
+        # DUP-POD LAW (idempotence): identical data x identical rendered
+        # configs already DONE with artifacts on hand -> answer with the
+        # prior run's receipt. The check itself is journaled twice: a
+        # terminal 'unchanged' row (so "did we look?" is answerable) and
+        # a notify event. Nothing after this line runs: no pool, no pod,
+        # no gate, no spend.
+        if not retrain:
+            prior = _prior_work(led, wk)
+            if prior:
+                led.update(run_id, state="unchanged",
+                           error=f"dup of {prior['run_id']} "
+                                f"(work_key={wk})",
+                           note="idempotence: identical work already "
+                                "done, artifacts on hand")
+                notify.emit("unchanged", run_id, kind="train",
+                            prior_run=prior["run_id"], work_key=wk)
+                result.update({
+                    "status": "unchanged", "prior_run": prior["run_id"],
+                    "artifacts": str(ROOT / "runs" / prior["run_id"]),
+                    "hint": "retrain=True forces a fresh pod for "
+                            "identical work"})
+                return result
 
         prov = get_provider(provider)
         # right-sizing (SPEC 13q): a rate ceiling keeps small models off

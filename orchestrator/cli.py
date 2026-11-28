@@ -115,12 +115,15 @@ def cmd_submit(args):
         overrides=overrides,
         pair=resolve_recipe(args.pair) if args.pair else None,
         force_guards=args.force_guard,
+        retrain=args.retrain,
         provider=args.provider, gpus=args.gpu or None, tier=args.tier,
         dry=args.dry, max_runtime=args.max_runtime, max_cost=args.max_cost,
         force_lane=args.lane, max_price_hr=args.max_price,
         max_wait=args.wait)
     _print(res)
-    raise SystemExit(0 if res.get("status") in ("succeeded", None) and not res.get("error") else 1)
+    raise SystemExit(0 if res.get("status") in ("succeeded", "unchanged",
+                                                None)
+                     and not res.get("error") else 1)
 
 
 def cmd_stage(args):
@@ -466,6 +469,10 @@ def build_parser():
                         "two concurrent axolotl procs, per-model artifact "
                         "trees; gate requires both). e.g. train 0.8B+4B on "
                         "one 24G card for the price of one pod")
+    s.add_argument("--retrain", action="store_true",
+                   help="force a fresh pod even if identical work "
+                        "(same dataset sha + configs) already succeeded "
+                        "(default: the prior run is returned, $0)")
     s.add_argument("--force-guard", action="append", metavar="CODE",
                    default=None,
                    help="proceed past a named config refusal (each refusal "

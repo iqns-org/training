@@ -203,6 +203,12 @@ PIPELINE DEFAULTS (stage/budget audit, 2026-11-27 — read pipeline_report())
   never the reverse. Writes are process-lifetime; persistence is git's
   job (env file/infra, reviewed like code). Image pins and the holdout
   law are git-only by design.
+- Idempotence (DUP-POD LAW): every train row carries work_key = sha of
+  (dataset sha x rendered configs). Re-submitting identical work that
+  already DONE — artifacts still on hand — returns prior_run and buys NO
+  pod; the check itself is journaled (state 'unchanged'). retrain=True
+  is the deliberate re-roll. A done row whose artifacts were GC'd is a
+  receipt for nothing, so then a fresh run is the honest answer.
 
 SEQUENCE LAW (smoke 1ffca0, pinned by the window guard)
 - The WINDOW belongs to the DATA (rows + template render, including
@@ -402,7 +408,8 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                     max_runtime: int = 3600, max_cost: float | None = None,
                     dry: bool = False, provider: str = "runpod",
                     pair: str | None = None,
-                    force_guards: list[str] | None = None) -> dict:
+                    force_guards: list[str] | None = None,
+                    retrain: bool = False) -> dict:
     """Launch a full training cycle in the background; returns as soon as
     the run is registered (seconds). mini=True is a cheap lane-validation
     run (48 rows, 1 epoch) — ALWAYS pilot mini before a real spend.
@@ -410,6 +417,11 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
     Budget: max_cost None = derived (runtime x rate); offers above the
     rate ceiling are never launched — waiting beats overbuying.
     Track with job_status(run_id).
+
+    IDEMPOTENCE (dup-pod law): identical data + configs that already
+    SUCCEEDED (artifacts on hand) returns {status: "unchanged",
+    prior_run} without buying a pod — re-submitting an unchanged corpus
+    costs $0. retrain=True is the deliberate re-roll.
 
     pair (recipe name): CO-TENANT — one pod trains both recipes
     concurrently. LAWS (receipts in dispatch.submit + agent tests):
@@ -463,6 +475,7 @@ def submit_training(domain: str, recipe: str, mini: bool = True,
                 gpus=gpus, tier=tier, max_runtime=max_runtime,
                 max_cost=max_cost, dry=dry, provider=provider,
                 pair=pair_path, force_guards=force_guards,
+                retrain=retrain,
                 on_run_id=_on_run_id)
         except Exception as e:                          # noqa: BLE001
             holder["error"] = f"{type(e).__name__}: {e}"
